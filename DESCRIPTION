@@ -1,0 +1,26 @@
+Package: SpencerEcoTools
+Title: Data Download and Preprocessing Tools for Microclimate Modeling
+Version: 0.1.0
+Authors@R: person("Bryan", "Spencer", role = c("aut", "cre"),
+                   email = "bspencer@uidaho.edu")
+Description: A collection of tools for automating the download and preprocessing 
+    of spatial and remote sensing data from Google Earth Engine, in preparation 
+    for microclimate modeling with the microclimf package. Also includes 
+    additional utility functions for ecological spatial analysis workflows.
+License: MIT + file LICENSE
+Encoding: UTF-8
+Roxygen: list(markdown = TRUE)
+RoxygenNote: 7.0.0
+Imports:
+    tidyverse,
+    terra,
+    sf,
+    readr,
+    googledrive,
+    microclimdata,
+    httr,
+    aws.s3,
+    reticulate,
+    geodata,
+    rgee
+    
