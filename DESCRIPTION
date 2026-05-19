@@ -10,7 +10,7 @@ Description: A collection of tools for automating the download and preprocessing
 License: MIT + file LICENSE
 Encoding: UTF-8
 Roxygen: list(markdown = TRUE)
-RoxygenNote: 7.0.0
+RoxygenNote: 7.3.3
 Imports:
     tidyverse,
     terra,
@@ -23,4 +23,3 @@ Imports:
     reticulate,
     geodata,
     rgee
-    
