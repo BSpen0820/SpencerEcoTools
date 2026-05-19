@@ -966,11 +966,13 @@ download_modis_lai <- function(aoi,
 #'   Default is c(780, 640, 530) for HLS Sentinel-2
 #' @param cir_band_maxs Numeric vector of CIR band maximum wavelengths in nm.
 #'   Default is c(880, 670, 590) for HLS Sentinel-2
+#' @param max_albedo Hard ceiling for albedo values before MODIS adjustment.
+#'   Pixels above this value are clamped down to it. Default is 0.6, common for fresh snow
 #'
 #' @return Invisibly returns a data frame logging the status of each
 #'   year/month combination processed
 #' @export
-downscale_albedo <- function(years,
+compute_albedo <- function(years,
                            months,
                            modis_dir,
                            hls_dir,
@@ -979,7 +981,8 @@ downscale_albedo <- function(years,
                            rgb_band_mins = c(640, 530, 450),
                            rgb_band_maxs = c(670, 590, 510),
                            cir_band_mins = c(780, 640, 530),
-                           cir_band_maxs = c(880, 670, 590)) {
+                           cir_band_maxs = c(880, 670, 590),
+                           max_albedo = 0.6) {
 
   dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
 
@@ -1061,6 +1064,9 @@ downscale_albedo <- function(years,
 
     # Clamp to valid range
     albphoto <- terra::clamp(albphoto, lower = 1e-6, upper = 1 - 1e-6)
+
+    # Apply hard ceiling before MODIS adjustment
+    albphoto <- terra::clamp(albphoto, upper = max_albedo, values = TRUE)
 
     # Adjust to MODIS broadband albedo
     albadjusted <- microclimdata::albedo_adjust(albphoto, m_rast)
