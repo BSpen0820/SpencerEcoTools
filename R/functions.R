@@ -939,3 +939,151 @@ download_modis_lai <- function(aoi,
     poll_result = poll_result
   )))
 }
+
+#' Compute and Adjust Albedo from HLS Sentinel-2 Imagery
+#'
+#' Iterates over all combinations of years and months, computing photographic
+#' albedo from HLS Sentinel-2 imagery using \code{microclimdata::albedo_fromaerial()}
+#' and adjusting it to MODIS broadband albedo using
+#' \code{microclimdata::albedo_adjust()}. Default band wavelength parameters
+#' are specific to the HLS Sentinel-2 (HLSS30) product. If using a different
+#' sensor, adjust the band wavelength arguments accordingly. For HLS band
+#' specifications see:
+#' \url{https://lpdaac.usgs.gov/documents/1698/HLS_User_Guide_V2.pdf}
+#'
+#' @param years Integer vector of years to process e.g. c(2020, 2021)
+#' @param months Integer vector of months to process e.g. 3:8
+#' @param modis_dir Directory containing MODIS albedo files
+#' @param hls_dir Directory containing HLS Sentinel-2 imagery files
+#' @param out_dir Directory to save output albedo files
+#' @param study_area Optional character string identifying the study area e.g. "GMU1".
+#'   If provided, used to filter input files and as a prefix in output file names
+#' @param rgb_band_mins Numeric vector of RGB band minimum wavelengths in nm.
+#'   Default is c(640, 530, 450) for HLS Sentinel-2
+#' @param rgb_band_maxs Numeric vector of RGB band maximum wavelengths in nm.
+#'   Default is c(670, 590, 510) for HLS Sentinel-2
+#' @param cir_band_mins Numeric vector of CIR band minimum wavelengths in nm.
+#'   Default is c(780, 640, 530) for HLS Sentinel-2
+#' @param cir_band_maxs Numeric vector of CIR band maximum wavelengths in nm.
+#'   Default is c(880, 670, 590) for HLS Sentinel-2
+#'
+#' @return Invisibly returns a data frame logging the status of each
+#'   year/month combination processed
+#' @export
+downscale_albedo <- function(years,
+                           months,
+                           modis_dir,
+                           hls_dir,
+                           out_dir,
+                           study_area = NULL,
+                           rgb_band_mins = c(640, 530, 450),
+                           rgb_band_maxs = c(670, 590, 510),
+                           cir_band_mins = c(780, 640, 530),
+                           cir_band_maxs = c(880, 670, 590)) {
+
+  dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
+
+  # List files in both directories
+  modis_files <- list.files(modis_dir, pattern = "\\.tif$", full.names = TRUE)
+  hls_files   <- list.files(hls_dir,   pattern = "\\.tif$", full.names = TRUE)
+
+  # Optionally filter by study area
+  if (!is.null(study_area)) {
+    modis_files <- modis_files[grepl(study_area, modis_files)]
+    hls_files   <- hls_files[grepl(study_area, hls_files)]
+  }
+
+  # Helper to extract YYYY_MM from file names
+  extract_ym <- function(files) {
+    matches <- regmatches(files, regexpr("[0-9]{4}_[0-9]{2}", files))
+    data.frame(file = files, ym = matches, stringsAsFactors = FALSE)
+  }
+
+  modis_df <- extract_ym(modis_files)
+  hls_df   <- extract_ym(hls_files)
+
+  # Build log from requested year/month combos
+  log <- expand.grid(year = years, month = months)
+  log$ym     <- sprintf("%d_%02d", log$year, log$month)
+  log$status <- NA_character_
+
+  cat(sprintf("\n--- Albedo Computation: %d year(s) x %d month(s) = %d combinations ---\n\n",
+              length(years), length(months), nrow(log)))
+
+  for (i in seq_len(nrow(log))) {
+
+    y  <- log$year[i]
+    mo <- log$month[i]
+    ym <- log$ym[i]
+
+    cat(sprintf("Processing year: %d | month: %02d\n", y, mo))
+
+    # Match files by YYYY_MM
+    modis_match <- modis_df$file[modis_df$ym == ym]
+    hls_match   <- hls_df$file[hls_df$ym == ym]
+
+    # Check files exist and are unambiguous
+    if (length(modis_match) == 0) {
+      stop(sprintf("MODIS albedo file not found for %s in:\n  %s", ym, modis_dir))
+    }
+    if (length(hls_match) == 0) {
+      stop(sprintf("HLS imagery file not found for %s in:\n  %s", ym, hls_dir))
+    }
+    if (length(modis_match) > 1) {
+      stop(sprintf("Multiple MODIS albedo files found for %s in:\n  %s", ym, modis_dir))
+    }
+    if (length(hls_match) > 1) {
+      stop(sprintf("Multiple HLS imagery files found for %s in:\n  %s", ym, hls_dir))
+    }
+
+    # Load imagery
+    s_rast <- terra::rast(hls_match)
+    m_rast <- terra::rast(modis_match)
+
+    # Build rgb and cir stacks
+    rgb <- c(s_rast$red, s_rast$green, s_rast$blue)
+    cir <- c(s_rast$nir, s_rast$red, s_rast$green)
+    rm(s_rast)
+
+    # Clamp and scale to 0-250
+    rgb <- terra::clamp(rgb, lower = 0, upper = 1) * 250
+    cir <- terra::clamp(cir, lower = 0, upper = 1) * 250
+
+    # Compute photographic albedo
+    albphoto <- microclimdata::albedo_fromaerial(
+      rgb,
+      cir,
+      RGBbandmins = rgb_band_mins,
+      RGBbandmaxs = rgb_band_maxs,
+      CIRbandmins = cir_band_mins,
+      CIRbandmaxs = cir_band_maxs
+    )
+
+    # Clamp to valid range
+    albphoto <- terra::clamp(albphoto, lower = 1e-6, upper = 1 - 1e-6)
+
+    # Adjust to MODIS broadband albedo
+    albadjusted <- microclimdata::albedo_adjust(albphoto, m_rast)
+
+    # Build output file name
+    out_name <- if (!is.null(study_area)) {
+      sprintf("HLS_Albedo_%s_%s.tif", study_area, ym)
+    } else {
+      sprintf("HLS_Albedo_%s.tif", ym)
+    }
+
+    terra::writeRaster(
+      albadjusted,
+      file.path(out_dir, out_name),
+      overwrite = TRUE
+    )
+
+    cat(sprintf("  Saved: %s\n", out_name))
+    log$status[i] <- "success"
+  }
+
+  cat(sprintf("\nDone. %d/%d combinations processed successfully.\n",
+              sum(log$status == "success", na.rm = TRUE), nrow(log)))
+
+  return(invisible(log))
+}
