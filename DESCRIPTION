@@ -23,3 +23,6 @@ Imports:
     reticulate,
     geodata,
     rgee
+Depends: 
+    R (>= 3.5)
+LazyData: true
