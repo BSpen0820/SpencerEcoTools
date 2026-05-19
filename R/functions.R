@@ -217,3 +217,120 @@ download_dem <- function(aoi,
 
   return(invisible(result))
 }
+
+#' Downscale MODIS LAI to 30m Resolution Using NDVI
+#'
+#' Iterates over all combinations of years and months, loading HLS multispectral
+#' imagery and coarse MODIS LAI, and downscales LAI to 30m resolution using
+#' the lai_fromndvi() function from the microclimdata package.
+#'
+#' @param years Integer vector of years to process e.g. c(2020, 2021)
+#' @param months Integer vector of months to process e.g. 3:8
+#' @param img_dir Directory containing HLS imagery files
+#' @param lai_dir Directory containing coarse MODIS LAI files
+#' @param out_dir Directory to save downscaled LAI outputs
+#' @param study_area Optional character string identifying the study area e.g. "GMU1".
+#'   If provided, only files containing this string will be processed
+#'
+#' @return Invisibly returns a data frame logging the status of each
+#'   year/month combination processed
+#' @export
+downscale_lai <- function(years,
+                          months,
+                          img_dir,
+                          lai_dir,
+                          out_dir,
+                          study_area = NULL) {
+
+  dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
+
+  # List files in both directories
+  img_files <- list.files(img_dir, pattern = "\\.tif$", full.names = TRUE)
+  lai_files <- list.files(lai_dir, pattern = "\\.tif$", full.names = TRUE)
+
+  # Optionally filter by study area
+  if (!is.null(study_area)) {
+    img_files <- img_files[grepl(study_area, img_files)]
+    lai_files <- lai_files[grepl(study_area, lai_files)]
+  }
+
+  # Helper to extract YYYY_MM from file names
+  extract_ym <- function(files) {
+    matches <- regmatches(files, regexpr("[0-9]{4}_[0-9]{2}", files))
+    data.frame(file = files, ym = matches, stringsAsFactors = FALSE)
+  }
+
+  img_df <- extract_ym(img_files)
+  lai_df <- extract_ym(lai_files)
+
+  # Build log from requested year/month combos
+  log <- expand.grid(year = years, month = months)
+  log$ym <- sprintf("%d_%02d", log$year, log$month)
+  log$status <- NA_character_
+
+  cat(sprintf("\n--- LAI Downscaling: %d year(s) x %d month(s) = %d combinations ---\n\n",
+              length(years), length(months), nrow(log)))
+
+  for (i in seq_len(nrow(log))) {
+
+    y  <- log$year[i]
+    mo <- log$month[i]
+    ym <- log$ym[i]
+
+    cat(sprintf("Processing year: %d | month: %02d\n", y, mo))
+
+    # Match files by YYYY_MM
+    img_match <- img_df$file[img_df$ym == ym]
+    lai_match <- lai_df$file[lai_df$ym == ym]
+
+    # Check files exist
+    if (length(img_match) == 0) {
+      stop(sprintf("HLS imagery not found for %s in:\n  %s", ym, img_dir))
+    }
+    if (length(lai_match) == 0) {
+      stop(sprintf("MODIS LAI not found for %s in:\n  %s", ym, lai_dir))
+    }
+    if (length(img_match) > 1) {
+      stop(sprintf("Multiple HLS imagery files found for %s in:\n  %s", ym, img_dir))
+    }
+    if (length(lai_match) > 1) {
+      stop(sprintf("Multiple MODIS LAI files found for %s in:\n  %s", ym, lai_dir))
+    }
+
+    # Load imagery
+    img <- terra::rast(img_match)
+
+    # Build rgb and cir stacks
+    rgb <- c(img$red, img$green, img$blue)
+    cir <- c(img$nir, img$red, img$green)
+
+    # Clamp to valid reflectance range and scale to 0-250
+    rgb <- terra::clamp(rgb, lower = 0, upper = 1) * 250
+    cir <- terra::clamp(cir, lower = 0, upper = 1) * 250
+
+    # Load coarse LAI
+    lai <- terra::rast(lai_match)
+
+    # Downscale
+    lai_fine <- microclimdata::lai_fromndvi(rgb, cir, lai)
+
+    # Write output
+    # Write output
+    out_name <- if (!is.null(study_area)) {
+      sprintf("LAI_fromNDVI_%s_%s.tif", study_area, ym)
+    } else {
+      sprintf("LAI_fromNDVI_%s.tif", ym)
+    }
+
+    out_file <- file.path(out_dir, out_name)
+    terra::writeRaster(lai_fine, out_file, overwrite = TRUE)
+
+    cat(sprintf("  Saved: %s\n", basename(out_file)))
+    log$status[i] <- "success"
+  }
+
+  cat(sprintf("\nDone. %d/%d combinations processed successfully.\n",
+              sum(log$status == "success", na.rm = TRUE), nrow(log)))
+
+  return(invisible(log))
+}

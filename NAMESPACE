@@ -2,4 +2,5 @@
 
 export(define_aoi)
 export(download_dem)
+export(downscale_lai)
 export(poll_drive)
