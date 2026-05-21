@@ -300,19 +300,26 @@ downscale_lai <- function(years,
     # Load imagery
     img <- terra::rast(img_match)
 
+    # Rescale each band to 0-1
+
+    if(any(terra::values(img) > 1 | terra::values(img) < 0)){
+
+          img <- terra::sapp(img, function(x) {
+      rng <- range(terra::values(x), na.rm = TRUE)
+      (x - rng[1]) / (rng[2] - rng[1])
+    })
+
+    }
+
     # Build rgb and cir stacks
     rgb <- c(img$red, img$green, img$blue)
     cir <- c(img$nir, img$red, img$green)
-
-    # Clamp to valid reflectance range and scale to 0-250
-    rgb <- terra::clamp(rgb, lower = 0, upper = 1) * 250
-    cir <- terra::clamp(cir, lower = 0, upper = 1) * 250
 
     # Load coarse LAI
     lai <- terra::rast(lai_match)
 
     # Downscale
-    lai_fine <- microclimdata::lai_fromndvi(rgb, cir, lai)
+    lai_fine <- microclimdata::lai_fromndvi(rgb, cir, lai, maxlai = max(terra::values(lai)) + 1)
 
     # Write output
     # Write output
@@ -579,7 +586,7 @@ download_albedo <- function(aoi,
   )))
 }
 
-# Internal masking helpers ------------------------------------------------
+# Internal helpers --------------------------------------------------------
 
 .maskHLS_full <- function(img) {
   fmask <- img$select("Fmask")
@@ -600,42 +607,105 @@ download_albedo <- function(aoi,
   img$updateMask(mask)
 }
 
-.maskHLS_no_adjacent <- function(img) {
-  fmask <- img$select("Fmask")
-  cloud  <- fmask$bitwiseAnd(2^1)$neq(0)
-  shadow <- fmask$bitwiseAnd(2^3)$neq(0)
-  mask <- cloud$Or(shadow)$Not()
-  img$updateMask(mask)
-}
-
-.maskHLS_cloud_only <- function(img) {
-  fmask <- img$select("Fmask")
-  cloud <- fmask$bitwiseAnd(2^1)$neq(0)
-  img$updateMask(cloud$Not())
-}
-
 .focalFillMasked <- function(img, radius = 10) {
   kernel <- rgee::ee$Kernel$square(radius = radius)
   focal  <- img$focal_median(kernel = kernel, iterations = 1)
   img$unmask(focal)
 }
 
+.float32_cast <- function(img) {
+  img$cast(rgee::ee$Dictionary(list(
+    red   = "float",
+    green = "float",
+    blue  = "float",
+    nir   = "float"
+  )))
+}
+
+.temporal_weighted_fill <- function(ee_aoi, target_date, band_names, band_rename,
+                                    max_months = 2) {
+
+  target_center       <- rgee::ee$Date(target_date)
+  target_month_center <- target_center$advance(15, "day")
+  filled              <- NULL
+
+  for (offset in 1:max_months) {
+    for (direction in c(-1, 1)) {
+
+      neighbor_start <- target_center$advance(direction * offset, "month")
+      neighbor_end   <- neighbor_start$advance(1, "month")
+
+      neighbor_ic <- rgee::ee$ImageCollection("NASA/HLS/HLSS30/v002")$
+        filterDate(neighbor_start, neighbor_end)$
+        filterBounds(ee_aoi)$
+        select(band_names, band_rename)
+
+      n <- neighbor_ic$size()$getInfo()
+      if (n == 0) next
+
+      # Apply masks
+      masked_ic <- neighbor_ic$
+        map(.maskHLS_full)$
+        map(function(img) .maskHLS_no_aot(img))
+
+      # Cast to float32 and compute effective weights
+      weighted_ic <- masked_ic$map(function(img) {
+        img <- img$select("red", "green", "blue", "nir")$cast(
+          rgee::ee$Dictionary(list(
+            red   = "float",
+            green = "float",
+            blue  = "float",
+            nir   = "float"
+          ))
+        )
+
+        img_date         <- img$date()
+        day_dist         <- img_date$difference(target_month_center, "day")$abs()$add(1)
+        weight           <- rgee::ee$Number(1)$divide(day_dist)
+        pixel_mask       <- img$select("red")$mask()
+        effective_weight <- pixel_mask$multiply(weight)$
+          rename("effective_weight")$
+          cast(rgee::ee$Dictionary(list(effective_weight = "float")))
+
+        img$multiply(weight)$
+          addBands(effective_weight)$
+          set("weight", weight)
+      })
+
+      # Weighted sum of valid pixels only
+      weighted_sum <- weighted_ic$select(c("red", "green", "blue", "nir"))$sum()
+
+      # Sum of effective weights only
+      weight_sum <- weighted_ic$select("effective_weight")$sum()
+
+      # Divide only where weight_sum > 0
+      neighbor_mean <- weighted_sum$divide(weight_sum)$
+        updateMask(weight_sum$gt(0))
+
+      filled <- if (is.null(filled)) neighbor_mean else filled$unmask(neighbor_mean)
+    }
+  }
+
+  return(filled)
+}
+
 # Main function -----------------------------------------------------------
 
 #' Download HLS Sentinel-2 Imagery from Google Earth Engine
 #'
-#' Iterates over all combinations of years and months, applying a hierarchical
-#' cloud/shadow masking strategy to HLS S30 Sentinel-2 imagery before exporting
-#' monthly median composites from GEE to Google Drive, then optionally
-#' downloading them locally using poll_drive().
+#' Iterates over all combinations of years and months, applying a two-level
+#' cloud/shadow masking strategy to HLS S30 Sentinel-2 imagery. If gaps remain
+#' after masking, temporally adjacent images (up to 2 months either side) are
+#' used to fill gaps via inverse distance weighted mean, weighted by day
+#' distance from the center of the target month. A focal median is applied
+#' as a final fallback for any remaining gaps.
 #'
-#' The masking hierarchy applied is:
+#' The masking strategy applied is:
 #' \enumerate{
-#'   \item Full mask (cloud, adjacent, shadow, high AOT) + focal median gap fill
-#'   \item Drop high AOT requirement
-#'   \item Drop adjacent cloud/shadow requirement
-#'   \item Cloud only mask
-#'   \item Raw unmasked median
+#'   \item Full mask (cloud, adjacent, shadow, high AOT) median composite
+#'   \item No AOT mask median fills remaining gaps
+#'   \item Temporally weighted mean from surrounding months fills remaining gaps
+#'   \item Focal median fills any final remaining gaps
 #' }
 #'
 #' @param aoi A named list returned by define_aoi() containing elements
@@ -648,6 +718,8 @@ download_albedo <- function(aoi,
 #' @param scale Spatial resolution in meters. Default is 30
 #' @param focal_radius Kernel radius in pixels for focal median gap filling.
 #'   Default is 10 (21x21 pixel window)
+#' @param max_months Maximum number of months to search either side of target
+#'   month for temporal interpolation. Default is 2
 #' @param poll Logical. Whether to poll Google Drive and download files after
 #'   all tasks are submitted. Default is TRUE
 #' @param poll_interval Polling interval in seconds. Default is 30
@@ -656,6 +728,7 @@ download_albedo <- function(aoi,
 #' @return Invisibly returns a named list with elements:
 #'   \item{submitted}{Number of GEE tasks successfully submitted}
 #'   \item{skipped}{A data frame of skipped year/month combos}
+#'   \item{interpolated}{A data frame of year/month combos where temporal interpolation was applied}
 #'   \item{poll_result}{Result of poll_drive() if poll = TRUE, otherwise NULL}
 #' @export
 download_hls <- function(aoi,
@@ -665,6 +738,7 @@ download_hls <- function(aoi,
                          study_area = NULL,
                          scale = 30,
                          focal_radius = 10,
+                         max_months = 2,
                          poll = TRUE,
                          poll_interval = 30,
                          timeout = 300) {
@@ -680,8 +754,9 @@ download_hls <- function(aoi,
   band_names  <- c("B4", "B3", "B2", "B8", "Fmask")
   band_rename <- c("red", "green", "blue", "nir", "Fmask")
 
-  n_submitted <- 0
-  skipped     <- data.frame(year = integer(), month = integer())
+  n_submitted  <- 0
+  skipped      <- data.frame(year = integer(), month = integer())
+  interpolated <- data.frame(year = integer(), month = integer())
 
   cat(sprintf("\n--- HLS Imagery Export: %d year(s) x %d month(s) = %d combinations ---\n\n",
               length(years), length(months), length(years) * length(months)))
@@ -692,7 +767,7 @@ download_hls <- function(aoi,
       start_date <- sprintf("%d-%02d-01", y, mo)
       end_date   <- as.character(lubridate::ceiling_date(as.Date(start_date), unit = "month"))
 
-      # Raw collection for fallback
+      # Raw collection
       hls_ic_raw <- rgee::ee$ImageCollection("NASA/HLS/HLSS30/v002")$
         filterDate(start_date, end_date)$
         filterBounds(ee_aoi)$
@@ -708,22 +783,58 @@ download_hls <- function(aoi,
 
       cat(sprintf("Year %d, Month %02d: %d images found\n", y, mo, n))
 
-      # Build median composites at each masking level
-      median_full       <- hls_ic_raw$map(.maskHLS_full)$select("red","green","blue","nir")$median()$clip(ee_aoi)
-      median_no_aot     <- hls_ic_raw$map(.maskHLS_no_aot)$select("red","green","blue","nir")$median()$clip(ee_aoi)
-      median_no_adj     <- hls_ic_raw$map(.maskHLS_no_adjacent)$select("red","green","blue","nir")$median()$clip(ee_aoi)
-      median_cloud_only <- hls_ic_raw$map(.maskHLS_cloud_only)$select("red","green","blue","nir")$median()$clip(ee_aoi)
-      median_raw        <- hls_ic_raw$select("red","green","blue","nir")$median()$clip(ee_aoi)
+      # Level 1: Full mask median
+      median_full <- hls_ic_raw$
+        map(.maskHLS_full)$
+        select("red", "green", "blue", "nir")$
+        map(.float32_cast)$
+        median()$
+        clip(ee_aoi)
 
-      # Focal median gap fill on full mask
-      median_full_filled <- .focalFillMasked(median_full, radius = focal_radius)
+      # Level 2: No AOT mask fills gaps
+      median_no_aot <- hls_ic_raw$
+        map(.maskHLS_no_aot)$
+        select("red", "green", "blue", "nir")$
+        map(.float32_cast)$
+        median()$
+        clip(ee_aoi)
 
-      # Hierarchical fallback fill
-      normal_img <- median_full_filled$
-        unmask(median_no_aot)$
-        unmask(median_no_adj)$
-        unmask(median_cloud_only)$
-        unmask(median_raw)
+      combined <- median_full$unmask(median_no_aot)
+
+      # Check for remaining gaps
+      any_masked_result <- combined$select("red")$mask()$Not()$
+        reduceRegion(
+          reducer   = rgee::ee$Reducer$anyNonZero(),
+          geometry  = ee_aoi,
+          scale     = scale,
+          maxPixels = 1e13
+        )$getInfo()
+
+      needs_interp <- isTRUE(as.logical(unlist(any_masked_result)[1]))
+
+      if (needs_interp) {
+        cat(sprintf("  Gaps detected, applying temporal interpolation (up to %d months either side)...\n",
+                    max_months))
+
+        target_date <- sprintf("%d-%02d-15", y, mo)
+
+        temporal_fill <- .temporal_weighted_fill(
+          ee_aoi      = ee_aoi,
+          target_date = target_date,
+          band_names  = band_names,
+          band_rename = band_rename,
+          max_months  = max_months
+        )
+
+        if (!is.null(temporal_fill)) {
+          combined <- combined$unmask(temporal_fill$clip(ee_aoi))
+        }
+
+        interpolated <- rbind(interpolated, data.frame(year = y, month = mo))
+      }
+
+      # Final fallback: focal median
+      combined <- .focalFillMasked(combined, radius = focal_radius)
 
       # Build file name
       fname <- if (!is.null(study_area)) {
@@ -733,7 +844,7 @@ download_hls <- function(aoi,
       }
 
       task <- rgee::ee$batch$Export$image$toDrive(
-        image          = normal_img,
+        image          = combined,
         description    = fname,
         folder         = "GEE_Exports",
         fileNamePrefix = fname,
@@ -749,7 +860,8 @@ download_hls <- function(aoi,
     }
   }
 
-  cat(sprintf("\n%d task(s) submitted. %d combo(s) skipped.\n", n_submitted, nrow(skipped)))
+  cat(sprintf("\n%d task(s) submitted. %d combo(s) skipped. %d combo(s) used temporal interpolation.\n",
+              n_submitted, nrow(skipped), nrow(interpolated)))
 
   # Poll and download
   poll_result <- NULL
@@ -769,9 +881,10 @@ download_hls <- function(aoi,
   }
 
   return(invisible(list(
-    submitted   = n_submitted,
-    skipped     = skipped,
-    poll_result = poll_result
+    submitted    = n_submitted,
+    skipped      = skipped,
+    interpolated = interpolated,
+    poll_result  = poll_result
   )))
 }
 
@@ -1043,14 +1156,25 @@ compute_albedo <- function(years,
     s_rast <- terra::rast(hls_match)
     m_rast <- terra::rast(modis_match)
 
+    # Rescale each band to 0-1
+
+    if(any(terra::values(s_rast) > 1 | terra::values(s_rast) < 0)){
+
+      s_rast <- terra::sapp(s_rast, function(x) {
+        rng <- range(terra::values(x), na.rm = TRUE)
+        (x - rng[1]) / (rng[2] - rng[1])
+      })
+
+    }
+
     # Build rgb and cir stacks
     rgb <- c(s_rast$red, s_rast$green, s_rast$blue)
     cir <- c(s_rast$nir, s_rast$red, s_rast$green)
     rm(s_rast)
 
     # Clamp and scale to 0-250
-    rgb <- terra::clamp(rgb, lower = 0, upper = 1) * 250
-    cir <- terra::clamp(cir, lower = 0, upper = 1) * 250
+    rgb <- rgb * 250
+    cir <- cir * 250
 
     # Compute photographic albedo
     albphoto <- microclimdata::albedo_fromaerial(

@@ -12,6 +12,7 @@ download_hls(
   study_area = NULL,
   scale = 30,
   focal_radius = 10,
+  max_months = 2,
   poll = TRUE,
   poll_interval = 30,
   timeout = 300
@@ -35,6 +36,9 @@ If provided, used as a prefix in output file names}
 \item{focal_radius}{Kernel radius in pixels for focal median gap filling.
 Default is 10 (21x21 pixel window)}
 
+\item{max_months}{Maximum number of months to search either side of target
+month for temporal interpolation. Default is 2}
+
 \item{poll}{Logical. Whether to poll Google Drive and download files after
 all tasks are submitted. Default is TRUE}
 
@@ -46,21 +50,23 @@ all tasks are submitted. Default is TRUE}
 Invisibly returns a named list with elements:
 \item{submitted}{Number of GEE tasks successfully submitted}
 \item{skipped}{A data frame of skipped year/month combos}
+\item{interpolated}{A data frame of year/month combos where temporal interpolation was applied}
 \item{poll_result}{Result of poll_drive() if poll = TRUE, otherwise NULL}
 }
 \description{
-Iterates over all combinations of years and months, applying a hierarchical
-cloud/shadow masking strategy to HLS S30 Sentinel-2 imagery before exporting
-monthly median composites from GEE to Google Drive, then optionally
-downloading them locally using poll_drive().
+Iterates over all combinations of years and months, applying a two-level
+cloud/shadow masking strategy to HLS S30 Sentinel-2 imagery. If gaps remain
+after masking, temporally adjacent images (up to 2 months either side) are
+used to fill gaps via inverse distance weighted mean, weighted by day
+distance from the center of the target month. A focal median is applied
+as a final fallback for any remaining gaps.
 }
 \details{
-The masking hierarchy applied is:
+The masking strategy applied is:
 \enumerate{
-\item Full mask (cloud, adjacent, shadow, high AOT) + focal median gap fill
-\item Drop high AOT requirement
-\item Drop adjacent cloud/shadow requirement
-\item Cloud only mask
-\item Raw unmasked median
+\item Full mask (cloud, adjacent, shadow, high AOT) median composite
+\item No AOT mask median fills remaining gaps
+\item Temporally weighted mean from surrounding months fills remaining gaps
+\item Focal median fills any final remaining gaps
 }
 }
