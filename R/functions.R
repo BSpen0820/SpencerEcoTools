@@ -32,7 +32,7 @@ define_aoi <- function(aoi,
 
   # Use input CRS if none specified
   if (is.null(crs_epsg)) {
-    crs_epsg <- sf::st_crs(aoi)$input
+    crs_epsg <- paste0("EPSG:", sf::st_crs(aoi)$epsg)
   }
 
   range_buf <- sf::st_buffer(aoi, dist = buffer_dist)
@@ -1210,6 +1210,185 @@ compute_albedo <- function(years,
 
     cat(sprintf("  Saved: %s\n", out_name))
     log$status[i] <- "success"
+  }
+
+  cat(sprintf("\nDone. %d/%d combinations processed successfully.\n",
+              sum(log$status == "success", na.rm = TRUE), nrow(log)))
+
+  return(invisible(log))
+}
+
+#' Compute Leaf and Ground Reflectance from LAI, Albedo and Land Cover
+#'
+#' Iterates over all combinations of years and months, computing leaf and
+#' ground reflectance using \code{microclimdata::reflectance_calc()}. Land
+#' cover based x values are computed annually and reused across all months
+#' within a year. LAI and albedo are processed monthly.
+#'
+#' @param years Integer vector of years to process e.g. c(2020, 2021)
+#' @param months Integer vector of months to process e.g. 3:8
+#' @param lc_dir Directory containing annual land cover files
+#' @param lai_dir Directory containing fine resolution LAI files
+#' @param alb_dir Directory containing HLS albedo files
+#' @param out_dir_lref Directory to save leaf reflectance output files
+#' @param out_dir_gref Directory to save ground reflectance output files
+#' @param xcalc_dir Optional directory to save annual x calculation rasters.
+#'   If NULL x rasters are kept in memory only. Default is NULL
+#' @param study_area Optional character string identifying the study area e.g. "GMU1".
+#'   If provided, used to filter input files and as a prefix in output file names
+#' @param lctype Land cover classification type passed to \code{microclimdata::x_calc()}.
+#'   Must be either "CORINE" or "ESA". Default is "CORINE"
+#'
+#' @return Invisibly returns a data frame logging the status of each
+#'   year/month combination processed
+#' @export
+compute_reflectance <- function(years,
+                                months,
+                                lc_dir,
+                                lai_dir,
+                                alb_dir,
+                                out_dir_lref,
+                                out_dir_gref,
+                                xcalc_dir = NULL,
+                                study_area = NULL,
+                                lctype = "CORINE") {
+
+  # Validate lctype
+  if (!lctype %in% c("CORINE", "ESA")) {
+    stop("lctype must be either 'CORINE' or 'ESA'")
+  }
+
+  # Create output directories
+  dir.create(out_dir_lref, recursive = TRUE, showWarnings = FALSE)
+  dir.create(out_dir_gref, recursive = TRUE, showWarnings = FALSE)
+  if (!is.null(xcalc_dir)) dir.create(xcalc_dir, recursive = TRUE, showWarnings = FALSE)
+
+  # Helper to extract YYYY from file names
+  extract_year <- function(files) {
+    matches <- regmatches(files, regexpr("[0-9]{4}", files))
+    data.frame(file = files, year = as.integer(matches), stringsAsFactors = FALSE)
+  }
+
+  # Helper to extract YYYY_MM from file names
+  extract_ym <- function(files) {
+    matches <- regmatches(files, regexpr("[0-9]{4}_[0-9]{2}", files))
+    data.frame(file = files, ym = matches, stringsAsFactors = FALSE)
+  }
+
+  # List input files
+  lc_files  <- list.files(lc_dir,  pattern = "\\.tif$", full.names = TRUE)
+  lai_files <- list.files(lai_dir, pattern = "\\.tif$", full.names = TRUE)
+  alb_files <- list.files(alb_dir, pattern = "\\.tif$", full.names = TRUE)
+
+  # Optionally filter by study area
+  if (!is.null(study_area)) {
+    lc_files  <- lc_files[grepl(study_area, lc_files)]
+    lai_files <- lai_files[grepl(study_area, lai_files)]
+    alb_files <- alb_files[grepl(study_area, alb_files)]
+  }
+
+  lc_df  <- extract_year(lc_files)
+  lai_df <- extract_ym(lai_files)
+  alb_df <- extract_ym(alb_files)
+
+  # Build log
+  log <- expand.grid(year = years, month = months)
+  log$ym     <- sprintf("%d_%02d", log$year, log$month)
+  log$status <- NA_character_
+
+  cat(sprintf("\n--- Reflectance Computation: %d year(s) x %d month(s) = %d combinations ---\n\n",
+              length(years), length(months), nrow(log)))
+
+  for (y in years) {
+
+    cat(sprintf("Year %d: computing x values from land cover...\n", y))
+
+    # Match land cover file for this year
+    lc_match <- lc_df$file[lc_df$year == y]
+    if (length(lc_match) == 0) stop(sprintf("Land cover file not found for year %d in:\n  %s", y, lc_dir))
+    if (length(lc_match) > 1) stop(sprintf("Multiple land cover files found for year %d in:\n  %s", y, lc_dir))
+
+    lc <- terra::rast(lc_match)
+    x  <- microclimdata::x_calc(lc, lctype = lctype)
+
+    # Use month 3 LAI as template for common extent and resolution
+    ref_ym       <- sprintf("%d_%02d", y, 3)
+    lai_ref      <- lai_df$file[lai_df$ym == ref_ym]
+    if (length(lai_ref) == 0) stop(sprintf("Reference LAI (month 03) not found for year %d", y))
+
+    lai_template <- terra::rast(lai_ref)
+    com_ext      <- terra::intersect(terra::ext(lai_template), terra::ext(x))
+
+    x <- terra::crop(x, com_ext)
+    x <- terra::resample(x, lai_template)
+    rm(lai_template)
+
+    # Optionally save annual x raster
+    if (!is.null(xcalc_dir)) {
+      x_out_name <- if (!is.null(study_area)) {
+        sprintf("x_calc_%s_%d.tif", study_area, y)
+      } else {
+        sprintf("x_calc_%d.tif", y)
+      }
+      terra::writeRaster(x, file.path(xcalc_dir, x_out_name), overwrite = TRUE)
+      cat(sprintf("  Saved: %s\n", x_out_name))
+    }
+
+    for (m in months) {
+
+      ym <- sprintf("%d_%02d", y, m)
+      cat(sprintf("  Processing month: %02d\n", m))
+
+      # Match LAI and albedo files
+      lai_match <- lai_df$file[lai_df$ym == ym]
+      alb_match <- alb_df$file[alb_df$ym == ym]
+
+      if (length(lai_match) == 0) stop(sprintf("LAI file not found for %s in:\n  %s", ym, lai_dir))
+      if (length(alb_match) == 0) stop(sprintf("Albedo file not found for %s in:\n  %s", ym, alb_dir))
+      if (length(lai_match) > 1) stop(sprintf("Multiple LAI files found for %s in:\n  %s", ym, lai_dir))
+      if (length(alb_match) > 1) stop(sprintf("Multiple albedo files found for %s in:\n  %s", ym, alb_dir))
+
+      lai <- terra::rast(lai_match)
+      alb <- terra::rast(alb_match)
+
+      # Crop to common extent
+      lai <- terra::crop(lai, com_ext)
+      alb <- terra::crop(alb, com_ext)
+
+      # Validate matching extent and resolution before combining
+      if (!isTRUE(all.equal(terra::ext(x), terra::ext(lai)))  ||
+          !isTRUE(all.equal(terra::ext(x), terra::ext(alb)))  ||
+          !isTRUE(all.equal(terra::res(x), terra::res(lai)))  ||
+          !isTRUE(all.equal(terra::res(x), terra::res(alb)))) {
+        stop(sprintf(
+          "Extent or resolution of x, alb, and lai did not match for %s. Check preprocessing steps.", ym
+        ))
+      }
+
+      # Compute reflectance
+      refldata <- microclimdata::reflectance_calc(alb, lai, x, plotprogress = FALSE)
+
+      # Build output file names
+      lref_name <- if (!is.null(study_area)) {
+        sprintf("LF_Refl_%s_%s.tif", study_area, ym)
+      } else {
+        sprintf("LF_Refl_%s.tif", ym)
+      }
+
+      gref_name <- if (!is.null(study_area)) {
+        sprintf("GF_Refl_%s_%s.tif", study_area, ym)
+      } else {
+        sprintf("GF_Refl_%s.tif", ym)
+      }
+
+      terra::writeRaster(refldata$lref, file.path(out_dir_lref, lref_name), overwrite = TRUE)
+      terra::writeRaster(refldata$gref, file.path(out_dir_gref, gref_name), overwrite = TRUE)
+
+      cat(sprintf("    Saved: %s\n", lref_name))
+      cat(sprintf("    Saved: %s\n", gref_name))
+
+      log$status[log$ym == ym] <- "success"
+    }
   }
 
   cat(sprintf("\nDone. %d/%d combinations processed successfully.\n",
