@@ -11,17 +11,17 @@ License: MIT + file LICENSE
 Encoding: UTF-8
 Roxygen: list(markdown = TRUE)
 Imports:
-    tidyverse,
-    terra,
+    rgee,
     sf,
-    readr,
+    terra,
     googledrive,
     microclimdata,
-    httr,
-    aws.s3,
     reticulate,
-    geodata,
-    rgee
+    lubridate,
+    future,
+    future.apply,
+    solaR,
+    zoo
 Depends: 
     R (>= 3.5)
 LazyData: true

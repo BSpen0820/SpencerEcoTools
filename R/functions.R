@@ -1396,3 +1396,578 @@ compute_reflectance <- function(years,
 
   return(invisible(log))
 }
+
+#' Download and Downscale Soil Data
+#'
+#' Downloads coarse resolution soil data using \code{microclimdata::soildata_download()}
+#' and downscales it to fine resolution using \code{microclimdata::soildata_downscale()}.
+#' Requires a Digital Elevation Model and a single static land cover raster.
+#'
+#' @param dtm A SpatRaster or file path to a Digital Elevation Model raster
+#' @param lc A SpatRaster or file path to a land cover raster. Should represent
+#'   a single static year
+#' @param out_dir Directory to save soil data outputs
+#' @param study_area Optional character string identifying the study area e.g. "GMU1".
+#'   If provided, used as a prefix in output file names
+#' @param water Integer. CORINE or ESA land cover code for water bodies passed
+#'   to \code{soildata_downscale()}. Default is 512 for CORINE water class
+#' @param delete_tmp Logical. Whether to delete temporary files after processing.
+#'   Default is TRUE
+#'
+#' @return Invisibly returns a named list with elements:
+#'   \item{coarse}{The coarse resolution soil SpatRaster}
+#'   \item{fine}{The fine resolution soil SpatRaster}
+#' @export
+download_soil <- function(dtm,
+                          lc,
+                          out_dir,
+                          study_area = NULL,
+                          water = 512,
+                          delete_tmp = TRUE) {
+
+  # Accept file path or SpatRaster for dtm
+  if (is.character(dtm)) {
+    dtm <- terra::rast(dtm)
+  } else if (!inherits(dtm, "SpatRaster")) {
+    stop("dtm must be a SpatRaster or a file path to a raster file")
+  }
+
+  # Accept file path or SpatRaster for lc
+  if (is.character(lc)) {
+    lc <- terra::rast(lc)
+  } else if (!inherits(lc, "SpatRaster")) {
+    stop("lc must be a SpatRaster or a file path to a raster file")
+  }
+
+  # Create output and temp directories
+  dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+  tmp_dir <- file.path(out_dir, "tmp")
+  dir.create(tmp_dir, recursive = TRUE, showWarnings = FALSE)
+
+  # Project DTM to WGS84 for soildata_download
+  dtm_wgs84 <- terra::project(dtm, "epsg:4326")
+
+  # Download coarse soil data
+  cat("Downloading coarse soil data...\n")
+  soildata <- microclimdata::soildata_download(
+    dtm_wgs84,
+    pathdir     = tmp_dir,
+    deletefiles = !delete_tmp
+  )
+
+  # Build coarse output file name
+  coarse_name <- if (!is.null(study_area)) {
+    sprintf("SoilData_Coarse_%s.tif", study_area)
+  } else {
+    "SoilData_Coarse.tif"
+  }
+
+  terra::writeRaster(soildata, file.path(out_dir, coarse_name), overwrite = TRUE)
+  cat(sprintf("  Saved: %s\n", coarse_name))
+
+  # Project land cover to WGS84 for soildata_downscale
+  lc_wgs84 <- terra::project(lc, "epsg:4326")
+
+  # Downscale soil data
+  cat("Downscaling soil data...\n")
+  soildata_fine <- microclimdata::soildata_downscale(soildata, lc_wgs84, water = water)
+
+  # Reproject back to original DTM CRS
+  soildata_fine <- terra::project(soildata_fine, dtm)
+
+  # Build fine output file name
+  fine_name <- if (!is.null(study_area)) {
+    sprintf("SoilData_Fine_%s.tif", study_area)
+  } else {
+    "SoilData_Fine.tif"
+  }
+
+  terra::writeRaster(soildata_fine, file.path(out_dir, fine_name), overwrite = TRUE)
+  cat(sprintf("  Saved: %s\n", fine_name))
+
+  # Clean up temp directory
+  if (delete_tmp) {
+    unlink(tmp_dir, recursive = TRUE)
+    cat("  Temporary files removed.\n")
+  }
+
+  return(invisible(list(
+    coarse = soildata,
+    fine   = soildata_fine
+  )))
+}
+
+#' Download NOAA AORC Climate Data
+#'
+#' Downloads hourly AORC v1.1 climate data from NOAA's S3 bucket for a given
+#' area of interest and time period. Data is downloaded variable by variable
+#' to limit RAM usage and saved as NetCDF files organized by year and month.
+#' Optionally reprojects downloaded files to match the CRS of a spatial object.
+#'
+#' @details Requires the following Python packages to be installed in your
+#'   conda environment: xarray, s3fs, zarr, netCDF4. These can be installed
+#'   via conda: \code{conda install -c conda-forge xarray s3fs zarr netCDF4}
+#'   If not found, the function will attempt to install them via
+#'   \code{reticulate::py_install()}.
+#'
+#'   If \code{reproject = TRUE}, reprojection is applied after all downloads
+#'   are complete and will add significant processing time depending on the
+#'   number of variables and months processed. Parallelization via
+#'   \code{future::plan()} is recommended for large downloads.
+#'
+#' @param aoi A SpatRaster, SpatVector, sf object, or named list returned by
+#'   \code{define_aoi()}. Used to derive the bounding box for download
+#' @param years Integer vector of years to process e.g. c(2020, 2021)
+#' @param months Integer vector of months to process e.g. 3:8
+#' @param out_dir Base directory to save downloaded AORC files. Files are
+#'   organized as \code{out_dir/study_area/year/month/} if study_area is
+#'   provided, otherwise \code{out_dir/year/month/}
+#' @param study_area Optional character string identifying the study area e.g. "GMU1".
+#'   If provided, used as a prefix in output file names and added to directory
+#'   structure
+#' @param overwrite Logical. Whether to overwrite existing files. If FALSE
+#'   existing files are skipped allowing the function to resume interrupted
+#'   downloads. Default is FALSE
+#' @param reproject Logical. Whether to reproject downloaded files to match
+#'   the CRS of \code{aoi}. Default is FALSE
+#' @param workers Integer. Number of parallel workers for month-level
+#'   parallelization via \code{future.apply}. Default is 1 (sequential)
+#' @param python_path Optional path to Python executable or conda environment.
+#'   If NULL uses the currently configured Python environment. Default is NULL
+#'
+#' @return Invisibly returns a data frame logging the status of each
+#'   year/month/variable combination processed
+#' @export
+download_aorc <- function(aoi,
+                          years,
+                          months,
+                          out_dir,
+                          study_area = NULL,
+                          overwrite = FALSE,
+                          reproject = FALSE,
+                          workers = 1,
+                          python_path = NULL) {
+
+  # Optionally set Python environment
+  if (!is.null(python_path)) {
+    reticulate::use_python(python_path, required = TRUE)
+  }
+
+  # Check and install required Python packages
+  required_pkgs <- c("xarray", "s3fs", "zarr", "netCDF4")
+  missing_pkgs  <- required_pkgs[!sapply(required_pkgs, reticulate::py_module_available)]
+
+  if (length(missing_pkgs) > 0) {
+    message("Installing missing Python packages: ", paste(missing_pkgs, collapse = ", "))
+    reticulate::py_install(missing_pkgs)
+  }
+
+  # Extract extent and CRS from aoi
+  if (is.list(aoi) && all(c("geometry", "crs") %in% names(aoi))) {
+    aoi_crs   <- aoi$crs
+    aoi_sf    <- rgee::ee_as_sf(aoi$geometry)
+    ext_wgs84 <- sf::st_bbox(sf::st_transform(aoi_sf, 4326))
+  } else if (inherits(aoi, "SpatRaster") || inherits(aoi, "SpatVector")) {
+    aoi_crs   <- terra::crs(aoi)
+    ext_wgs84 <- terra::ext(terra::project(aoi, "epsg:4326"))
+  } else if (inherits(aoi, "sf") || inherits(aoi, "sfc")) {
+    aoi_crs   <- sf::st_crs(aoi)$wkt
+    ext_wgs84 <- sf::st_bbox(sf::st_transform(aoi, 4326))
+  } else {
+    stop("aoi must be a SpatRaster, SpatVector, sf object, or named list from define_aoi()")
+  }
+
+  lon_min <- as.numeric(ext_wgs84[1])
+  lon_max <- as.numeric(ext_wgs84[3])
+  lat_min <- as.numeric(ext_wgs84[2])
+  lat_max <- as.numeric(ext_wgs84[4])
+
+  dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+
+  # Build list of all year/month combos
+  combos <- expand.grid(year = years, month = months)
+
+  cat(sprintf("\n--- AORC Download: %d year(s) x %d month(s) ---\n\n",
+              length(years), length(months)))
+
+  # Set up parallel plan
+  if (workers > 1) {
+    future::plan(future::multisession, workers = workers)
+    on.exit(future::plan(future::sequential), add = TRUE)
+  }
+
+  # Process each year/month combo
+  results <- future.apply::future_lapply(seq_len(nrow(combos)), function(i) {
+
+    y <- combos$year[i]
+    m <- combos$month[i]
+
+    combo_log <- data.frame(
+      year     = integer(),
+      month    = integer(),
+      variable = character(),
+      status   = character(),
+      stringsAsFactors = FALSE
+    )
+
+    # Set Python environment in each worker
+    if (!is.null(python_path)) {
+      reticulate::use_python(python_path, required = TRUE)
+    }
+
+    # Re-import Python modules in each worker
+    xr       <- reticulate::import("xarray")
+    builtins <- reticulate::import("builtins")
+
+    # Build month directory
+    month_dir <- if (!is.null(study_area)) {
+      file.path(out_dir, study_area, y, m)
+    } else {
+      file.path(out_dir, y, m)
+    }
+    dir.create(month_dir, recursive = TRUE, showWarnings = FALSE)
+
+    start <- sprintf("%d-%02d-01", y, m)
+    end   <- as.character(lubridate::ceiling_date(as.Date(start), unit = "month") - 1)
+
+    # Open yearly Zarr store
+    ds_url <- sprintf("https://noaa-nws-aorc-v1-1-1km.s3.amazonaws.com/%d.zarr", y)
+    message(sprintf("Opening %s", ds_url))
+
+    ds <- tryCatch(
+      xr$open_zarr(ds_url, consolidated = TRUE),
+      error = function(e) {
+        message(sprintf("Failed to open Zarr store for year %d: %s", y, e$message))
+        return(NULL)
+      }
+    )
+
+    if (is.null(ds)) {
+      combo_log <- rbind(combo_log, data.frame(
+        year = y, month = m, variable = "ALL",
+        status = "failed - could not open zarr",
+        stringsAsFactors = FALSE
+      ))
+      return(combo_log)
+    }
+
+    vars <- reticulate::py_to_r(builtins$list(ds$data_vars$keys()))
+
+    for (varname in vars) {
+
+      # Build output file name
+      out_file <- if (!is.null(study_area)) {
+        file.path(month_dir, sprintf("AORC_%s_%d_%02d_%s.nc", study_area, y, m, varname))
+      } else {
+        file.path(month_dir, sprintf("AORC_%d_%02d_%s.nc", y, m, varname))
+      }
+
+      if (file.exists(out_file) && !overwrite) {
+        message(sprintf("  Skipping %s (already exists)", basename(out_file)))
+        combo_log <- rbind(combo_log, data.frame(
+          year = y, month = m, variable = varname, status = "skipped",
+          stringsAsFactors = FALSE
+        ))
+        next
+      }
+
+      message(sprintf("  Year %d, Month %02d, Variable: %s", y, m, varname))
+
+      tryCatch({
+        var        <- ds[[varname]]
+        time_slice <- builtins$slice(start, end)
+        lat_slice  <- builtins$slice(lat_min, lat_max)
+        lon_slice  <- builtins$slice(lon_min, lon_max)
+
+        sub_var <- var$sel(
+          time      = time_slice,
+          longitude = lon_slice,
+          latitude  = lat_slice
+        )
+
+        sub_var$to_netcdf(out_file)
+        message(sprintf("    Saved %s", basename(out_file)))
+
+        combo_log <- rbind(combo_log, data.frame(
+          year = y, month = m, variable = varname, status = "success",
+          stringsAsFactors = FALSE
+        ))
+      },
+      error = function(e) {
+        message(sprintf("    Failed %s: %s", basename(out_file), e$message))
+        combo_log <<- rbind(combo_log, data.frame(
+          year = y, month = m, variable = varname,
+          status = paste("failed -", e$message),
+          stringsAsFactors = FALSE
+        ))
+      })
+    }
+
+    return(combo_log)
+  }, future.seed = TRUE)
+
+  # Combine logs from all workers
+  log <- do.call(rbind, results)
+
+  # Reproject if requested
+  if (reproject) {
+    cat("\nReprojecting downloaded files to match AOI CRS...\n")
+    cat("Note: reprojection may add significant processing time.\n\n")
+
+    s_dir <- if (!is.null(study_area)) {
+      file.path(out_dir, study_area)
+    } else {
+      file.path(out_dir)
+    }
+
+    nc_files <- list.files(s_dir, pattern = "\\.nc$",
+                           full.names = TRUE, recursive = TRUE)
+
+    reproject_results <- future.apply::future_lapply(nc_files, function(f) {
+      tryCatch({
+        r           <- terra::rast(f)
+        r_projected <- terra::project(r, aoi_crs)
+        terra::writeCDF(r_projected, f, overwrite = TRUE)
+        message(sprintf("  Reprojected: %s", basename(f)))
+        return(data.frame(file = f, status = "reprojected",
+                          stringsAsFactors = FALSE))
+      },
+      error = function(e) {
+        message(sprintf("  Failed to reproject %s: %s", basename(f), e$message))
+        return(data.frame(file = f, status = paste("failed -", e$message),
+                          stringsAsFactors = FALSE))
+      })
+    }, future.seed = TRUE)
+
+    reproject_log <- do.call(rbind, reproject_results)
+    cat(sprintf("Reprojection complete. %d/%d files reprojected successfully.\n",
+                sum(reproject_log$status == "reprojected"), nrow(reproject_log)))
+  }
+
+  # Summary
+  n_success <- sum(log$status == "success",  na.rm = TRUE)
+  n_skipped <- sum(log$status == "skipped",  na.rm = TRUE)
+  n_failed  <- sum(grepl("failed", log$status), na.rm = TRUE)
+
+  cat(sprintf("\nDone. %d downloaded, %d skipped, %d failed.\n",
+              n_success, n_skipped, n_failed))
+
+  if (n_failed > 0) {
+    cat("Failed downloads:\n")
+    print(log[grepl("failed", log$status), ])
+  }
+
+  return(invisible(log))
+}
+
+#' Estimate Diffuse Solar Radiation from AORC Shortwave Radiation
+#'
+#' Estimates hourly diffuse solar radiation from AORC downward shortwave
+#' radiation (DSWRF) using the clearness index method. Solar geometry is
+#' computed per latitude using the Michalsky method via the solaR package.
+#' Timestamps are converted to mean solar time using the centroid longitude
+#' of the AORC raster via \code{solaR::local2Solar()} to ensure correct
+#' alignment of solar position calculations with local sunrise/sunset.
+#' Output files are saved alongside their corresponding AORC DSWRF files.
+#'
+#' @details The diffuse fraction is estimated using the Erbs et al. (1982)
+#'   piecewise model:
+#'   \itemize{
+#'     \item k <= 0: f = 0 (night)
+#'     \item 0 < k <= 0.22: f = 1 - 0.09k
+#'     \item 0.22 < k <= 0.80: f = 0.9511 - 0.1604k + 4.388k^2 - 16.638k^3 + 12.336k^4
+#'     \item k > 0.80: f = 0.165
+#'   }
+#'   Requires the \code{solaR} package available on CRAN and GitHub.
+#'
+#' @param years Integer vector of years to process e.g. c(2020, 2021)
+#' @param months Integer vector of months to process e.g. 3:8
+#' @param base_dir Base directory containing AORC data organized as
+#'   \code{base_dir/study_area/year/month/} or \code{base_dir/year/month/}
+#' @param study_area Optional character string identifying the study area e.g. "GMU1".
+#'   If provided, used to locate input files and prefix output file names
+#' @param workers Integer. Number of parallel workers via \code{future.apply}.
+#'   Default is 1 (sequential)
+#'
+#' @return Invisibly returns a data frame logging the status of each
+#'   year/month combination processed
+#' @export
+estimate_diffuse_rad <- function(years,
+                                 months,
+                                 base_dir,
+                                 study_area = NULL,
+                                 workers = 1) {
+
+  # Build list of all year/month combos
+  combos <- expand.grid(year = years, month = months)
+
+  cat(sprintf("\n--- Diffuse Radiation Estimation: %d year(s) x %d month(s) = %d combinations ---\n\n",
+              length(years), length(months), nrow(combos)))
+
+  # Set up parallel plan
+  if (workers > 1) {
+    future::plan(future::multisession, workers = workers)
+    on.exit(future::plan(future::sequential), add = TRUE)
+  }
+
+  results <- future.apply::future_lapply(seq_len(nrow(combos)), function(i) {
+
+    y <- combos$year[i]
+    m <- combos$month[i]
+
+    cat(sprintf("Working on %d %02d\n", y, m))
+
+    # Build input directory
+    month_dir <- if (!is.null(study_area)) {
+      file.path(base_dir, study_area, y, m)
+    } else {
+      file.path(base_dir, y, m)
+    }
+
+    # Build DSWRF file path
+    dswrf_file <- if (!is.null(study_area)) {
+      file.path(month_dir, sprintf("AORC_%s_%d_%02d_DSWRF_surface.nc", study_area, y, m))
+    } else {
+      file.path(month_dir, sprintf("AORC_%d_%02d_DSWRF_surface.nc", y, m))
+    }
+
+    # Flag missing files and continue
+    if (!file.exists(dswrf_file)) {
+      warning(sprintf("DSWRF file not found for %d-%02d, skipping:\n  %s", y, m, dswrf_file))
+      return(data.frame(year = y, month = m, status = "skipped - file not found",
+                        stringsAsFactors = FALSE))
+    }
+
+    tryCatch({
+
+      # Save and restore system timezone to avoid side effects
+      old_tz <- Sys.getenv("TZ")
+      Sys.setenv(TZ = "UTC")
+      on.exit(Sys.setenv(TZ = old_tz), add = TRUE)
+
+      AORC <- terra::rast(dswrf_file)
+
+      ## If not WGS84, reproject to WGS84 for solar geometry calculations
+      aorc_crs <- terra::crs(AORC, describe = TRUE)$code
+      if (!is.na(aorc_crs) && aorc_crs != "4326") {
+        AORC_wgs84 <- terra::project(AORC, "epsg:4326")
+      } else {
+        AORC_wgs84 <- AORC
+      }
+
+      ## Time handling using WGS84 version for correct coordinates
+      AORC_time <- terra::time(AORC)
+      attr(AORC_time, "tzone") <- "UTC"
+      BTi_local <- lubridate::with_tz(AORC_time, "America/Denver")
+
+      ## Extract centroid longitude from WGS84 raster
+      lon <- terra::xFromCol(AORC_wgs84, col = round(terra::ncol(AORC_wgs84) / 2))
+
+      ## Convert to mean solar time using centroid longitude
+      BTi <- solaR::local2Solar(BTi_local, lon = lon)
+
+      ## Daily sequence for fSolD in solar time
+      BTd <- as.POSIXct(unique(lubridate::date(BTi)), tz = "UTC")
+
+      ## Latitude per cell from WGS84 raster
+      coords      <- terra::crds(AORC_wgs84, df = FALSE)
+      lat_vals    <- coords[, 2]
+      unique_lats <- sort(unique(round(lat_vals, 4)))
+      lat_index   <- match(round(lat_vals, 4), unique_lats)
+
+      ## Bo0 matrix [lat x time]
+      n_lat  <- length(unique_lats)
+      n_time <- length(BTi)
+      Bo0_mat <- matrix(NA_real_, n_lat, n_time)
+
+      for (j in seq_len(n_lat)) {
+        solD <- solaR::fSolD(
+          lat    = unique_lats[j],
+          BTd    = BTd,
+          method = "michalsky"
+        )
+        solI <- solaR::fSolI(
+          solD       = solD,
+          BTi        = BTi,
+          sample     = "hour",
+          EoT        = TRUE,
+          keep.night = TRUE
+        )
+        Bo0_mat[j, ] <- zoo::coredata(solI$Bo0)
+      }
+
+      ## Build Bo0 raster stack
+      Bo_rast <- terra::rast(AORC)
+      terra::values(Bo_rast) <- NA_real_
+      for (i in seq_len(n_time)) {
+        terra::values(Bo_rast[[i]]) <- Bo0_mat[lat_index, i]
+      }
+
+      ## Clearness index
+      k.out <- AORC / Bo_rast
+      k.out[is.na(k.out)] <- 0
+
+      ## Diffuse fraction function
+      Diff.frac.calc <- function(k) {
+        f <- numeric(length(k))
+        f[k <= 0]               <- 0
+        f[k > 0 & k <= 0.22]   <- 1 - 0.09 * k[k > 0 & k <= 0.22]
+        f[k > 0.22 & k <= 0.8] <- 0.9511 - 0.1604 * k[k > 0.22 & k <= 0.8] +
+          4.388  * k[k > 0.22 & k <= 0.8]^2 -
+          16.638 * k[k > 0.22 & k <= 0.8]^3 +
+          12.336 * k[k > 0.22 & k <= 0.8]^4
+        f[k > 0.8]              <- 0.165
+        f <- pmin(pmax(f, 0), 1)
+        return(f)
+      }
+
+      ## Apply diffuse fraction
+      f.out    <- terra::app(k.out, Diff.frac.calc)
+      Diff.out <- f.out * AORC
+      terra::time(Diff.out) <- terra::time(AORC)
+      names(Diff.out) <- sprintf("DiffuseRad_%s",
+                                 format(terra::time(Diff.out), "%Y%m%d_%H"))
+
+      ## Write output alongside DSWRF file
+      out_file <- if (!is.null(study_area)) {
+        file.path(month_dir, sprintf("SolaR_%s_%d_%02d_DifRad_surface.tif", study_area, y, m))
+      } else {
+        file.path(month_dir, sprintf("SolaR_%d_%02d_DifRad_surface.tif", y, m))
+      }
+
+      terra::writeRaster(Diff.out, out_file, overwrite = TRUE)
+      cat(sprintf("  Saved: %s\n", basename(out_file)))
+
+      rm(AORC, Bo_rast, Diff.out, Bo0_mat)
+      gc()
+
+      return(data.frame(year = y, month = m, status = "success",
+                        stringsAsFactors = FALSE))
+
+    }, error = function(e) {
+      warning(sprintf("Failed %d-%02d: %s", y, m, e$message))
+      return(data.frame(year = y, month = m,
+                        status = paste("failed -", e$message),
+                        stringsAsFactors = FALSE))
+    })
+
+  }, future.seed = TRUE)
+
+  # Combine logs
+  log <- do.call(rbind, results)
+
+  # Summary
+  n_success <- sum(log$status == "success",      na.rm = TRUE)
+  n_skipped <- sum(grepl("skipped", log$status), na.rm = TRUE)
+  n_failed  <- sum(grepl("failed",  log$status), na.rm = TRUE)
+
+  cat(sprintf("\nDone. %d processed, %d skipped, %d failed.\n",
+              n_success, n_skipped, n_failed))
+
+  if (n_failed > 0) {
+    cat("Failed combinations:\n")
+    print(log[grepl("failed", log$status), ])
+  }
+
+  return(invisible(log))
+}
