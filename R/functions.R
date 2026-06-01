@@ -1496,13 +1496,11 @@ download_soil <- function(dtm,
     fine   = soildata_fine
   )))
 }
-
 #' Download NOAA AORC Climate Data
 #'
 #' Downloads hourly AORC v1.1 climate data from NOAA's S3 bucket for a given
 #' area of interest and time period. Data is downloaded variable by variable
 #' to limit RAM usage and saved as NetCDF files organized by year and month.
-#' Optionally reprojects downloaded files to match the CRS of a spatial object.
 #'
 #' @details Requires the following Python packages to be installed in your
 #'   conda environment: xarray, s3fs, zarr, netCDF4. These can be installed
@@ -1510,10 +1508,12 @@ download_soil <- function(dtm,
 #'   If not found, the function will attempt to install them via
 #'   \code{reticulate::py_install()}.
 #'
-#'   If \code{reproject = TRUE}, reprojection is applied after all downloads
-#'   are complete and will add significant processing time depending on the
-#'   number of variables and months processed. Parallelization via
-#'   \code{future::plan()} is recommended for large downloads.
+#'   Downloaded files are returned in the native WGS84 (EPSG:4326) coordinate
+#'   system of the AORC dataset. Reprojection to a different CRS is intentionally
+#'   not performed here, as \code{estimate_diffuse_rad()} requires WGS84 to
+#'   correctly compute solar geometry. Reprojection of all AORC and diffuse
+#'   radiation outputs should be performed after \code{estimate_diffuse_rad()}
+#'   has been run.
 #'
 #' @param aoi A SpatRaster, SpatVector, sf object, or named list returned by
 #'   \code{define_aoi()}. Used to derive the bounding box for download
@@ -1528,8 +1528,6 @@ download_soil <- function(dtm,
 #' @param overwrite Logical. Whether to overwrite existing files. If FALSE
 #'   existing files are skipped allowing the function to resume interrupted
 #'   downloads. Default is FALSE
-#' @param reproject Logical. Whether to reproject downloaded files to match
-#'   the CRS of \code{aoi}. Default is FALSE
 #' @param workers Integer. Number of parallel workers for month-level
 #'   parallelization via \code{future.apply}. Default is 1 (sequential)
 #' @param python_path Optional path to Python executable or conda environment.
@@ -1544,7 +1542,6 @@ download_aorc <- function(aoi,
                           out_dir,
                           study_area = NULL,
                           overwrite = FALSE,
-                          reproject = FALSE,
                           workers = 1,
                           python_path = NULL) {
 
@@ -1562,16 +1559,13 @@ download_aorc <- function(aoi,
     reticulate::py_install(missing_pkgs)
   }
 
-  # Extract extent and CRS from aoi
+  # Extract extent from aoi in WGS84
   if (is.list(aoi) && all(c("geometry", "crs") %in% names(aoi))) {
-    aoi_crs   <- aoi$crs
     aoi_sf    <- rgee::ee_as_sf(aoi$geometry)
     ext_wgs84 <- sf::st_bbox(sf::st_transform(aoi_sf, 4326))
   } else if (inherits(aoi, "SpatRaster") || inherits(aoi, "SpatVector")) {
-    aoi_crs   <- terra::crs(aoi)
     ext_wgs84 <- terra::ext(terra::project(aoi, "epsg:4326"))
   } else if (inherits(aoi, "sf") || inherits(aoi, "sfc")) {
-    aoi_crs   <- sf::st_crs(aoi)$wkt
     ext_wgs84 <- sf::st_bbox(sf::st_transform(aoi, 4326))
   } else {
     stop("aoi must be a SpatRaster, SpatVector, sf object, or named list from define_aoi()")
@@ -1709,41 +1703,6 @@ download_aorc <- function(aoi,
   # Combine logs from all workers
   log <- do.call(rbind, results)
 
-  # Reproject if requested
-  if (reproject) {
-    cat("\nReprojecting downloaded files to match AOI CRS...\n")
-    cat("Note: reprojection may add significant processing time.\n\n")
-
-    s_dir <- if (!is.null(study_area)) {
-      file.path(out_dir, study_area)
-    } else {
-      file.path(out_dir)
-    }
-
-    nc_files <- list.files(s_dir, pattern = "\\.nc$",
-                           full.names = TRUE, recursive = TRUE)
-
-    reproject_results <- future.apply::future_lapply(nc_files, function(f) {
-      tryCatch({
-        r           <- terra::rast(f)
-        r_projected <- terra::project(r, aoi_crs)
-        terra::writeCDF(r_projected, f, overwrite = TRUE)
-        message(sprintf("  Reprojected: %s", basename(f)))
-        return(data.frame(file = f, status = "reprojected",
-                          stringsAsFactors = FALSE))
-      },
-      error = function(e) {
-        message(sprintf("  Failed to reproject %s: %s", basename(f), e$message))
-        return(data.frame(file = f, status = paste("failed -", e$message),
-                          stringsAsFactors = FALSE))
-      })
-    }, future.seed = TRUE)
-
-    reproject_log <- do.call(rbind, reproject_results)
-    cat(sprintf("Reprojection complete. %d/%d files reprojected successfully.\n",
-                sum(reproject_log$status == "reprojected"), nrow(reproject_log)))
-  }
-
   # Summary
   n_success <- sum(log$status == "success",  na.rm = TRUE)
   n_skipped <- sum(log$status == "skipped",  na.rm = TRUE)
@@ -1759,6 +1718,7 @@ download_aorc <- function(aoi,
 
   return(invisible(log))
 }
+
 
 #' Estimate Diffuse Solar Radiation from AORC Shortwave Radiation
 #'
@@ -1778,6 +1738,13 @@ download_aorc <- function(aoi,
 #'     \item 0.22 < k <= 0.80: f = 0.9511 - 0.1604k + 4.388k^2 - 16.638k^3 + 12.336k^4
 #'     \item k > 0.80: f = 0.165
 #'   }
+#'
+#'   Output files are returned in WGS84 (EPSG:4326) matching the native AORC
+#'   coordinate system. This is intentional — reprojection prior to diffuse
+#'   radiation estimation introduces empty edge cells due to projection warping
+#'   which corrupts the solar geometry calculations. Reprojection of outputs
+#'   should be performed after this function has been run.
+#'
 #'   Requires the \code{solaR} package available on CRAN and GitHub.
 #'
 #' @param years Integer vector of years to process e.g. c(2020, 2021)
@@ -1826,15 +1793,18 @@ estimate_diffuse_rad <- function(years,
 
     # Build DSWRF file path
     dswrf_file <- if (!is.null(study_area)) {
-      file.path(month_dir, sprintf("AORC_%s_%d_%02d_DSWRF_surface.nc", study_area, y, m))
+      file.path(month_dir, sprintf("AORC_%s_%d_%02d_DSWRF_surface.nc",
+                                   study_area, y, m))
     } else {
       file.path(month_dir, sprintf("AORC_%d_%02d_DSWRF_surface.nc", y, m))
     }
 
     # Flag missing files and continue
     if (!file.exists(dswrf_file)) {
-      warning(sprintf("DSWRF file not found for %d-%02d, skipping:\n  %s", y, m, dswrf_file))
-      return(data.frame(year = y, month = m, status = "skipped - file not found",
+      warning(sprintf("DSWRF file not found for %d-%02d, skipping:\n  %s",
+                      y, m, dswrf_file))
+      return(data.frame(year = y, month = m,
+                        status = "skipped - file not found",
                         stringsAsFactors = FALSE))
     }
 
@@ -1847,21 +1817,13 @@ estimate_diffuse_rad <- function(years,
 
       AORC <- terra::rast(dswrf_file)
 
-      ## If not WGS84, reproject to WGS84 for solar geometry calculations
-      aorc_crs <- terra::crs(AORC, describe = TRUE)$code
-      if (!is.na(aorc_crs) && aorc_crs != "4326") {
-        AORC_wgs84 <- terra::project(AORC, "epsg:4326")
-      } else {
-        AORC_wgs84 <- AORC
-      }
-
-      ## Time handling using WGS84 version for correct coordinates
+      ## Time handling
       AORC_time <- terra::time(AORC)
       attr(AORC_time, "tzone") <- "UTC"
       BTi_local <- lubridate::with_tz(AORC_time, "America/Denver")
 
-      ## Extract centroid longitude from WGS84 raster
-      lon <- terra::xFromCol(AORC_wgs84, col = round(terra::ncol(AORC_wgs84) / 2))
+      ## Extract centroid longitude from raster
+      lon <- terra::xFromCol(AORC, col = round(terra::ncol(AORC) / 2))
 
       ## Convert to mean solar time using centroid longitude
       BTi <- solaR::local2Solar(BTi_local, lon = lon)
@@ -1869,15 +1831,15 @@ estimate_diffuse_rad <- function(years,
       ## Daily sequence for fSolD in solar time
       BTd <- as.POSIXct(unique(lubridate::date(BTi)), tz = "UTC")
 
-      ## Latitude per cell from WGS84 raster
-      coords      <- terra::crds(AORC_wgs84, df = FALSE)
+      ## Latitude per cell
+      coords      <- terra::crds(AORC, df = FALSE)
       lat_vals    <- coords[, 2]
       unique_lats <- sort(unique(round(lat_vals, 4)))
       lat_index   <- match(round(lat_vals, 4), unique_lats)
 
       ## Bo0 matrix [lat x time]
-      n_lat  <- length(unique_lats)
-      n_time <- length(BTi)
+      n_lat   <- length(unique_lats)
+      n_time  <- length(BTi)
       Bo0_mat <- matrix(NA_real_, n_lat, n_time)
 
       for (j in seq_len(n_lat)) {
@@ -1897,11 +1859,9 @@ estimate_diffuse_rad <- function(years,
       }
 
       ## Build Bo0 raster stack
-      Bo_rast <- terra::rast(AORC)
-      terra::values(Bo_rast) <- NA_real_
-      for (i in seq_len(n_time)) {
-        terra::values(Bo_rast[[i]]) <- Bo0_mat[lat_index, i]
-      }
+      Bo_rast    <- terra::rast(AORC)
+      bo0_values <- Bo0_mat[lat_index, ]
+      terra::values(Bo_rast) <- bo0_values
 
       ## Clearness index
       k.out <- AORC / Bo_rast
@@ -1930,7 +1890,8 @@ estimate_diffuse_rad <- function(years,
 
       ## Write output alongside DSWRF file
       out_file <- if (!is.null(study_area)) {
-        file.path(month_dir, sprintf("SolaR_%s_%d_%02d_DifRad_surface.tif", study_area, y, m))
+        file.path(month_dir, sprintf("SolaR_%s_%d_%02d_DifRad_surface.tif",
+                                     study_area, y, m))
       } else {
         file.path(month_dir, sprintf("SolaR_%d_%02d_DifRad_surface.tif", y, m))
       }
@@ -1971,3 +1932,254 @@ estimate_diffuse_rad <- function(years,
 
   return(invisible(log))
 }
+
+#' Package Vegetation and Soil Parameters for Microclimate Modeling
+#'
+#' Iterates over years, assembling land cover, vegetation height, LAI, soil
+#' data and reflectance into vegetation and soil parameter grids using
+#' \code{microclimdata::create_veggrid()} and
+#' \code{microclimdata::create_soilgrid()}. Reflectance data is averaged
+#' across user specified snow free months. Outputs are saved as RDS files.
+#'
+#' @param years Integer vector of years to process e.g. c(2020, 2021)
+#' @param months Integer vector of months for LAI e.g. 3:8
+#' @param snow_free_months Integer vector of months to use for reflectance
+#'   averaging e.g. 6:8
+#' @param lc_dir Directory containing annual land cover files
+#' @param vh_dir Directory containing annual vegetation height files
+#' @param soil_path File path to the fine resolution soil data raster
+#' @param lai_dir Directory containing fine resolution LAI files
+#' @param refl_dir Directory containing leaf and ground reflectance files
+#'   organized as \code{refl_dir/Lref/} and \code{refl_dir/Gref/}
+#' @param vegpara_dir Directory to save vegetation parameter RDS outputs
+#' @param soilpara_dir Directory to save soil parameter RDS outputs
+#' @param study_area Optional character string identifying the study area e.g. "GMU1".
+#'   If provided, used to filter input files and prefix output file names
+#' @param lctype Land cover classification type passed to
+#'   \code{microclimdata::create_veggrid()} and
+#'   \code{microclimdata::create_soilgrid()}. Must be either "CORINE" or "ESA".
+#'   Default is "CORINE"
+#' @param water Integer. Land cover code for water bodies passed to
+#'   \code{microclimdata::create_soilgrid()}. Default is 512
+#'
+#' @return Invisibly returns a data frame logging the status of each
+#'   year processed
+#' @export
+Pkg_Veg_Soil_data <- function(years,
+                              months,
+                              snow_free_months,
+                              lc_dir,
+                              vh_dir,
+                              soil_path,
+                              lai_dir,
+                              refl_dir,
+                              vegpara_dir,
+                              soilpara_dir,
+                              study_area = NULL,
+                              lctype = "CORINE",
+                              water = 512) {
+
+  # Validate lctype
+  if (!lctype %in% c("CORINE", "ESA")) {
+    stop("lctype must be either 'CORINE' or 'ESA'")
+  }
+
+  dir.create(vegpara_dir,  recursive = TRUE, showWarnings = FALSE)
+  dir.create(soilpara_dir, recursive = TRUE, showWarnings = FALSE)
+
+  # Helper to extract YYYY_MM from file names
+  extract_ym <- function(files) {
+    matches <- regmatches(files, regexpr("[0-9]{4}_[0-9]{2}", files))
+    data.frame(file = files, ym = matches, stringsAsFactors = FALSE)
+  }
+
+  # Helper to extract YYYY from file names
+  extract_year <- function(files) {
+    matches <- regmatches(files, regexpr("[0-9]{4}", files))
+    data.frame(file = files, year = as.integer(matches), stringsAsFactors = FALSE)
+  }
+
+  # Load soil data once - does not change by year
+  if (!file.exists(soil_path)) stop(sprintf("Soil file not found:\n  %s", soil_path))
+  SD <- terra::rast(soil_path)
+
+  # Build log
+  log <- data.frame(year = years, status = NA_character_, stringsAsFactors = FALSE)
+
+  cat(sprintf("\n--- Vegetation and Soil Parameter Packaging: %d year(s) ---\n\n",
+              length(years)))
+
+  for (y in years) {
+
+    cat(sprintf("Processing year: %d\n", y))
+
+    tryCatch({
+
+      # --- Land cover ---
+      lc_files <- list.files(lc_dir, pattern = "\\.tif$", full.names = TRUE)
+      if (!is.null(study_area)) lc_files <- lc_files[grepl(study_area, lc_files)]
+      lc_df    <- extract_year(lc_files)
+      lc_match <- lc_df$file[lc_df$year == y]
+      if (length(lc_match) == 0) stop(sprintf("Land cover file not found for year %d", y))
+      if (length(lc_match) > 1) stop(sprintf("Multiple land cover files found for year %d", y))
+
+      # --- Vegetation height ---
+      vh_files <- list.files(vh_dir, pattern = "\\.tif$", full.names = TRUE)
+      if (!is.null(study_area)) vh_files <- vh_files[grepl(study_area, vh_files)]
+      vh_df    <- extract_year(vh_files)
+      vh_match <- vh_df$file[vh_df$year == y]
+      if (length(vh_match) == 0) stop(sprintf("Vegetation height file not found for year %d", y))
+      if (length(vh_match) > 1) stop(sprintf("Multiple vegetation height files found for year %d", y))
+
+      # --- LAI ---
+      lai_files <- list.files(lai_dir, pattern = "\\.tif$", full.names = TRUE)
+      if (!is.null(study_area)) lai_files <- lai_files[grepl(study_area, lai_files)]
+      lai_df    <- extract_ym(lai_files)
+      yms       <- sprintf("%d_%02d", y, months)
+      lai_match <- lai_df$file[lai_df$ym %in% yms]
+      lai_match <- lai_match[order(match(
+        regmatches(lai_match, regexpr("[0-9]{4}_[0-9]{2}", lai_match)), yms
+      ))]
+      if (length(lai_match) == 0) stop(sprintf("No LAI files found for year %d", y))
+      if (length(lai_match) != length(months)) {
+        warning(sprintf("Expected %d LAI files for year %d, found %d",
+                        length(months), y, length(lai_match)))
+      }
+
+      # --- Reflectance files filtered by year and snow free months ---
+      sf_pattern <- paste(sprintf("%02d", snow_free_months), collapse = "|")
+
+      lf_files <- list.files(file.path(refl_dir, "Lref"),
+                             pattern = "\\.tif$", full.names = TRUE)
+      lf_files <- lf_files[grepl(as.character(y), lf_files) &
+                             (if (!is.null(study_area)) grepl(study_area, lf_files) else TRUE) &
+                             grepl(sf_pattern, lf_files)]
+      if (length(lf_files) == 0) stop(sprintf("No leaf reflectance files found for year %d", y))
+
+      gf_files <- list.files(file.path(refl_dir, "Gref"),
+                             pattern = "\\.tif$", full.names = TRUE)
+      gf_files <- gf_files[grepl(as.character(y), gf_files) &
+                             (if (!is.null(study_area)) grepl(study_area, gf_files) else TRUE) &
+                             grepl(sf_pattern, gf_files)]
+      if (length(gf_files) == 0) stop(sprintf("No ground reflectance files found for year %d", y))
+
+      # --- Load rasters ---
+      lc   <- terra::rast(lc_match)
+      vght <- terra::rast(vh_match)
+      lai  <- terra::rast(lai_match)
+
+      refldata <- list(
+        gref = terra::mean(terra::rast(gf_files)),
+        lref = terra::mean(terra::rast(lf_files))
+      )
+
+      gc()
+
+      # --- Align geometries ---
+      all_rasters <- c(list(lai = lai, lc = lc, vght = vght, SD = SD), refldata)
+
+      if (!terra::compareGeom(lai,
+                              list(SD, vght, refldata$gref, refldata$lref, lc),
+                              stopOnError = FALSE)) {
+
+        cat("  Geometries differ — cropping and resampling to common extent...\n")
+
+        common_ext <- Reduce(terra::intersect, lapply(all_rasters, terra::ext))
+        template   <- terra::crop(lai, common_ext)
+
+        lai_rs  <- terra::resample(terra::crop(lai,  common_ext), template, method = "bilinear")
+        vght_rs <- terra::resample(terra::crop(vght, common_ext), template, method = "bilinear")
+        SD_rs   <- terra::resample(terra::crop(SD,   common_ext), template, method = "bilinear")
+        lc_rs   <- terra::resample(terra::crop(lc,   common_ext), template, method = "near")
+
+        refldata_rs <- lapply(refldata, function(r) {
+          terra::resample(terra::crop(r, common_ext), template, method = "bilinear")
+        })
+
+      } else {
+
+        cat("  Geometries match — no resampling needed.\n")
+        lai_rs      <- lai
+        vght_rs     <- vght
+        SD_rs       <- SD
+        lc_rs       <- lc
+        refldata_rs <- refldata
+
+      }
+
+      gc()
+
+      # --- Name LAI layers by month ---
+      names(lai_rs) <- sprintf("month_%02d", months[seq_len(terra::nlyr(lai_rs))])
+
+      # --- Create vegetation parameter grid ---
+      cat("  Building vegetation parameter grids...\n")
+
+      vegp.list <- lapply(seq_len(terra::nlyr(lai_rs)), function(x) {
+        microclimdata::create_veggrid(
+          landcover = lc_rs,
+          vhgt      = vght_rs,
+          lai       = lai_rs[[x]],
+          refldata  = refldata_rs,
+          lctype    = lctype
+        )
+      })
+
+      vegp <- vegp.list[[1]]
+
+      if (terra::nlyr(lai_rs) > 1) {
+        for (i in 2:terra::nlyr(lai_rs)) {
+          pai   <- vegp.list[[i]]$pai
+          clump <- vegp.list[[i]]$clump
+          vegp$pai   <- terra::wrap(c(terra::unwrap(vegp$pai),   terra::unwrap(pai)))
+          vegp$clump <- terra::wrap(c(terra::unwrap(vegp$clump), terra::unwrap(clump)))
+        }
+      }
+
+      gc()
+
+      # --- Save vegetation parameters ---
+      veg_out <- file.path(vegpara_dir, if (!is.null(study_area)) {
+        sprintf("%s_VegPara_%d.RDS", study_area, y)
+      } else {
+        sprintf("VegPara_%d.RDS", y)
+      })
+      readr::write_rds(vegp, file = veg_out)
+      cat(sprintf("  Saved: %s\n", basename(veg_out)))
+
+      gc()
+
+      # --- Create soil parameter grid ---
+      cat("  Building soil parameter grid...\n")
+
+      soilc <- microclimdata::create_soilgrid(
+        soildata  = SD_rs,
+        refldata  = refldata_rs,
+        landcover = lc_rs,
+        water     = water
+      )
+
+      soil_out <- file.path(soilpara_dir, if (!is.null(study_area)) {
+        sprintf("%s_SoilPara_%d.RDS", study_area, y)
+      } else {
+        sprintf("SoilPara_%d.RDS", y)
+      })
+      readr::write_rds(soilc, file = soil_out)
+      cat(sprintf("  Saved: %s\n", basename(soil_out)))
+
+      log$status[log$year == y] <- "success"
+
+    }, error = function(e) {
+      warning(sprintf("Failed year %d: %s", y, e$message))
+      log$status[log$year == y] <<- paste("failed -", e$message)
+    })
+
+    gc()
+  }
+
+  cat(sprintf("\nDone. %d/%d years processed successfully.\n",
+              sum(log$status == "success", na.rm = TRUE), length(years)))
+
+  return(invisible(log))
+}
+

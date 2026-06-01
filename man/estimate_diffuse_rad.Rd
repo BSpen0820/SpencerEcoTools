@@ -42,5 +42,12 @@ piecewise model:
 \item 0.22 < k <= 0.80: f = 0.9511 - 0.1604k + 4.388k^2 - 16.638k^3 + 12.336k^4
 \item k > 0.80: f = 0.165
 }
+
+Output files are returned in WGS84 (EPSG:4326) matching the native AORC
+coordinate system. This is intentional — reprojection prior to diffuse
+radiation estimation introduces empty edge cells due to projection warping
+which corrupts the solar geometry calculations. Reprojection of outputs
+should be performed after this function has been run.
+
 Requires the \code{solaR} package available on CRAN and GitHub.
 }

@@ -2,6 +2,7 @@
 
 export(LandfireVegHght_AsNumeric)
 export(NLCD_2_CORINE)
+export(Pkg_Veg_Soil_data)
 export(compute_albedo)
 export(compute_reflectance)
 export(define_aoi)

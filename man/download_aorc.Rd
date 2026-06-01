@@ -11,7 +11,6 @@ download_aorc(
   out_dir,
   study_area = NULL,
   overwrite = FALSE,
-  reproject = FALSE,
   workers = 1,
   python_path = NULL
 )
@@ -36,9 +35,6 @@ structure}
 existing files are skipped allowing the function to resume interrupted
 downloads. Default is FALSE}
 
-\item{reproject}{Logical. Whether to reproject downloaded files to match
-the CRS of \code{aoi}. Default is FALSE}
-
 \item{workers}{Integer. Number of parallel workers for month-level
 parallelization via \code{future.apply}. Default is 1 (sequential)}
 
@@ -53,7 +49,6 @@ year/month/variable combination processed
 Downloads hourly AORC v1.1 climate data from NOAA's S3 bucket for a given
 area of interest and time period. Data is downloaded variable by variable
 to limit RAM usage and saved as NetCDF files organized by year and month.
-Optionally reprojects downloaded files to match the CRS of a spatial object.
 }
 \details{
 Requires the following Python packages to be installed in your
@@ -62,8 +57,10 @@ via conda: \code{conda install -c conda-forge xarray s3fs zarr netCDF4}
 If not found, the function will attempt to install them via
 \code{reticulate::py_install()}.
 
-If \code{reproject = TRUE}, reprojection is applied after all downloads
-are complete and will add significant processing time depending on the
-number of variables and months processed. Parallelization via
-\code{future::plan()} is recommended for large downloads.
+Downloaded files are returned in the native WGS84 (EPSG:4326) coordinate
+system of the AORC dataset. Reprojection to a different CRS is intentionally
+not performed here, as \code{estimate_diffuse_rad()} requires WGS84 to
+correctly compute solar geometry. Reprojection of all AORC and diffuse
+radiation outputs should be performed after \code{estimate_diffuse_rad()}
+has been run.
 }
