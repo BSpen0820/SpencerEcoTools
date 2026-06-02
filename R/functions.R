@@ -2198,6 +2198,7 @@ Pkg_Veg_Soil_data <- function(years,
 #'   \code{download_aorc()} and \code{estimate_diffuse_rad()}.
 #'   Missing files for individual years are skipped and logged.
 #'
+#' @param months Integer vector of months to include in the summary e.g. 3:6
 #' @param years Integer vector of years to include in the summary e.g. 1995:2024
 #' @param aorc_dir Base directory containing AORC data organized as
 #'   \code{aorc_dir/study_area/year/month/} or \code{aorc_dir/year/month/}
@@ -2213,7 +2214,8 @@ Pkg_Veg_Soil_data <- function(years,
 #' @return Invisibly returns a data frame logging the status of each
 #'   month/variable combination processed
 #' @export
-summarize_climate_normals <- function(years,
+summarize_climate_normals <- function(months,
+                                      years,
                                       aorc_dir,
                                       out_dir,
                                       stats = c("mean", "median", "mode", "sd", "min", "max"),
@@ -2241,7 +2243,7 @@ summarize_climate_normals <- function(years,
 
   # Build month/variable combos
   combos <- expand.grid(
-    month = 1:12,
+    month = months,
     var   = c(aorc_vars, "DifRad_surface"),
     stringsAsFactors = FALSE
   )
