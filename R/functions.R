@@ -1740,7 +1740,7 @@ download_aorc <- function(aoi,
 #'   }
 #'
 #'   Output files are returned in WGS84 (EPSG:4326) matching the native AORC
-#'   coordinate system. This is intentional — reprojection prior to diffuse
+#'   coordinate system. This is intentional, reprojection prior to diffuse
 #'   radiation estimation introduces empty edge cells due to projection warping
 #'   which corrupts the solar geometry calculations. Reprojection of outputs
 #'   should be performed after this function has been run.
@@ -2082,7 +2082,7 @@ Pkg_Veg_Soil_data <- function(years,
                               list(SD, vght, refldata$gref, refldata$lref, lc),
                               stopOnError = FALSE)) {
 
-        cat("  Geometries differ — cropping and resampling to common extent...\n")
+        cat("  Geometries differ: cropping and resampling to common extent...\n")
 
         common_ext <- Reduce(terra::intersect, lapply(all_rasters, terra::ext))
         template   <- terra::crop(lai, common_ext)
@@ -2098,7 +2098,7 @@ Pkg_Veg_Soil_data <- function(years,
 
       } else {
 
-        cat("  Geometries match — no resampling needed.\n")
+        cat("  Geometries match: no resampling needed.\n")
         lai_rs      <- lai
         vght_rs     <- vght
         SD_rs       <- SD
@@ -2183,3 +2183,535 @@ Pkg_Veg_Soil_data <- function(years,
   return(invisible(log))
 }
 
+#' Compute Multi-Year Climate Normals from AORC and Diffuse Radiation Data
+#'
+#' For each month, stacks a given hour across all available years and computes
+#' user-specified summary statistics. Output is one multi-layer GeoTIFF per
+#' variable per month per statistic, with layers ordered chronologically
+#' representing each hour of the month. The representative hour sequence is
+#' derived from the most recent non-leap year.
+#'
+#' @details AORC variables processed are: APCP_surface, DLWRF_surface,
+#'   DSWRF_surface, PRES_surface, SPFH_2maboveground, TMP_2maboveground,
+#'   UGRD_10maboveground, VGRD_10maboveground, and DifRad_surface.
+#'   Input files must follow the directory structure produced by
+#'   \code{download_aorc()} and \code{estimate_diffuse_rad()}.
+#'   Missing files for individual years are skipped and logged.
+#'
+#' @param years Integer vector of years to include in the summary e.g. 1995:2024
+#' @param aorc_dir Base directory containing AORC data organized as
+#'   \code{aorc_dir/study_area/year/month/} or \code{aorc_dir/year/month/}
+#' @param out_dir Base directory for output files organized as
+#'   \code{out_dir/month/}
+#' @param stats Character vector of summary statistics to compute. Must include
+#'   at least one of: "mean", "median", "mode", "sd", "min", "max"
+#' @param study_area Optional character string identifying the study area e.g. "GMU1".
+#'   If provided, used to locate input files and prefix output file names
+#' @param workers Integer. Number of parallel workers via \code{future.apply}.
+#'   Default is 1 (sequential)
+#'
+#' @return Invisibly returns a data frame logging the status of each
+#'   month/variable combination processed
+#' @export
+summarize_climate_normals <- function(years,
+                                      aorc_dir,
+                                      out_dir,
+                                      stats = c("mean", "median", "mode", "sd", "min", "max"),
+                                      study_area = NULL,
+                                      workers = 1) {
+
+  # Validate stats
+  valid_stats <- c("mean", "median", "mode", "sd", "min", "max")
+  invalid     <- stats[!stats %in% valid_stats]
+  if (length(stats) == 0) stop("At least one stat must be specified.")
+  if (length(invalid) > 0) {
+    stop(sprintf("Invalid stat(s): %s. Must be one of: %s",
+                 paste(invalid, collapse = ", "),
+                 paste(valid_stats, collapse = ", ")))
+  }
+
+  # AORC variables
+  aorc_vars <- c("APCP_surface", "DLWRF_surface", "DSWRF_surface",
+                 "PRES_surface", "SPFH_2maboveground", "TMP_2maboveground",
+                 "UGRD_10maboveground", "VGRD_10maboveground")
+
+  # Find most recent non-leap year for reference hour sequence
+  ref_year <- max(years[!lubridate::leap_year(years)])
+  cat(sprintf("Using %d as reference year for hour sequence.\n", ref_year))
+
+  # Build month/variable combos
+  combos <- expand.grid(
+    month = 1:12,
+    var   = c(aorc_vars, "DifRad_surface"),
+    stringsAsFactors = FALSE
+  )
+
+  # Build log
+  log <- data.frame(
+    month    = combos$month,
+    variable = combos$var,
+    status   = NA_character_,
+    stringsAsFactors = FALSE
+  )
+
+  cat(sprintf("\n--- Climate Normals: %d year(s), %d month/variable combos ---\n\n",
+              length(years), nrow(combos)))
+
+  # Mode helper
+  rast_mode <- function(x) {
+    ux <- unique(x[!is.na(x)])
+    if (length(ux) == 0) return(NA_real_)
+    ux[which.max(tabulate(match(x, ux)))]
+  }
+
+  # Set up parallel plan
+  if (workers > 1) {
+    future::plan(future::multisession, workers = workers)
+    on.exit(future::plan(future::sequential), add = TRUE)
+  }
+
+  results <- future.apply::future_lapply(seq_len(nrow(combos)), function(i) {
+
+    m   <- combos$month[i]
+    var <- combos$var[i]
+
+    is_difrad <- var == "DifRad_surface"
+
+    cat(sprintf("Processing month: %02d | variable: %s\n", m, var))
+
+    # Output directory
+    month_out <- file.path(out_dir, sprintf("%02d", m))
+    dir.create(month_out, recursive = TRUE, showWarnings = FALSE)
+
+    # Reference hour sequence for this month
+    ref_start <- as.POSIXct(sprintf("%d-%02d-01 00:00:00", ref_year, m),
+                            tz = "UTC")
+    ref_end   <- lubridate::ceiling_date(ref_start, unit = "month") -
+      lubridate::hours(1)
+    dtime     <- seq(ref_start, ref_end, by = "1 hour")
+
+    # Missing file log
+    missing_log <- character(0)
+
+    # For each reference hour, stack across years
+    hour_means   <- if ("mean"   %in% stats) vector("list", length(dtime)) else NULL
+    hour_medians <- if ("median" %in% stats) vector("list", length(dtime)) else NULL
+    hour_modes   <- if ("mode"   %in% stats) vector("list", length(dtime)) else NULL
+    hour_sds     <- if ("sd"     %in% stats) vector("list", length(dtime)) else NULL
+    hour_mins    <- if ("min"    %in% stats) vector("list", length(dtime)) else NULL
+    hour_maxs    <- if ("max"    %in% stats) vector("list", length(dtime)) else NULL
+
+    for (t_idx in seq_along(dtime)) {
+
+      t <- dtime[t_idx]
+
+      # Build file pattern for this month across all years
+      year_layers <- vector("list", length(years))
+
+      for (y_idx in seq_along(years)) {
+
+        y <- years[y_idx]
+
+        # Build file path based on variable type
+        month_dir <- if (!is.null(study_area)) {
+          file.path(aorc_dir, study_area, y, m)
+        } else {
+          file.path(aorc_dir, y, m)
+        }
+
+        fname <- if (!is.null(study_area)) {
+          if (is_difrad) {
+            sprintf("AORC_%s_%d_%02d_DifRad_surface.tif", study_area, y, m)
+          } else {
+            sprintf("AORC_%s_%d_%02d_%s.nc", study_area, y, m, var)
+          }
+        } else {
+          if (is_difrad) {
+            sprintf("AORC_%d_%02d_DifRad_surface.tif", y, m)
+          } else {
+            sprintf("AORC_%d_%02d_%s.nc", y, m, var)
+          }
+        }
+
+        fpath <- file.path(month_dir, fname)
+
+        if (!file.exists(fpath)) {
+          missing_log <- c(missing_log, fpath)
+          next
+        }
+
+        r <- tryCatch(terra::rast(fpath), error = function(e) NULL)
+        if (is.null(r)) {
+          missing_log <- c(missing_log, fpath)
+          next
+        }
+
+        # Match layer by month-day-hour
+        t_match <- format(t, "%m-%d %H")
+        r_times <- terra::time(r)
+        lay     <- which(format(r_times, "%m-%d %H") == t_match)
+
+        if (length(lay) == 0) {
+          missing_log <- c(missing_log, sprintf("%s [hour not found: %s]", fpath, t_match))
+          next
+        }
+
+        year_layers[[y_idx]] <- r[[lay]]
+        rm(r)
+      }
+
+      # Remove NULLs
+      year_layers <- Filter(Negate(is.null), year_layers)
+
+      if (length(year_layers) == 0) next
+
+      # Stack across years
+      year_stack <- do.call(c, year_layers)
+
+      # Compute requested stats
+      if ("mean"   %in% stats) hour_means[[t_idx]]   <- terra::mean(year_stack,   na.rm = TRUE)
+      if ("median" %in% stats) hour_medians[[t_idx]] <- terra::median(year_stack, na.rm = TRUE)
+      if ("sd"     %in% stats) hour_sds[[t_idx]]     <- terra::stdev(year_stack,  na.rm = TRUE)
+      if ("min"    %in% stats) hour_mins[[t_idx]]     <- min(year_stack,           na.rm = TRUE)
+      if ("max"    %in% stats) hour_maxs[[t_idx]]     <- max(year_stack,           na.rm = TRUE)
+      if ("mode"   %in% stats) {
+        hour_modes[[t_idx]] <- terra::app(year_stack, rast_mode)
+      }
+
+      rm(year_stack)
+    }
+
+    # Build base name without year
+    base_name <- if (!is.null(study_area)) {
+      if (is_difrad) {
+        sprintf("SolaR_%s_%02d_DifRad_surface", study_area, m)
+      } else {
+        sprintf("AORC_%s_%02d_%s", study_area, m, var)
+      }
+    } else {
+      if (is_difrad) {
+        sprintf("SolaR_%02d_DifRad_surface", m)
+      } else {
+        sprintf("AORC_%02d_%s", m, var)
+      }
+    }
+
+    # Helper to assemble and write a stat raster
+    write_stat <- function(hour_list, stat_name) {
+      valid <- Filter(Negate(is.null), hour_list)
+      if (length(valid) == 0) return(invisible(NULL))
+      stack <- do.call(c, valid)
+      stack <- stack[[order(terra::time(stack))]]
+      out_file <- file.path(month_out,
+                            sprintf("%s_%s.tif", base_name, stat_name))
+      terra::writeRaster(stack, out_file, overwrite = TRUE)
+      cat(sprintf("  Saved: %s\n", basename(out_file)))
+    }
+
+    if ("mean"   %in% stats) write_stat(hour_means,   "mean")
+    if ("median" %in% stats) write_stat(hour_medians, "median")
+    if ("sd"     %in% stats) write_stat(hour_sds,     "sd")
+    if ("min"    %in% stats) write_stat(hour_mins,    "min")
+    if ("max"    %in% stats) write_stat(hour_maxs,    "max")
+    if ("mode"   %in% stats) write_stat(hour_modes,   "mode")
+
+    # Log missing files
+    if (length(missing_log) > 0) {
+      warning(sprintf("Month %02d | %s: %d file(s) missing or unreadable:\n%s",
+                      m, var, length(missing_log),
+                      paste(" ", missing_log, collapse = "\n")))
+    }
+
+    return(data.frame(
+      month    = m,
+      variable = var,
+      status   = "success",
+      missing  = length(missing_log),
+      stringsAsFactors = FALSE
+    ))
+
+  }, future.seed = TRUE)
+
+  # Combine logs
+  log <- do.call(rbind, results)
+
+  # Summary
+  n_success <- sum(log$status == "success", na.rm = TRUE)
+  n_missing <- sum(log$missing,             na.rm = TRUE)
+
+  cat(sprintf("\nDone. %d/%d combos processed. %d file(s) skipped due to missing data.\n",
+              n_success, nrow(combos), n_missing))
+
+  return(invisible(log))
+}
+
+#' Package Climate Normals for Microclimate Modeling
+#'
+#' Loads summarized AORC climate normals, converts units, computes derived
+#' variables (relative humidity, wind speed, wind direction), reprojects and
+#' crops to a template raster, and assembles everything into a microclimf-ready
+#' named list. Outputs one RDS per month and one RDS per year concatenating
+#' all months in the order they are provided.
+#'
+#' @details Unit conversions applied:
+#'   \itemize{
+#'     \item Air temperature: Kelvin to Celsius (subtract 273.15)
+#'     \item Pressure: Pa to kPa (divide by 1000)
+#'     \item Specific humidity + pressure converted to relative humidity
+#'     \item U and V wind components converted to wind speed and direction
+#'   }
+#'   Diffuse radiation layers are aligned to match shortwave radiation
+#'   timestamps, with any unmatched layers dropped.
+#'
+#'   A warning is issued reminding the user that the template raster should
+#'   be representative of vegetation or soil parameter outputs.
+#'
+#' @param months Integer vector of months to process in the desired
+#'   concatenation order e.g. c(3:8) for spring/summer or c(7:12, 1:6)
+#'   for a water year. Months are processed and concatenated in this order
+#' @param years Integer vector of years to process e.g. c(2020, 2021).
+#'   A separate RDS is created per year
+#' @param input_dir Base directory containing AORC data organized as
+#'   \code{input_dir/year/month/} matching the structure produced by
+#'   \code{download_aorc()}
+#' @param output_dir Directory to save output RDS files
+#' @param template A SpatRaster used as the CRS and extent template for
+#'   reprojection and cropping. Should be representative of vegetation or
+#'   soil parameter outputs
+#' @param study_area Optional character string identifying the study area
+#'   e.g. "GMU1". If provided, used to filter input files and prefix output
+#'   file names
+#'
+#' @return Invisibly returns a named list of output file paths keyed by year
+#' @export
+package_climate <- function(months,
+                            years,
+                            input_dir,
+                            output_dir,
+                            template,
+                            study_area = NULL) {
+
+  if (!inherits(template, "SpatRaster")) {
+    stop("template must be a SpatRaster")
+  }
+
+  warning("Ensure the template raster is representative of vegetation or soil parameter outputs for correct spatial alignment.")
+
+  dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
+
+  # Helper to load, sort, reproject and crop a variable raster
+  load_var <- function(files, template) {
+    r <- terra::rast(files)
+    names(r) <- ifelse(
+      grepl("\\d{2}:\\d{2}", names(r)),
+      names(r),
+      paste0(names(r), " 00:00:00")
+    )
+    t.r <- as.POSIXct(names(r), format = "%Y-%m-%d %H:%M:%OS", tz = "UTC")
+    if(all(is.na(t.r))) t.r <- terra::time(r)
+    r   <- r[[order(t.r)]]
+    terra::time(r) <- t.r[order(t.r)]
+    r <- terra::project(r, terra::crs(template), method = "near", threads = TRUE)
+    r <- terra::crop(r, terra::ext(template))
+    return(r)
+  }
+
+  # Build log
+  log <- list()
+
+  for (y in years) {
+
+    cat(sprintf("\n--- Packaging climate for year: %d ---\n", y))
+
+    month_rds_paths <- list()
+
+    for (m in months) {
+
+      cat(sprintf("  Processing month: %02d\n", m))
+
+      # Build month directory matching download_aorc() structure
+      month_dir <- file.path(input_dir, y, m)
+
+      if (!dir.exists(month_dir)) {
+        warning(sprintf("Directory not found for year %d month %02d:\n  %s", y, m, month_dir))
+        next
+      }
+
+      clim_files <- list.files(month_dir, full.names = TRUE, recursive = FALSE)
+
+      # Filter by study area if provided
+      if (!is.null(study_area)) {
+        clim_files <- clim_files[grepl(study_area, basename(clim_files))]
+      }
+
+      names(clim_files) <- basename(clim_files)
+
+      if (length(clim_files) == 0) {
+        warning(sprintf("No climate files found for year %d month %02d", y, m))
+        next
+      }
+
+      # --- Shortwave radiation ---
+      sw_f <- clim_files[grepl("DSWRF", names(clim_files))]
+      if (length(sw_f) == 0) stop(sprintf("No DSWRF files found for year %d month %02d", y, m))
+      r.sw <- load_var(sw_f, template)
+      sw.t <- terra::time(r.sw)
+      r.sw <- terra::wrap(r.sw)
+
+      # --- Diffuse radiation - align to shortwave timestamps ---
+      df_f <- clim_files[grepl("DifRad|DiffRad", names(clim_files))]
+      if (length(df_f) == 0) {
+        warning(sprintf("No diffuse radiation files found for year %d month %02d", y, m))
+        r.df <- NULL
+      } else {
+        r_df              <- terra::rast(df_f)
+        names(sw.t)       <- format(sw.t, "%m%d%H")
+        r_df_times        <- terra::time(r_df)
+        names(r_df_times) <- format(r_df_times, "%m%d%H")
+        names_only_in_r   <- setdiff(names(r_df_times), names(sw.t))
+        r_df              <- r_df[[!(names(r_df_times) %in% names_only_in_r)]]
+        r_df_times        <- terra::time(r_df)
+        names(r_df_times) <- format(r_df_times, "%m%d%H")
+        sw.t_aligned      <- sw.t[names(r_df_times)]
+        terra::time(r_df) <- sw.t_aligned
+        names(r_df) <- ifelse(
+          grepl("\\d{2}:\\d{2}", as.character(terra::time(r_df))),
+          as.character(terra::time(r_df)),
+          paste0(terra::time(r_df), " 00:00:00")
+        )
+        t.r               <- as.POSIXct(names(r_df), format = "%Y-%m-%d %H:%M:%OS", tz = "UTC")
+        r_df              <- r_df[[order(t.r)]]
+        terra::time(r_df) <- t.r[order(t.r)]
+        r_df <- terra::project(r_df, terra::crs(template), method = "near", threads = TRUE)
+        r_df <- terra::crop(r_df, terra::ext(template))
+        r.df <- terra::wrap(r_df)
+        rm(r_df)
+      }
+
+      # --- Longwave radiation ---
+      lw_f <- clim_files[grepl("DLWRF", names(clim_files))]
+      if (length(lw_f) == 0) stop(sprintf("No DLWRF files found for year %d month %02d", y, m))
+      r.lw <- terra::wrap(load_var(lw_f, template))
+
+      # --- Precipitation ---
+      pr_f <- clim_files[grepl("APCP", names(clim_files))]
+      if (length(pr_f) == 0) stop(sprintf("No APCP files found for year %d month %02d", y, m))
+      r.pr <- terra::wrap(load_var(pr_f, template))
+
+      # --- Air temperature: K to C ---
+      at_f <- clim_files[grepl("TMP", names(clim_files))]
+      if (length(at_f) == 0) stop(sprintf("No TMP files found for year %d month %02d", y, m))
+      r_at <- load_var(at_f, template)
+      p.at <- r_at
+      r_at <- r_at - 273.15
+      r.at <- terra::wrap(r_at)
+
+      # --- Pressure: Pa to kPa ---
+      pa_f <- clim_files[grepl("PRES", names(clim_files))]
+      if (length(pa_f) == 0) stop(sprintf("No PRES files found for year %d month %02d", y, m))
+      r_pa <- load_var(pa_f, template)
+      p.Pa <- r_pa
+      r_pa <- r_pa / 1000
+      r.pa <- terra::wrap(r_pa)
+
+      # --- Relative humidity from specific humidity + pressure ---
+      sh_f <- clim_files[grepl("SPFH", names(clim_files))]
+      if (length(sh_f) == 0) stop(sprintf("No SPFH files found for year %d month %02d", y, m))
+      r_sh     <- load_var(sh_f, template)
+      e        <- (r_sh * p.Pa) / (0.622 + 0.378 * r_sh)
+      es_water <- 611.2 * exp((17.67 * p.at) / (p.at + 243.5))
+      es       <- es_water
+      RH       <- 100 * (e / es)
+      RH       <- terra::clamp(RH, lower = 0, upper = 100)
+      r.rh     <- terra::wrap(RH)
+      rm(e, es, es_water, RH, p.at, p.Pa, r_sh)
+
+      # --- Wind speed and direction from U and V components ---
+      uw_f <- clim_files[grepl("UGRD", names(clim_files))]
+      vw_f <- clim_files[grepl("VGRD", names(clim_files))]
+      if (length(uw_f) == 0) stop(sprintf("No UGRD files found for year %d month %02d", y, m))
+      if (length(vw_f) == 0) stop(sprintf("No VGRD files found for year %d month %02d", y, m))
+      r_u  <- load_var(uw_f, template)
+      r_v  <- load_var(vw_f, template)
+      ws   <- sqrt(r_u^2 + r_v^2)
+      wd   <- (180 + terra::atan2(r_u, r_v) * 180 / pi) %% 360
+      r.ws <- terra::wrap(ws)
+      r.wd <- terra::wrap(wd)
+      rm(ws, wd, r_u, r_v)
+
+      gc()
+
+      # --- Assemble output list ---
+      out <- list(
+        precip    = r.pr,
+        temp      = r.at,
+        relhum    = r.rh,
+        lwdown    = r.lw,
+        swdown    = r.sw,
+        pres      = r.pa,
+        windspeed = r.ws,
+        winddir   = r.wd,
+        difrad    = r.df
+      )
+
+      # --- Save monthly RDS ---
+      month_file <- if (!is.null(study_area)) {
+        file.path(output_dir, sprintf("%s_Climate_%d_Month_%02d.RDS", study_area, y, m))
+      } else {
+        file.path(output_dir, sprintf("Climate_%d_Month_%02d.RDS", y, m))
+      }
+
+      readr::write_rds(out, file = month_file)
+      cat(sprintf("    Saved: %s\n", basename(month_file)))
+      month_rds_paths[[sprintf("%02d", m)]] <- month_file
+
+      rm(out, r.pr, r.at, r.rh, r.lw, r.sw, r.pa, r.ws, r.wd, r.df)
+      gc()
+    }
+
+    # --- Concatenate months in the order provided ---
+    if (length(month_rds_paths) > 1) {
+
+      cat(sprintf("  Concatenating months for year %d in specified order...\n", y))
+
+      # Use months argument directly for ordering since it defines the order
+      ordered_keys  <- sprintf("%02d", months)
+      ordered_keys  <- ordered_keys[ordered_keys %in% names(month_rds_paths)]
+      ordered_paths <- month_rds_paths[ordered_keys]
+
+      # Load first month as base
+      int    <- readr::read_rds(ordered_paths[[1]])
+      vnames <- names(int)
+
+      # Concatenate remaining months
+      for (k in seq_along(ordered_paths)[-1]) {
+        out <- readr::read_rds(ordered_paths[[k]])
+        int <- lapply(vnames, function(x) {
+          var1 <- terra::rast(int[[x]])
+          var2 <- terra::rast(out[[x]])
+          terra::wrap(c(var1, var2))
+        })
+        names(int) <- vnames
+        rm(out)
+        gc()
+      }
+
+      # --- Save year RDS ---
+      year_file <- if (!is.null(study_area)) {
+        file.path(output_dir, sprintf("%s_Climate_%d.RDS", study_area, y))
+      } else {
+        file.path(output_dir, sprintf("Climate_%d.RDS", y))
+      }
+
+      readr::write_rds(int, file = year_file)
+      cat(sprintf("  Saved: %s\n", basename(year_file)))
+      log[[as.character(y)]] <- year_file
+
+      rm(int)
+      gc()
+    }
+  }
+
+  cat("\nDone.\n")
+  return(invisible(log))
+}

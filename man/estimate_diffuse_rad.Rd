@@ -44,7 +44,7 @@ piecewise model:
 }
 
 Output files are returned in WGS84 (EPSG:4326) matching the native AORC
-coordinate system. This is intentional — reprojection prior to diffuse
+coordinate system. This is intentional, reprojection prior to diffuse
 radiation estimation introduces empty edge cells due to projection warping
 which corrupts the solar geometry calculations. Reprojection of outputs
 should be performed after this function has been run.
