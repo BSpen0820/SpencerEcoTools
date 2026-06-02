@@ -2445,13 +2445,14 @@ summarize_climate_normals <- function(years,
   return(invisible(log))
 }
 
-#' Package Climate Normals for Microclimate Modeling
+#' Package AORC Climate Data for Microclimate Modeling
 #'
-#' Loads summarized AORC climate normals, converts units, computes derived
-#' variables (relative humidity, wind speed, wind direction), reprojects and
-#' crops to a template raster, and assembles everything into a microclimf-ready
-#' named list. Outputs one RDS per month and one RDS per year concatenating
-#' all months in the order they are provided.
+#' Loads AORC climate data, converts units, computes derived variables
+#' (relative humidity, wind speed, wind direction), reprojects and crops
+#' to a template raster, and assembles everything into a microclimf-ready
+#' named list. Outputs one RDS per year concatenating all months in the
+#' order they are provided. Monthly RDS files are saved to a temporary
+#' subdirectory and optionally cleaned up after concatenation.
 #'
 #' @details Unit conversions applied:
 #'   \itemize{
@@ -2474,13 +2475,19 @@ summarize_climate_normals <- function(years,
 #' @param input_dir Base directory containing AORC data organized as
 #'   \code{input_dir/year/month/} matching the structure produced by
 #'   \code{download_aorc()}
-#' @param output_dir Directory to save output RDS files
+#' @param output_dir Directory to save final yearly output RDS files.
+#'   Temporary monthly RDS files are saved to \code{output_dir/year/}
+#'   subdirectories
 #' @param template A SpatRaster used as the CRS and extent template for
 #'   reprojection and cropping. Should be representative of vegetation or
 #'   soil parameter outputs
 #' @param study_area Optional character string identifying the study area
 #'   e.g. "GMU1". If provided, used to filter input files and prefix output
 #'   file names
+#' @param keep_monthly Logical. Whether to keep the temporary monthly RDS
+#'   files after the yearly RDS has been created. If FALSE the temporary
+#'   year subdirectory and its contents are deleted after concatenation.
+#'   Default is FALSE
 #'
 #' @return Invisibly returns a named list of output file paths keyed by year
 #' @export
@@ -2489,7 +2496,8 @@ package_climate <- function(months,
                             input_dir,
                             output_dir,
                             template,
-                            study_area = NULL) {
+                            study_area = NULL,
+                            keep_monthly = FALSE) {
 
   if (!inherits(template, "SpatRaster")) {
     stop("template must be a SpatRaster")
@@ -2508,7 +2516,7 @@ package_climate <- function(months,
       paste0(names(r), " 00:00:00")
     )
     t.r <- as.POSIXct(names(r), format = "%Y-%m-%d %H:%M:%OS", tz = "UTC")
-    if(all(is.na(t.r))) t.r <- terra::time(r)
+    if (all(is.na(t.r))) t.r <- terra::time(r)
     r   <- r[[order(t.r)]]
     terra::time(r) <- t.r[order(t.r)]
     r <- terra::project(r, terra::crs(template), method = "near", threads = TRUE)
@@ -2522,6 +2530,10 @@ package_climate <- function(months,
   for (y in years) {
 
     cat(sprintf("\n--- Packaging climate for year: %d ---\n", y))
+
+    # Create temp directory for monthly RDS files
+    temp_dir <- file.path(output_dir, as.character(y))
+    dir.create(temp_dir, recursive = TRUE, showWarnings = FALSE)
 
     month_rds_paths <- list()
 
@@ -2654,15 +2666,15 @@ package_climate <- function(months,
         difrad    = r.df
       )
 
-      # --- Save monthly RDS ---
+      # --- Save monthly RDS to temp directory ---
       month_file <- if (!is.null(study_area)) {
-        file.path(output_dir, sprintf("%s_Climate_%d_Month_%02d.RDS", study_area, y, m))
+        file.path(temp_dir, sprintf("%s_Climate_%d_Month_%02d.RDS", study_area, y, m))
       } else {
-        file.path(output_dir, sprintf("Climate_%d_Month_%02d.RDS", y, m))
+        file.path(temp_dir, sprintf("Climate_%d_Month_%02d.RDS", y, m))
       }
 
       readr::write_rds(out, file = month_file)
-      cat(sprintf("    Saved: %s\n", basename(month_file)))
+      cat(sprintf("    Saved temp: %s\n", basename(month_file)))
       month_rds_paths[[sprintf("%02d", m)]] <- month_file
 
       rm(out, r.pr, r.at, r.rh, r.lw, r.sw, r.pa, r.ws, r.wd, r.df)
@@ -2670,11 +2682,10 @@ package_climate <- function(months,
     }
 
     # --- Concatenate months in the order provided ---
-    if (length(month_rds_paths) > 1) {
+    if (length(month_rds_paths) >= 1) {
 
       cat(sprintf("  Concatenating months for year %d in specified order...\n", y))
 
-      # Use months argument directly for ordering since it defines the order
       ordered_keys  <- sprintf("%02d", months)
       ordered_keys  <- ordered_keys[ordered_keys %in% names(month_rds_paths)]
       ordered_paths <- month_rds_paths[ordered_keys]
@@ -2683,20 +2694,22 @@ package_climate <- function(months,
       int    <- readr::read_rds(ordered_paths[[1]])
       vnames <- names(int)
 
-      # Concatenate remaining months
-      for (k in seq_along(ordered_paths)[-1]) {
-        out <- readr::read_rds(ordered_paths[[k]])
-        int <- lapply(vnames, function(x) {
-          var1 <- terra::rast(int[[x]])
-          var2 <- terra::rast(out[[x]])
-          terra::wrap(c(var1, var2))
-        })
-        names(int) <- vnames
-        rm(out)
-        gc()
+      # Concatenate remaining months if more than one
+      if (length(ordered_paths) > 1) {
+        for (k in seq_along(ordered_paths)[-1]) {
+          out <- readr::read_rds(ordered_paths[[k]])
+          int <- lapply(vnames, function(x) {
+            var1 <- terra::rast(int[[x]])
+            var2 <- terra::rast(out[[x]])
+            terra::wrap(c(var1, var2))
+          })
+          names(int) <- vnames
+          rm(out)
+          gc()
+        }
       }
 
-      # --- Save year RDS ---
+      # --- Save year RDS to base output directory ---
       year_file <- if (!is.null(study_area)) {
         file.path(output_dir, sprintf("%s_Climate_%d.RDS", study_area, y))
       } else {
@@ -2709,6 +2722,14 @@ package_climate <- function(months,
 
       rm(int)
       gc()
+
+      # --- Clean up temp directory if keep_monthly is FALSE ---
+      if (!keep_monthly) {
+        unlink(temp_dir, recursive = TRUE)
+        cat(sprintf("  Temporary monthly files removed for year %d.\n", y))
+      } else {
+        cat(sprintf("  Temporary monthly files kept in: %s\n", temp_dir))
+      }
     }
   }
 

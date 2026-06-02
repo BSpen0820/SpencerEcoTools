@@ -2,7 +2,7 @@
 % Please edit documentation in R/functions.R
 \name{package_climate}
 \alias{package_climate}
-\title{Package Climate Normals for Microclimate Modeling}
+\title{Package AORC Climate Data for Microclimate Modeling}
 \usage{
 package_climate(
   months,
@@ -10,7 +10,8 @@ package_climate(
   input_dir,
   output_dir,
   template,
-  study_area = NULL
+  study_area = NULL,
+  keep_monthly = FALSE
 )
 }
 \arguments{
@@ -25,7 +26,9 @@ A separate RDS is created per year}
 \code{input_dir/year/month/} matching the structure produced by
 \code{download_aorc()}}
 
-\item{output_dir}{Directory to save output RDS files}
+\item{output_dir}{Directory to save final yearly output RDS files.
+Temporary monthly RDS files are saved to \code{output_dir/year/}
+subdirectories}
 
 \item{template}{A SpatRaster used as the CRS and extent template for
 reprojection and cropping. Should be representative of vegetation or
@@ -34,16 +37,22 @@ soil parameter outputs}
 \item{study_area}{Optional character string identifying the study area
 e.g. "GMU1". If provided, used to filter input files and prefix output
 file names}
+
+\item{keep_monthly}{Logical. Whether to keep the temporary monthly RDS
+files after the yearly RDS has been created. If FALSE the temporary
+year subdirectory and its contents are deleted after concatenation.
+Default is FALSE}
 }
 \value{
 Invisibly returns a named list of output file paths keyed by year
 }
 \description{
-Loads summarized AORC climate normals, converts units, computes derived
-variables (relative humidity, wind speed, wind direction), reprojects and
-crops to a template raster, and assembles everything into a microclimf-ready
-named list. Outputs one RDS per month and one RDS per year concatenating
-all months in the order they are provided.
+Loads AORC climate data, converts units, computes derived variables
+(relative humidity, wind speed, wind direction), reprojects and crops
+to a template raster, and assembles everything into a microclimf-ready
+named list. Outputs one RDS per year concatenating all months in the
+order they are provided. Monthly RDS files are saved to a temporary
+subdirectory and optionally cleaned up after concatenation.
 }
 \details{
 Unit conversions applied:
