@@ -2288,9 +2288,10 @@ summarize_climate_normals <- function(months,
     # Reference hour sequence for this month
     ref_start <- as.POSIXct(sprintf("%d-%02d-01 00:00:00", ref_year, m),
                             tz = "UTC")
-    ref_end   <- lubridate::ceiling_date(ref_start, unit = "month") -
+    ref_end   <- lubridate::add_with_rollback(ref_start, months(1), roll_to_first = T) -
       lubridate::hours(1)
-    dtime     <- seq(ref_start, ref_end, by = "1 hour")
+
+    dtime     <- seq.POSIXt(ref_start, ref_end, by = "1 hour")
 
     # Missing file log
     missing_log <- character(0)
@@ -2315,23 +2316,19 @@ summarize_climate_normals <- function(months,
         y <- years[y_idx]
 
         # Build file path based on variable type
-        month_dir <- if (!is.null(study_area)) {
-          file.path(aorc_dir, study_area, y, m)
-        } else {
-          file.path(aorc_dir, y, m)
-        }
+        month_dir <- file.path(aorc_dir, y, m)
 
-        fname <- if (!is.null(study_area)) {
+        if (!is.null(study_area)) {
           if (is_difrad) {
-            sprintf("AORC_%s_%d_%02d_DifRad_surface.tif", study_area, y, m)
+            fname <- sprintf("SolaR_%s_%d_%02d_DifRad_surface.tif", study_area, y, m)
           } else {
-            sprintf("AORC_%s_%d_%02d_%s.nc", study_area, y, m, var)
+            fname <- sprintf("AORC_%s_%d_%02d_%s.nc", study_area, y, m, var)
           }
         } else {
           if (is_difrad) {
-            sprintf("AORC_%d_%02d_DifRad_surface.tif", y, m)
+            fname <- sprintf("SolaR_%d_%02d_DifRad_surface.tif", y, m)
           } else {
-            sprintf("AORC_%d_%02d_%s.nc", y, m, var)
+            fname <- sprintf("AORC_%d_%02d_%s.nc", y, m, var)
           }
         }
 

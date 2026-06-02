@@ -22,9 +22,11 @@ Imports:
     future.apply,
     solaR,
     zoo,
-    readr
+    readr,
+    microclimf
 Remotes:
-    ilyamaclean/microclimdata
+    ilyamaclean/microclimdata,
+    BSpen0820/microclimf
 Depends: 
     R (>= 3.5)
 LazyData: true

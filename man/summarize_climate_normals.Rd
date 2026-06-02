@@ -5,6 +5,7 @@
 \title{Compute Multi-Year Climate Normals from AORC and Diffuse Radiation Data}
 \usage{
 summarize_climate_normals(
+  months,
   years,
   aorc_dir,
   out_dir,
@@ -14,6 +15,8 @@ summarize_climate_normals(
 )
 }
 \arguments{
+\item{months}{Integer vector of months to include in the summary e.g. 3:6}
+
 \item{years}{Integer vector of years to include in the summary e.g. 1995:2024}
 
 \item{aorc_dir}{Base directory containing AORC data organized as

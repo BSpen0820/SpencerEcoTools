@@ -30,3 +30,68 @@
 #' @source \url{https://lpdaac.usgs.gov/documents/624/MOD15_User_Guide_V6.pdf}
 "FparLAI_QC"
 
+#' AORC Variable Metadata
+#'
+#' Lookup table describing meteorological variables available in the
+#' Analysis of Record for Calibration (AORC) forcing dataset, including
+#' variable labels used in AORC files and their associated units.
+#'
+#' This dataset can be used to identify required climate variables when
+#' preparing AORC data for use in microclimate modeling workflows.
+#'
+#' @format A data frame with 9 rows and 3 variables:
+#' \describe{
+#'   \item{ClimateVar}{Human-readable climate variable name.}
+#'   \item{VarLabel}{Variable name used in AORC data products.}
+#'   \item{Units}{Measurement units of the variable.}
+#' }
+#'
+#' @details
+#' Variables included are:
+#' \itemize{
+#'   \item Total precipitation
+#'   \item Air temperature
+#'   \item Specific humidity
+#'   \item Downward longwave radiation
+#'   \item Downward shortwave radiation
+#'   \item Atmospheric pressure
+#'   \item East-west wind component (U)
+#'   \item South-north wind component (V)
+#'   \item Diffuse radiation
+#' }
+#'
+#' @source NOAA Analysis of Record for Calibration (AORC)
+"AORC_meterodf"
+
+#' Microclim Meteorological Variable Metadata
+#'
+#' Lookup table describing meteorological variables and naming conventions
+#' used by the microclimate modeling functions in this package.
+#'
+#' This dataset provides standardized variable names and units expected by
+#' Microclim-compatible forcing datasets.
+#'
+#' @format A data frame with 9 rows and 3 variables:
+#' \describe{
+#'   \item{ClimateVar}{Human-readable climate variable name.}
+#'   \item{VarLabel}{Standardized variable name used by Microclim.}
+#'   \item{Units}{Measurement units of the variable.}
+#' }
+#'
+#' @details
+#' Variables included are:
+#' \itemize{
+#'   \item Total precipitation
+#'   \item Air temperature
+#'   \item Relative humidity
+#'   \item Downward longwave radiation
+#'   \item Downward shortwave radiation
+#'   \item Atmospheric pressure
+#'   \item Wind speed
+#'   \item Wind direction
+#'   \item Diffuse radiation
+#' }
+#'
+#' @seealso
+#' \code{\link{AORC_meterodf}}
+"Microclim_meterodf"
