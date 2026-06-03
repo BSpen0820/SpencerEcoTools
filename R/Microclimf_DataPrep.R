@@ -220,8 +220,8 @@ download_dem <- function(aoi,
 
 #' Downscale MODIS LAI to 30m Resolution Using NDVI
 #'
-#' Iterates over each date provided, loading HLS multispectral imagery and 
-#' coarse MODIS LAI, and downscales LAI to 30m resolution using the 
+#' Iterates over each date provided, loading HLS multispectral imagery and
+#' coarse MODIS LAI, and downscales LAI to 30m resolution using the
 #' lai_fromndvi() function from the microclimdata package.
 #'
 #' @param dates Vector of class Date specifying year-month combinations to process.
@@ -467,8 +467,8 @@ LandfireVegHght_AsNumeric <- function(rast,
 
 #' Download MODIS Albedo Data from Google Earth Engine
 #'
-#' Iterates over each date provided, exporting monthly median MODIS shortwave 
-#' black-sky albedo images from GEE to Google Drive, then optionally downloads 
+#' Iterates over each date provided, exporting monthly median MODIS shortwave
+#' black-sky albedo images from GEE to Google Drive, then optionally downloads
 #' them locally using poll_drive().
 #'
 #' @param aoi A named list returned by define_aoi() containing elements
@@ -703,11 +703,11 @@ download_albedo <- function(aoi,
 
 #' Download HLS Sentinel-2 Imagery from Google Earth Engine
 #'
-#' Iterates over each date provided, applying a two-level cloud/shadow masking 
-#' strategy to HLS S30 Sentinel-2 imagery. If gaps remain after masking, 
-#' temporally adjacent images (up to 2 months either side) are used to fill 
-#' gaps via inverse distance weighted mean, weighted by day distance from the 
-#' center of the target month. A focal median is applied as a final fallback 
+#' Iterates over each date provided, applying a two-level cloud/shadow masking
+#' strategy to HLS S30 Sentinel-2 imagery. If gaps remain after masking,
+#' temporally adjacent images (up to 2 months either side) are used to fill
+#' gaps via inverse distance weighted mean, weighted by day distance from the
+#' center of the target month. A focal median is applied as a final fallback
 #' for any remaining gaps.
 #'
 #' The masking strategy applied is:
@@ -904,6 +904,26 @@ download_hls <- function(aoi,
 }
 
 # Internal helpers --------------------------------------------------------
+.generate_month_sequence <- function(start_date, end_date) {
+  start_date  <- as.Date(start_date)
+  end_date    <- as.Date(end_date)
+  start_year  <- lubridate::year(start_date)
+  start_month <- lubridate::month(start_date)
+  end_year    <- lubridate::year(end_date)
+  end_month   <- lubridate::month(end_date)
+
+  months_list <- list()
+  for (y in start_year:end_year) {
+    m_start <- if (y == start_year) start_month else 1
+    m_end   <- if (y == end_year)   end_month   else 12
+    months_list[[length(months_list) + 1]] <- data.frame(
+      year  = y,
+      month = m_start:m_end,
+      stringsAsFactors = FALSE
+    )
+  }
+  do.call(rbind, months_list)
+}
 
 .maskMODIS_LAI <- function(img) {
   qc <- img$select("FparLai_QC")
@@ -932,8 +952,8 @@ download_hls <- function(aoi,
 
 #' Download MODIS LAI Data from Google Earth Engine
 #'
-#' Iterates over each date provided, applying QC masking and scaling to MODIS 
-#' MCD15A3H LAI imagery before exporting monthly median composites from GEE to 
+#' Iterates over each date provided, applying QC masking and scaling to MODIS
+#' MCD15A3H LAI imagery before exporting monthly median composites from GEE to
 #' Google Drive, then optionally downloading them locally using poll_drive().
 #'
 #' The masking strategy applies the following QC filters:
@@ -1074,11 +1094,11 @@ download_modis_lai <- function(aoi,
 
 #' Compute and Adjust Albedo from HLS Sentinel-2 Imagery
 #'
-#' Iterates over each date provided, computing photographic albedo from HLS 
-#' Sentinel-2 imagery using \code{microclimdata::albedo_fromaerial()} and 
-#' adjusting it to MODIS broadband albedo using \code{microclimdata::albedo_adjust()}. 
-#' Default band wavelength parameters are specific to the HLS Sentinel-2 (HLSS30) 
-#' product. If using a different sensor, adjust the band wavelength arguments 
+#' Iterates over each date provided, computing photographic albedo from HLS
+#' Sentinel-2 imagery using \code{microclimdata::albedo_fromaerial()} and
+#' adjusting it to MODIS broadband albedo using \code{microclimdata::albedo_adjust()}.
+#' Default band wavelength parameters are specific to the HLS Sentinel-2 (HLSS30)
+#' product. If using a different sensor, adjust the band wavelength arguments
 #' accordingly. For HLS band specifications see:
 #' \url{https://lpdaac.usgs.gov/documents/1698/HLS_User_Guide_V2.pdf}
 #'
@@ -1243,9 +1263,9 @@ compute_albedo <- function(dates,
 
 #' Compute Leaf and Ground Reflectance from LAI, Albedo and Land Cover
 #'
-#' Iterates over each date provided, computing leaf and ground reflectance 
-#' using \code{microclimdata::reflectance_calc()}. Land cover based x values are 
-#' computed annually and reused across all months within a year. LAI and albedo 
+#' Iterates over each date provided, computing leaf and ground reflectance
+#' using \code{microclimdata::reflectance_calc()}. Land cover based x values are
+#' computed annually and reused across all months within a year. LAI and albedo
 #' are processed monthly.
 #'
 #' @param dates Vector of class Date specifying year-month combinations to process.
@@ -1327,96 +1347,106 @@ compute_reflectance <- function(dates,
   cat(sprintf("\n--- Reflectance Computation: %d date(s) = %d combinations ---\n\n",
               length(dates), nrow(log)))
 
-  for (y in years) {
+  # Cache x_calc per year to avoid recomputing across months of same year
+  current_year <- NULL
+  x            <- NULL
+  com_ext      <- NULL
 
-    cat(sprintf("Year %d: computing x values from land cover...\n", y))
+  for (i in seq_len(nrow(log))) {
 
-    # Match land cover file for this year
-    lc_match <- lc_df$file[lc_df$year == y]
-    if (length(lc_match) == 0) stop(sprintf("Land cover file not found for year %d in:\n  %s", y, lc_dir))
-    if (length(lc_match) > 1) stop(sprintf("Multiple land cover files found for year %d in:\n  %s", y, lc_dir))
+    y  <- log$year[i]
+    mo <- log$month[i]
+    ym <- log$ym[i]
 
-    lc <- terra::rast(lc_match)
-    x  <- microclimdata::x_calc(lc, lctype = lctype)
+    # Recompute x_calc only when year changes
+    if (is.null(current_year) || y != current_year) {
 
-    # Use month 3 LAI as template for common extent and resolution
-    ref_ym       <- sprintf("%d_%02d", y, 3)
-    lai_ref      <- lai_df$file[lai_df$ym == ref_ym]
-    if (length(lai_ref) == 0) stop(sprintf("Reference LAI (month 03) not found for year %d", y))
+      cat(sprintf("Year %d: computing x values from land cover...\n", y))
 
-    lai_template <- terra::rast(lai_ref)
-    com_ext      <- terra::intersect(terra::ext(lai_template), terra::ext(x))
+      lc_match <- lc_df$file[lc_df$year == y]
+      if (length(lc_match) == 0) stop(sprintf("Land cover file not found for year %d in:\n  %s", y, lc_dir))
+      if (length(lc_match) > 1) stop(sprintf("Multiple land cover files found for year %d in:\n  %s", y, lc_dir))
 
-    x <- terra::crop(x, com_ext)
-    x <- terra::resample(x, lai_template)
-    rm(lai_template)
+      lc <- terra::rast(lc_match)
+      x  <- microclimdata::x_calc(lc, lctype = lctype)
 
-    # Optionally save annual x raster
-    if (!is.null(xcalc_dir)) {
-      x_out_name <- if (!is.null(study_area)) {
-        sprintf("x_calc_%s_%d.tif", study_area, y)
-      } else {
-        sprintf("x_calc_%d.tif", y)
+      # Use the first available LAI for this year as template
+      first_ym_for_year <- log$ym[log$year == y][1]
+      lai_ref <- lai_df$file[lai_df$ym == first_ym_for_year]
+      if (length(lai_ref) == 0) stop(sprintf("Reference LAI not found for year %d", y))
+
+      lai_template <- terra::rast(lai_ref)
+      com_ext      <- terra::intersect(terra::ext(lai_template), terra::ext(x))
+
+      x <- terra::crop(x, com_ext)
+      x <- terra::resample(x, lai_template)
+      rm(lai_template)
+
+      # Optionally save annual x raster
+      if (!is.null(xcalc_dir)) {
+        x_out_name <- if (!is.null(study_area)) {
+          sprintf("x_calc_%s_%d.tif", study_area, y)
+        } else {
+          sprintf("x_calc_%d.tif", y)
+        }
+        terra::writeRaster(x, file.path(xcalc_dir, x_out_name), overwrite = TRUE)
+        cat(sprintf("  Saved: %s\n", x_out_name))
       }
-      terra::writeRaster(x, file.path(xcalc_dir, x_out_name), overwrite = TRUE)
-      cat(sprintf("  Saved: %s\n", x_out_name))
+
+      current_year <- y
     }
 
-    for (m in months) {
+    cat(sprintf("  Processing month: %02d\n", mo))
 
-      ym <- sprintf("%d_%02d", y, m)
-      cat(sprintf("  Processing month: %02d\n", m))
+    # Match LAI and albedo files
+    lai_match <- lai_df$file[lai_df$ym == ym]
+    alb_match <- alb_df$file[alb_df$ym == ym]
 
-      # Match LAI and albedo files
-      lai_match <- lai_df$file[lai_df$ym == ym]
-      alb_match <- alb_df$file[alb_df$ym == ym]
+    if (length(lai_match) == 0) stop(sprintf("LAI file not found for %s in:\n  %s", ym, lai_dir))
+    if (length(alb_match) == 0) stop(sprintf("Albedo file not found for %s in:\n  %s", ym, alb_dir))
+    if (length(lai_match) > 1) stop(sprintf("Multiple LAI files found for %s in:\n  %s", ym, lai_dir))
+    if (length(alb_match) > 1) stop(sprintf("Multiple albedo files found for %s in:\n  %s", ym, alb_dir))
 
-      if (length(lai_match) == 0) stop(sprintf("LAI file not found for %s in:\n  %s", ym, lai_dir))
-      if (length(alb_match) == 0) stop(sprintf("Albedo file not found for %s in:\n  %s", ym, alb_dir))
-      if (length(lai_match) > 1) stop(sprintf("Multiple LAI files found for %s in:\n  %s", ym, lai_dir))
-      if (length(alb_match) > 1) stop(sprintf("Multiple albedo files found for %s in:\n  %s", ym, alb_dir))
+    lai <- terra::rast(lai_match)
+    alb <- terra::rast(alb_match)
 
-      lai <- terra::rast(lai_match)
-      alb <- terra::rast(alb_match)
+    # Crop to common extent
+    lai <- terra::crop(lai, com_ext)
+    alb <- terra::crop(alb, com_ext)
 
-      # Crop to common extent
-      lai <- terra::crop(lai, com_ext)
-      alb <- terra::crop(alb, com_ext)
-
-      # Validate matching extent and resolution before combining
-      if (!isTRUE(all.equal(terra::ext(x), terra::ext(lai)))  ||
-          !isTRUE(all.equal(terra::ext(x), terra::ext(alb)))  ||
-          !isTRUE(all.equal(terra::res(x), terra::res(lai)))  ||
-          !isTRUE(all.equal(terra::res(x), terra::res(alb)))) {
-        stop(sprintf(
-          "Extent or resolution of x, alb, and lai did not match for %s. Check preprocessing steps.", ym
-        ))
-      }
-
-      # Compute reflectance
-      refldata <- microclimdata::reflectance_calc(alb, lai, x, plotprogress = FALSE)
-
-      # Build output file names
-      lref_name <- if (!is.null(study_area)) {
-        sprintf("LF_Refl_%s_%s.tif", study_area, ym)
-      } else {
-        sprintf("LF_Refl_%s.tif", ym)
-      }
-
-      gref_name <- if (!is.null(study_area)) {
-        sprintf("GF_Refl_%s_%s.tif", study_area, ym)
-      } else {
-        sprintf("GF_Refl_%s.tif", ym)
-      }
-
-      terra::writeRaster(refldata$lref, file.path(out_dir_lref, lref_name), overwrite = TRUE)
-      terra::writeRaster(refldata$gref, file.path(out_dir_gref, gref_name), overwrite = TRUE)
-
-      cat(sprintf("    Saved: %s\n", lref_name))
-      cat(sprintf("    Saved: %s\n", gref_name))
-
-      log$status[log$ym == ym] <- "success"
+    # Validate matching extent and resolution before combining
+    if (!isTRUE(all.equal(terra::ext(x), terra::ext(lai)))  ||
+        !isTRUE(all.equal(terra::ext(x), terra::ext(alb)))  ||
+        !isTRUE(all.equal(terra::res(x), terra::res(lai)))  ||
+        !isTRUE(all.equal(terra::res(x), terra::res(alb)))) {
+      stop(sprintf(
+        "Extent or resolution of x, alb, and lai did not match for %s. Check preprocessing steps.", ym
+      ))
     }
+
+    # Compute reflectance
+    refldata <- microclimdata::reflectance_calc(alb, lai, x, plotprogress = FALSE)
+
+    # Build output file names
+    lref_name <- if (!is.null(study_area)) {
+      sprintf("LF_Refl_%s_%s.tif", study_area, ym)
+    } else {
+      sprintf("LF_Refl_%s.tif", ym)
+    }
+
+    gref_name <- if (!is.null(study_area)) {
+      sprintf("GF_Refl_%s_%s.tif", study_area, ym)
+    } else {
+      sprintf("GF_Refl_%s.tif", ym)
+    }
+
+    terra::writeRaster(refldata$lref, file.path(out_dir_lref, lref_name), overwrite = TRUE)
+    terra::writeRaster(refldata$gref, file.path(out_dir_gref, gref_name), overwrite = TRUE)
+
+    cat(sprintf("    Saved: %s\n", lref_name))
+    cat(sprintf("    Saved: %s\n", gref_name))
+
+    log$status[log$ym == ym] <- "success"
   }
 
   cat(sprintf("\nDone. %d/%d combinations processed successfully.\n",
@@ -1611,8 +1641,8 @@ download_aorc <- function(aoi,
 
   dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
 
-  # Build list of all year/month combos
-  combos <- expand.grid(year = years, month = months)
+  # Build list of specific year/month pairs from dates
+  combos <- data.frame(year = years, month = months, stringsAsFactors = FALSE)
 
   cat(sprintf("\n--- AORC Download: %d year(s) x %d month(s) ---\n\n",
               length(years), length(months)))
@@ -2056,27 +2086,6 @@ Pkg_Veg_Soil_data <- function(dates,
     data.frame(file = files, year = as.integer(matches), stringsAsFactors = FALSE)
   }
 
-  # Helper to generate month sequence between two dates
-  generate_month_sequence <- function(start_date, end_date) {
-    start_date <- as.Date(start_date)
-    end_date <- as.Date(end_date)
-    start_year <- lubridate::year(start_date)
-    start_month <- lubridate::month(start_date)
-    end_year <- lubridate::year(end_date)
-    end_month <- lubridate::month(end_date)
-    
-    months_list <- list()
-    for (y in start_year:end_year) {
-      m_start <- if (y == start_year) start_month else 1
-      m_end <- if (y == end_year) end_month else 12
-      months_list[[length(months_list) + 1]] <- data.frame(
-        year = y,
-        month = m_start:m_end,
-        stringsAsFactors = FALSE
-      )
-    }
-    do.call(rbind, months_list)
-  }
 
   # Load soil data once - does not change by date range
   if (!file.exists(soil_path)) stop(sprintf("Soil file not found:\n  %s", soil_path))
@@ -2096,16 +2105,16 @@ Pkg_Veg_Soil_data <- function(dates,
 
     start_date <- as.Date(date_ranges$Start_Dates[i])
     end_date <- as.Date(date_ranges$End_Dates[i])
-    period_label <- sprintf("%s_to_%s", 
-                            format(start_date, "%Y%m%d"), 
+    period_label <- sprintf("%s_to_%s",
+                            format(start_date, "%Y%m%d"),
                             format(end_date, "%Y%m%d"))
-    
+
     cat(sprintf("Processing period: %s\n", period_label))
 
     tryCatch({
 
       # Generate month sequence for this period
-      month_seq <- generate_month_sequence(start_date, end_date)
+      month_seq <- .generate_month_sequence(start_date, end_date)
 
       # List input files
       lc_files  <- list.files(lc_dir,  pattern = "\\.tif$", full.names = TRUE)
@@ -2135,7 +2144,7 @@ Pkg_Veg_Soil_data <- function(dates,
       first_year <- years_in_period[1]
       lc_match <- lc_df$file[lc_df$year == first_year]
       vh_match <- vh_df$file[vh_df$year == first_year]
-      
+
       lc   <- terra::rast(lc_match)
       vght <- terra::rast(vh_match)
 
@@ -2145,7 +2154,7 @@ Pkg_Veg_Soil_data <- function(dates,
       lai_match <- lai_match[order(match(
         regmatches(lai_match, regexpr("[0-9]{4}_[0-9]{2}", lai_match)), yms_needed
       ))]
-      
+
       if (length(lai_match) != length(yms_needed)) {
         stop(sprintf("Expected %d LAI files for period, found %d",
                      length(yms_needed), length(lai_match)))
@@ -2167,11 +2176,11 @@ Pkg_Veg_Soil_data <- function(dates,
 
       # Filter to years in this period and snow-free months
       lf_files <- lf_files[
-        (grepl(sprintf("_%s", paste(years_in_period, collapse = "|")), lf_files)) &
+        (grepl(sprintf("_(%s)[^0-9]", paste(years_in_period, collapse = "|")), lf_files)) &
         grepl(sf_pattern, lf_files)
       ]
       gf_files <- gf_files[
-        (grepl(sprintf("_%s", paste(years_in_period, collapse = "|")), gf_files)) &
+        (grepl(sprintf("_(%s)[^0-9]", paste(years_in_period, collapse = "|")), gf_files)) &
         grepl(sf_pattern, gf_files)
       ]
 
@@ -2296,10 +2305,10 @@ Pkg_Veg_Soil_data <- function(dates,
 
 #' Compute Multi-Year Climate Normals from AORC and Diffuse Radiation Data
 #'
-#' For each month in the provided date vector, stacks a given hour across all 
-#' available years and computes user-specified summary statistics. Output is 
-#' one multi-layer GeoTIFF per variable per month per statistic, with layers 
-#' ordered chronologically representing each hour of the month. The representative 
+#' For each month in the provided date vector, stacks a given hour across all
+#' available years and computes user-specified summary statistics. Output is
+#' one multi-layer GeoTIFF per variable per month per statistic, with layers
+#' ordered chronologically representing each hour of the month. The representative
 #' hour sequence is derived from the most recent non-leap year.
 #'
 #' @details AORC variables processed are: APCP_surface, DLWRF_surface,
@@ -2311,7 +2320,7 @@ Pkg_Veg_Soil_data <- function(dates,
 #'
 #' @param dates Vector of class Date specifying year-month combinations to process.
 #'   The day component is ignored; only the unique months and years are used.
-#'   E.g. as.Date(c("2020-03-01", "2021-03-01", "2022-03-01")) to use March 
+#'   E.g. as.Date(c("2020-03-01", "2021-03-01", "2022-03-01")) to use March
 #'   across years 2020-2022.
 #' @param aorc_dir Base directory containing AORC data organized as
 #'   \code{aorc_dir/study_area/year/month/} or \code{aorc_dir/year/month/}
@@ -2639,27 +2648,6 @@ package_climate <- function(dates,
 
   dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
 
-  # Helper to generate month sequence between two dates
-  generate_month_sequence <- function(start_date, end_date) {
-    start_date <- as.Date(start_date)
-    end_date <- as.Date(end_date)
-    start_year <- lubridate::year(start_date)
-    start_month <- lubridate::month(start_date)
-    end_year <- lubridate::year(end_date)
-    end_month <- lubridate::month(end_date)
-    
-    months_list <- list()
-    for (y in start_year:end_year) {
-      m_start <- if (y == start_year) start_month else 1
-      m_end <- if (y == end_year) end_month else 12
-      months_list[[length(months_list) + 1]] <- data.frame(
-        year = y,
-        month = m_start:m_end,
-        stringsAsFactors = FALSE
-      )
-    }
-    do.call(rbind, months_list)
-  }
 
   # Helper to load, sort, reproject and crop a variable raster
   load_var <- function(files, template) {
@@ -2685,15 +2673,15 @@ package_climate <- function(dates,
 
     start_date <- as.Date(date_ranges$Start_Dates[i])
     end_date <- as.Date(date_ranges$End_Dates[i])
-    period_label <- sprintf("%s_to_%s", 
-                            format(start_date, "%Y%m%d"), 
+    period_label <- sprintf("%s_to_%s",
+                            format(start_date, "%Y%m%d"),
                             format(end_date, "%Y%m%d"))
 
     cat(sprintf("\n--- Packaging climate for period: %s ---\n", period_label))
 
     # Generate month sequence for this period
     # Generate month sequence for this period
-    month_seq <- generate_month_sequence(start_date, end_date)
+    month_seq <- .generate_month_sequence(start_date, end_date)
 
     # Create temp directory for monthly RDS files
     temp_dir <- file.path(output_dir, period_label)
