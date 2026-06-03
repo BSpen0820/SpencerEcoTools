@@ -220,12 +220,13 @@ download_dem <- function(aoi,
 
 #' Downscale MODIS LAI to 30m Resolution Using NDVI
 #'
-#' Iterates over all combinations of years and months, loading HLS multispectral
-#' imagery and coarse MODIS LAI, and downscales LAI to 30m resolution using
-#' the lai_fromndvi() function from the microclimdata package.
+#' Iterates over each date provided, loading HLS multispectral imagery and 
+#' coarse MODIS LAI, and downscales LAI to 30m resolution using the 
+#' lai_fromndvi() function from the microclimdata package.
 #'
-#' @param years Integer vector of years to process e.g. c(2020, 2021)
-#' @param months Integer vector of months to process e.g. 3:8
+#' @param dates Vector of class Date specifying year-month combinations to process.
+#'   The day component is ignored; only year and month are used.
+#'   E.g. as.Date(c("2020-10-01", "2020-11-01"))
 #' @param img_dir Directory containing HLS imagery files
 #' @param lai_dir Directory containing coarse MODIS LAI files
 #' @param out_dir Directory to save downscaled LAI outputs
@@ -235,12 +236,16 @@ download_dem <- function(aoi,
 #' @return Invisibly returns a data frame logging the status of each
 #'   year/month combination processed
 #' @export
-downscale_lai <- function(years,
-                          months,
+downscale_lai <- function(dates,
                           img_dir,
                           lai_dir,
                           out_dir,
                           study_area = NULL) {
+
+  # Extract year and month from dates
+  dates <- as.Date(dates)
+  years <- lubridate::year(dates)
+  months <- lubridate::month(dates)
 
   dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
 
@@ -264,7 +269,7 @@ downscale_lai <- function(years,
   lai_df <- extract_ym(lai_files)
 
   # Build log from requested year/month combos
-  log <- expand.grid(year = years, month = months)
+  log <- data.frame(year = years, month = months, stringsAsFactors = FALSE)
   log$ym <- sprintf("%d_%02d", log$year, log$month)
   log$status <- NA_character_
 
@@ -462,14 +467,15 @@ LandfireVegHght_AsNumeric <- function(rast,
 
 #' Download MODIS Albedo Data from Google Earth Engine
 #'
-#' Iterates over all combinations of years and months, exporting monthly median
-#' MODIS shortwave black-sky albedo images from GEE to Google Drive, then
-#' optionally downloads them locally using poll_drive().
+#' Iterates over each date provided, exporting monthly median MODIS shortwave 
+#' black-sky albedo images from GEE to Google Drive, then optionally downloads 
+#' them locally using poll_drive().
 #'
 #' @param aoi A named list returned by define_aoi() containing elements
 #'   \code{geometry} (ee$Geometry) and \code{crs} (CRS string)
-#' @param years Integer vector of years to process e.g. c(2020, 2021)
-#' @param months Integer vector of months to process e.g. 3:8
+#' @param dates Vector of class Date specifying year-month combinations to process.
+#'   The day component is ignored; only year and month are used.
+#'   E.g. as.Date(c("2020-10-01", "2020-11-01"))
 #' @param local_path Local directory path to save downloaded albedo files
 #' @param study_area Optional character string identifying the study area e.g. "GMU1".
 #'   If provided, used as a prefix in output file names
@@ -485,14 +491,18 @@ LandfireVegHght_AsNumeric <- function(rast,
 #'   \item{poll_result}{Result of poll_drive() if poll = TRUE, otherwise NULL}
 #' @export
 download_albedo <- function(aoi,
-                            years,
-                            months,
-                            local_path,
-                            study_area = NULL,
-                            scale = 500,
-                            poll = TRUE,
-                            poll_interval = 30,
-                            timeout = 300) {
+                           dates,
+                           local_path,
+                           study_area = NULL,
+                           scale = 500,
+                           poll = TRUE,
+                           poll_interval = 30,
+                           timeout = 300) {
+
+  # Extract year and month from dates
+  dates <- as.Date(dates)
+  years <- lubridate::year(dates)
+  months <- lubridate::month(dates)
 
   if (!all(c("geometry", "crs") %in% names(aoi))) {
     stop("aoi must be a named list with 'geometry' and 'crs' elements, as returned by define_aoi()")
@@ -693,12 +703,12 @@ download_albedo <- function(aoi,
 
 #' Download HLS Sentinel-2 Imagery from Google Earth Engine
 #'
-#' Iterates over all combinations of years and months, applying a two-level
-#' cloud/shadow masking strategy to HLS S30 Sentinel-2 imagery. If gaps remain
-#' after masking, temporally adjacent images (up to 2 months either side) are
-#' used to fill gaps via inverse distance weighted mean, weighted by day
-#' distance from the center of the target month. A focal median is applied
-#' as a final fallback for any remaining gaps.
+#' Iterates over each date provided, applying a two-level cloud/shadow masking 
+#' strategy to HLS S30 Sentinel-2 imagery. If gaps remain after masking, 
+#' temporally adjacent images (up to 2 months either side) are used to fill 
+#' gaps via inverse distance weighted mean, weighted by day distance from the 
+#' center of the target month. A focal median is applied as a final fallback 
+#' for any remaining gaps.
 #'
 #' The masking strategy applied is:
 #' \enumerate{
@@ -710,8 +720,9 @@ download_albedo <- function(aoi,
 #'
 #' @param aoi A named list returned by define_aoi() containing elements
 #'   \code{geometry} (ee$Geometry) and \code{crs} (CRS string)
-#' @param years Integer vector of years to process e.g. c(2020, 2021)
-#' @param months Integer vector of months to process e.g. 3:8
+#' @param dates Vector of class Date specifying year-month combinations to process.
+#'   The day component is ignored; only year and month are used.
+#'   E.g. as.Date(c("2020-10-01", "2020-11-01"))
 #' @param local_path Local directory path to save downloaded imagery files
 #' @param study_area Optional character string identifying the study area e.g. "GMU1".
 #'   If provided, used as a prefix in output file names
@@ -732,16 +743,20 @@ download_albedo <- function(aoi,
 #'   \item{poll_result}{Result of poll_drive() if poll = TRUE, otherwise NULL}
 #' @export
 download_hls <- function(aoi,
-                         years,
-                         months,
-                         local_path,
-                         study_area = NULL,
-                         scale = 30,
-                         focal_radius = 10,
-                         max_months = 2,
-                         poll = TRUE,
-                         poll_interval = 30,
-                         timeout = 300) {
+                        dates,
+                        local_path,
+                        study_area = NULL,
+                        scale = 30,
+                        focal_radius = 10,
+                        max_months = 2,
+                        poll = TRUE,
+                        poll_interval = 30,
+                        timeout = 300) {
+
+  # Extract year and month from dates
+  dates <- as.Date(dates)
+  years <- lubridate::year(dates)
+  months <- lubridate::month(dates)
 
   if (!all(c("geometry", "crs") %in% names(aoi))) {
     stop("aoi must be a named list with 'geometry' and 'crs' elements, as returned by define_aoi()")
@@ -758,16 +773,17 @@ download_hls <- function(aoi,
   skipped      <- data.frame(year = integer(), month = integer())
   interpolated <- data.frame(year = integer(), month = integer())
 
-  cat(sprintf("\n--- HLS Imagery Export: %d year(s) x %d month(s) = %d combinations ---\n\n",
-              length(years), length(months), length(years) * length(months)))
+  cat(sprintf("\n--- HLS Imagery Export: %d date(s) = %d combinations ---\n\n",
+              length(dates), length(dates)))
 
-  for (y in years) {
-    for (mo in months) {
+  for (i in seq_along(dates)) {
+    y <- years[i]
+    mo <- months[i]
 
-      start_date <- sprintf("%d-%02d-01", y, mo)
-      end_date   <- as.character(lubridate::ceiling_date(as.Date(start_date), unit = "month"))
+    start_date <- sprintf("%d-%02d-01", y, mo)
+    end_date   <- as.character(lubridate::ceiling_date(as.Date(start_date), unit = "month"))
 
-      # Raw collection
+    # Raw collection
       hls_ic_raw <- rgee::ee$ImageCollection("NASA/HLS/HLSS30/v002")$
         filterDate(start_date, end_date)$
         filterBounds(ee_aoi)$
@@ -858,7 +874,6 @@ download_hls <- function(aoi,
       n_submitted <- n_submitted + 1
       cat(sprintf("  Task submitted: %s\n", fname))
     }
-  }
 
   cat(sprintf("\n%d task(s) submitted. %d combo(s) skipped. %d combo(s) used temporal interpolation.\n",
               n_submitted, nrow(skipped), nrow(interpolated)))
@@ -917,10 +932,9 @@ download_hls <- function(aoi,
 
 #' Download MODIS LAI Data from Google Earth Engine
 #'
-#' Iterates over all combinations of years and months, applying QC masking
-#' and scaling to MODIS MCD15A3H LAI imagery before exporting monthly median
-#' composites from GEE to Google Drive, then optionally downloading them
-#' locally using poll_drive().
+#' Iterates over each date provided, applying QC masking and scaling to MODIS 
+#' MCD15A3H LAI imagery before exporting monthly median composites from GEE to 
+#' Google Drive, then optionally downloading them locally using poll_drive().
 #'
 #' The masking strategy applies the following QC filters:
 #' \enumerate{
@@ -933,8 +947,9 @@ download_hls <- function(aoi,
 #'
 #' @param aoi A named list returned by define_aoi() containing elements
 #'   \code{geometry} (ee$Geometry) and \code{crs} (CRS string)
-#' @param years Integer vector of years to process e.g. c(2020, 2021)
-#' @param months Integer vector of months to process e.g. 3:8
+#' @param dates Vector of class Date specifying year-month combinations to process.
+#'   The day component is ignored; only year and month are used.
+#'   E.g. as.Date(c("2020-10-01", "2020-11-01"))
 #' @param local_path Local directory path to save downloaded LAI files
 #' @param study_area Optional character string identifying the study area e.g. "GMU1".
 #'   If provided, used as a prefix in output file names
@@ -952,15 +967,19 @@ download_hls <- function(aoi,
 #'   \item{poll_result}{Result of poll_drive() if poll = TRUE, otherwise NULL}
 #' @export
 download_modis_lai <- function(aoi,
-                               years,
-                               months,
-                               local_path,
-                               study_area = NULL,
-                               scale = 500,
-                               focal_radius = 10,
-                               poll = TRUE,
-                               poll_interval = 30,
-                               timeout = 300) {
+                              dates,
+                              local_path,
+                              study_area = NULL,
+                              scale = 500,
+                              focal_radius = 10,
+                              poll = TRUE,
+                              poll_interval = 30,
+                              timeout = 300) {
+
+  # Extract year and month from dates
+  dates <- as.Date(dates)
+  years <- lubridate::year(dates)
+  months <- lubridate::month(dates)
 
   if (!all(c("geometry", "crs") %in% names(aoi))) {
     stop("aoi must be a named list with 'geometry' and 'crs' elements, as returned by define_aoi()")
@@ -972,11 +991,12 @@ download_modis_lai <- function(aoi,
   n_submitted <- 0
   skipped     <- data.frame(year = integer(), month = integer())
 
-  cat(sprintf("\n--- MODIS LAI Export: %d year(s) x %d month(s) = %d combinations ---\n\n",
-              length(years), length(months), length(years) * length(months)))
+  cat(sprintf("\n--- MODIS LAI Export: %d date(s) = %d combinations ---\n\n",
+              length(dates), length(dates)))
 
-  for (y in years) {
-    for (mo in months) {
+  for (i in seq_along(dates)) {
+    y <- years[i]
+    mo <- months[i]
 
       start_date <- sprintf("%d-%02d-01", y, mo)
       end_date   <- as.character(lubridate::ceiling_date(as.Date(start_date), unit = "month"))
@@ -1025,7 +1045,6 @@ download_modis_lai <- function(aoi,
       n_submitted <- n_submitted + 1
       cat(sprintf("  Task submitted: %s\n", fname))
     }
-  }
 
   cat(sprintf("\n%d task(s) submitted. %d combo(s) skipped.\n", n_submitted, nrow(skipped)))
 
@@ -1055,17 +1074,17 @@ download_modis_lai <- function(aoi,
 
 #' Compute and Adjust Albedo from HLS Sentinel-2 Imagery
 #'
-#' Iterates over all combinations of years and months, computing photographic
-#' albedo from HLS Sentinel-2 imagery using \code{microclimdata::albedo_fromaerial()}
-#' and adjusting it to MODIS broadband albedo using
-#' \code{microclimdata::albedo_adjust()}. Default band wavelength parameters
-#' are specific to the HLS Sentinel-2 (HLSS30) product. If using a different
-#' sensor, adjust the band wavelength arguments accordingly. For HLS band
-#' specifications see:
+#' Iterates over each date provided, computing photographic albedo from HLS 
+#' Sentinel-2 imagery using \code{microclimdata::albedo_fromaerial()} and 
+#' adjusting it to MODIS broadband albedo using \code{microclimdata::albedo_adjust()}. 
+#' Default band wavelength parameters are specific to the HLS Sentinel-2 (HLSS30) 
+#' product. If using a different sensor, adjust the band wavelength arguments 
+#' accordingly. For HLS band specifications see:
 #' \url{https://lpdaac.usgs.gov/documents/1698/HLS_User_Guide_V2.pdf}
 #'
-#' @param years Integer vector of years to process e.g. c(2020, 2021)
-#' @param months Integer vector of months to process e.g. 3:8
+#' @param dates Vector of class Date specifying year-month combinations to process.
+#'   The day component is ignored; only year and month are used.
+#'   E.g. as.Date(c("2020-10-01", "2020-11-01"))
 #' @param modis_dir Directory containing MODIS albedo files
 #' @param hls_dir Directory containing HLS Sentinel-2 imagery files
 #' @param out_dir Directory to save output albedo files
@@ -1085,17 +1104,21 @@ download_modis_lai <- function(aoi,
 #' @return Invisibly returns a data frame logging the status of each
 #'   year/month combination processed
 #' @export
-compute_albedo <- function(years,
-                           months,
-                           modis_dir,
-                           hls_dir,
-                           out_dir,
-                           study_area = NULL,
-                           rgb_band_mins = c(640, 530, 450),
-                           rgb_band_maxs = c(670, 590, 510),
-                           cir_band_mins = c(780, 640, 530),
-                           cir_band_maxs = c(880, 670, 590),
-                           max_albedo = 0.6) {
+compute_albedo <- function(dates,
+                          modis_dir,
+                          hls_dir,
+                          out_dir,
+                          study_area = NULL,
+                          rgb_band_mins = c(640, 530, 450),
+                          rgb_band_maxs = c(670, 590, 510),
+                          cir_band_mins = c(780, 640, 530),
+                          cir_band_maxs = c(880, 670, 590),
+                          max_albedo = 0.6) {
+
+  # Extract year and month from dates
+  dates <- as.Date(dates)
+  years <- lubridate::year(dates)
+  months <- lubridate::month(dates)
 
   dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
 
@@ -1119,7 +1142,7 @@ compute_albedo <- function(years,
   hls_df   <- extract_ym(hls_files)
 
   # Build log from requested year/month combos
-  log <- expand.grid(year = years, month = months)
+  log <- data.frame(year = years, month = months, stringsAsFactors = FALSE)
   log$ym     <- sprintf("%d_%02d", log$year, log$month)
   log$status <- NA_character_
 
@@ -1220,13 +1243,14 @@ compute_albedo <- function(years,
 
 #' Compute Leaf and Ground Reflectance from LAI, Albedo and Land Cover
 #'
-#' Iterates over all combinations of years and months, computing leaf and
-#' ground reflectance using \code{microclimdata::reflectance_calc()}. Land
-#' cover based x values are computed annually and reused across all months
-#' within a year. LAI and albedo are processed monthly.
+#' Iterates over each date provided, computing leaf and ground reflectance 
+#' using \code{microclimdata::reflectance_calc()}. Land cover based x values are 
+#' computed annually and reused across all months within a year. LAI and albedo 
+#' are processed monthly.
 #'
-#' @param years Integer vector of years to process e.g. c(2020, 2021)
-#' @param months Integer vector of months to process e.g. 3:8
+#' @param dates Vector of class Date specifying year-month combinations to process.
+#'   The day component is ignored; only year and month are used.
+#'   E.g. as.Date(c("2020-10-01", "2020-11-01"))
 #' @param lc_dir Directory containing annual land cover files
 #' @param lai_dir Directory containing fine resolution LAI files
 #' @param alb_dir Directory containing HLS albedo files
@@ -1242,16 +1266,20 @@ compute_albedo <- function(years,
 #' @return Invisibly returns a data frame logging the status of each
 #'   year/month combination processed
 #' @export
-compute_reflectance <- function(years,
-                                months,
-                                lc_dir,
-                                lai_dir,
-                                alb_dir,
-                                out_dir_lref,
-                                out_dir_gref,
-                                xcalc_dir = NULL,
-                                study_area = NULL,
-                                lctype = "CORINE") {
+compute_reflectance <- function(dates,
+                               lc_dir,
+                               lai_dir,
+                               alb_dir,
+                               out_dir_lref,
+                               out_dir_gref,
+                               xcalc_dir = NULL,
+                               study_area = NULL,
+                               lctype = "CORINE") {
+
+  # Extract year and month from dates
+  dates <- as.Date(dates)
+  years <- lubridate::year(dates)
+  months <- lubridate::month(dates)
 
   # Validate lctype
   if (!lctype %in% c("CORINE", "ESA")) {
@@ -1292,12 +1320,12 @@ compute_reflectance <- function(years,
   alb_df <- extract_ym(alb_files)
 
   # Build log
-  log <- expand.grid(year = years, month = months)
+  log <- data.frame(year = years, month = months, stringsAsFactors = FALSE)
   log$ym     <- sprintf("%d_%02d", log$year, log$month)
   log$status <- NA_character_
 
-  cat(sprintf("\n--- Reflectance Computation: %d year(s) x %d month(s) = %d combinations ---\n\n",
-              length(years), length(months), nrow(log)))
+  cat(sprintf("\n--- Reflectance Computation: %d date(s) = %d combinations ---\n\n",
+              length(dates), nrow(log)))
 
   for (y in years) {
 
@@ -1517,8 +1545,9 @@ download_soil <- function(dtm,
 #'
 #' @param aoi A SpatRaster, SpatVector, sf object, or named list returned by
 #'   \code{define_aoi()}. Used to derive the bounding box for download
-#' @param years Integer vector of years to process e.g. c(2020, 2021)
-#' @param months Integer vector of months to process e.g. 3:8
+#' @param dates Vector of class Date specifying year-month combinations to process.
+#'   The day component is ignored; only year and month are used.
+#'   E.g. as.Date(c("2020-10-01", "2020-11-01"))
 #' @param out_dir Base directory to save downloaded AORC files. Files are
 #'   organized as \code{out_dir/study_area/year/month/} if study_area is
 #'   provided, otherwise \code{out_dir/year/month/}
@@ -1537,13 +1566,17 @@ download_soil <- function(dtm,
 #'   year/month/variable combination processed
 #' @export
 download_aorc <- function(aoi,
-                          years,
-                          months,
-                          out_dir,
-                          study_area = NULL,
-                          overwrite = FALSE,
-                          workers = 1,
-                          python_path = NULL) {
+                         dates,
+                         out_dir,
+                         study_area = NULL,
+                         overwrite = FALSE,
+                         workers = 1,
+                         python_path = NULL) {
+
+  # Extract year and month from dates
+  dates <- as.Date(dates)
+  years <- lubridate::year(dates)
+  months <- lubridate::month(dates)
 
   # Optionally set Python environment
   if (!is.null(python_path)) {
@@ -1747,8 +1780,9 @@ download_aorc <- function(aoi,
 #'
 #'   Requires the \code{solaR} package available on CRAN and GitHub.
 #'
-#' @param years Integer vector of years to process e.g. c(2020, 2021)
-#' @param months Integer vector of months to process e.g. 3:8
+#' @param dates Vector of class Date specifying year-month combinations to process.
+#'   The day component is ignored; only year and month are used.
+#'   E.g. as.Date(c("2020-10-01", "2020-11-01"))
 #' @param base_dir Base directory containing AORC data organized as
 #'   \code{base_dir/study_area/year/month/} or \code{base_dir/year/month/}
 #' @param study_area Optional character string identifying the study area e.g. "GMU1".
@@ -1759,17 +1793,21 @@ download_aorc <- function(aoi,
 #' @return Invisibly returns a data frame logging the status of each
 #'   year/month combination processed
 #' @export
-estimate_diffuse_rad <- function(years,
-                                 months,
-                                 base_dir,
-                                 study_area = NULL,
-                                 workers = 1) {
+estimate_diffuse_rad <- function(dates,
+                                base_dir,
+                                study_area = NULL,
+                                workers = 1) {
+
+  # Extract year and month from dates
+  dates <- as.Date(dates)
+  years <- lubridate::year(dates)
+  months <- lubridate::month(dates)
 
   # Build list of all year/month combos
-  combos <- expand.grid(year = years, month = months)
+  combos <- data.frame(year = years, month = months, stringsAsFactors = FALSE)
 
-  cat(sprintf("\n--- Diffuse Radiation Estimation: %d year(s) x %d month(s) = %d combinations ---\n\n",
-              length(years), length(months), nrow(combos)))
+  cat(sprintf("\n--- Diffuse Radiation Estimation: %d date(s) = %d combinations ---\n\n",
+              length(dates), nrow(combos)))
 
   # Set up parallel plan
   if (workers > 1) {
@@ -1935,14 +1973,18 @@ estimate_diffuse_rad <- function(years,
 
 #' Package Vegetation and Soil Parameters for Microclimate Modeling
 #'
-#' Iterates over years, assembling land cover, vegetation height, LAI, soil
+#' Iterates over date ranges, assembling land cover, vegetation height, LAI, soil
 #' data and reflectance into vegetation and soil parameter grids using
 #' \code{microclimdata::create_veggrid()} and
 #' \code{microclimdata::create_soilgrid()}. Reflectance data is averaged
 #' across user specified snow free months. Outputs are saved as RDS files.
 #'
-#' @param years Integer vector of years to process e.g. c(2020, 2021)
-#' @param months Integer vector of months for LAI e.g. 3:8
+#' @param dates A data.frame with columns \code{Start_Dates} and \code{End_Dates},
+#'   where each row defines a date range to process. Alternatively, a vector of
+#'   length 2 with \code{as.Date()} values where first is start date and last is
+#'   end date. The day component is ignored; all months between start and end
+#'   (inclusive) are processed in chronological order.
+#'   E.g. data.frame with columns Start_Dates and End_Dates, or as.Date(c("2020-10-01", "2021-03-01"))
 #' @param snow_free_months Integer vector of months to use for reflectance
 #'   averaging e.g. 6:8
 #' @param lc_dir Directory containing annual land cover files
@@ -1963,21 +2005,36 @@ estimate_diffuse_rad <- function(years,
 #'   \code{microclimdata::create_soilgrid()}. Default is 512
 #'
 #' @return Invisibly returns a data frame logging the status of each
-#'   year processed
+#'   date range processed
 #' @export
-Pkg_Veg_Soil_data <- function(years,
-                              months,
-                              snow_free_months,
-                              lc_dir,
-                              vh_dir,
-                              soil_path,
-                              lai_dir,
-                              refl_dir,
-                              vegpara_dir,
-                              soilpara_dir,
-                              study_area = NULL,
-                              lctype = "CORINE",
-                              water = 512) {
+Pkg_Veg_Soil_data <- function(dates,
+                             snow_free_months,
+                             lc_dir,
+                             vh_dir,
+                             soil_path,
+                             lai_dir,
+                             refl_dir,
+                             vegpara_dir,
+                             soilpara_dir,
+                             study_area = NULL,
+                             lctype = "CORINE",
+                             water = 512) {
+
+  # Process dates input
+  if (is.data.frame(dates)) {
+    if (!all(c("Start_Dates", "End_Dates") %in% names(dates))) {
+      stop("dates data.frame must contain columns 'Start_Dates' and 'End_Dates'")
+    }
+    date_ranges <- dates
+  } else if (is.vector(dates) && length(dates) == 2) {
+    date_ranges <- data.frame(
+      Start_Dates = as.Date(dates[1]),
+      End_Dates = as.Date(dates[2]),
+      stringsAsFactors = FALSE
+    )
+  } else {
+    stop("dates must be either a data.frame with Start_Dates and End_Dates columns, or a vector of length 2")
+  }
 
   # Validate lctype
   if (!lctype %in% c("CORINE", "ESA")) {
@@ -1999,74 +2056,127 @@ Pkg_Veg_Soil_data <- function(years,
     data.frame(file = files, year = as.integer(matches), stringsAsFactors = FALSE)
   }
 
-  # Load soil data once - does not change by year
+  # Helper to generate month sequence between two dates
+  generate_month_sequence <- function(start_date, end_date) {
+    start_date <- as.Date(start_date)
+    end_date <- as.Date(end_date)
+    start_year <- lubridate::year(start_date)
+    start_month <- lubridate::month(start_date)
+    end_year <- lubridate::year(end_date)
+    end_month <- lubridate::month(end_date)
+    
+    months_list <- list()
+    for (y in start_year:end_year) {
+      m_start <- if (y == start_year) start_month else 1
+      m_end <- if (y == end_year) end_month else 12
+      months_list[[length(months_list) + 1]] <- data.frame(
+        year = y,
+        month = m_start:m_end,
+        stringsAsFactors = FALSE
+      )
+    }
+    do.call(rbind, months_list)
+  }
+
+  # Load soil data once - does not change by date range
   if (!file.exists(soil_path)) stop(sprintf("Soil file not found:\n  %s", soil_path))
   SD <- terra::rast(soil_path)
 
   # Build log
-  log <- data.frame(year = years, status = NA_character_, stringsAsFactors = FALSE)
+  log <- data.frame(
+    period = NA_character_,
+    status = NA_character_,
+    stringsAsFactors = FALSE
+  )
 
-  cat(sprintf("\n--- Vegetation and Soil Parameter Packaging: %d year(s) ---\n\n",
-              length(years)))
+  cat(sprintf("\n--- Vegetation and Soil Parameter Packaging: %d period(s) ---\n\n",
+              nrow(date_ranges)))
 
-  for (y in years) {
+  for (i in seq_len(nrow(date_ranges))) {
 
-    cat(sprintf("Processing year: %d\n", y))
+    start_date <- as.Date(date_ranges$Start_Dates[i])
+    end_date <- as.Date(date_ranges$End_Dates[i])
+    period_label <- sprintf("%s_to_%s", 
+                            format(start_date, "%Y%m%d"), 
+                            format(end_date, "%Y%m%d"))
+    
+    cat(sprintf("Processing period: %s\n", period_label))
 
     tryCatch({
 
-      # --- Land cover ---
-      lc_files <- list.files(lc_dir, pattern = "\\.tif$", full.names = TRUE)
-      if (!is.null(study_area)) lc_files <- lc_files[grepl(study_area, lc_files)]
-      lc_df    <- extract_year(lc_files)
-      lc_match <- lc_df$file[lc_df$year == y]
-      if (length(lc_match) == 0) stop(sprintf("Land cover file not found for year %d", y))
-      if (length(lc_match) > 1) stop(sprintf("Multiple land cover files found for year %d", y))
+      # Generate month sequence for this period
+      month_seq <- generate_month_sequence(start_date, end_date)
 
-      # --- Vegetation height ---
-      vh_files <- list.files(vh_dir, pattern = "\\.tif$", full.names = TRUE)
-      if (!is.null(study_area)) vh_files <- vh_files[grepl(study_area, vh_files)]
-      vh_df    <- extract_year(vh_files)
-      vh_match <- vh_df$file[vh_df$year == y]
-      if (length(vh_match) == 0) stop(sprintf("Vegetation height file not found for year %d", y))
-      if (length(vh_match) > 1) stop(sprintf("Multiple vegetation height files found for year %d", y))
-
-      # --- LAI ---
+      # List input files
+      lc_files  <- list.files(lc_dir,  pattern = "\\.tif$", full.names = TRUE)
+      vh_files  <- list.files(vh_dir,  pattern = "\\.tif$", full.names = TRUE)
       lai_files <- list.files(lai_dir, pattern = "\\.tif$", full.names = TRUE)
-      if (!is.null(study_area)) lai_files <- lai_files[grepl(study_area, lai_files)]
-      lai_df    <- extract_ym(lai_files)
-      yms       <- sprintf("%d_%02d", y, months)
-      lai_match <- lai_df$file[lai_df$ym %in% yms]
-      lai_match <- lai_match[order(match(
-        regmatches(lai_match, regexpr("[0-9]{4}_[0-9]{2}", lai_match)), yms
-      ))]
-      if (length(lai_match) == 0) stop(sprintf("No LAI files found for year %d", y))
-      if (length(lai_match) != length(months)) {
-        warning(sprintf("Expected %d LAI files for year %d, found %d",
-                        length(months), y, length(lai_match)))
+
+      if (!is.null(study_area)) {
+        lc_files  <- lc_files[grepl(study_area, lc_files)]
+        vh_files  <- vh_files[grepl(study_area, vh_files)]
+        lai_files <- lai_files[grepl(study_area, lai_files)]
       }
 
-      # --- Reflectance files filtered by year and snow free months ---
-      sf_pattern <- paste(sprintf("%02d", snow_free_months), collapse = "|")
+      lc_df  <- extract_year(lc_files)
+      lai_df <- extract_ym(lai_files)
+      vh_df  <- extract_year(vh_files)
 
-      lf_files <- list.files(file.path(refl_dir, "Lref"),
-                             pattern = "\\.tif$", full.names = TRUE)
-      lf_files <- lf_files[grepl(as.character(y), lf_files) &
-                             (if (!is.null(study_area)) grepl(study_area, lf_files) else TRUE) &
-                             grepl(sf_pattern, lf_files)]
-      if (length(lf_files) == 0) stop(sprintf("No leaf reflectance files found for year %d", y))
+      # Collect all unique years in the period
+      years_in_period <- unique(month_seq$year)
 
-      gf_files <- list.files(file.path(refl_dir, "Gref"),
-                             pattern = "\\.tif$", full.names = TRUE)
-      gf_files <- gf_files[grepl(as.character(y), gf_files) &
-                             (if (!is.null(study_area)) grepl(study_area, gf_files) else TRUE) &
-                             grepl(sf_pattern, gf_files)]
-      if (length(gf_files) == 0) stop(sprintf("No ground reflectance files found for year %d", y))
+      # Check that we have files for all required years
+      for (y in years_in_period) {
+        if (!(y %in% lc_df$year)) stop(sprintf("Land cover file not found for year %d", y))
+        if (!(y %in% vh_df$year)) stop(sprintf("Vegetation height file not found for year %d", y))
+      }
 
-      # --- Load rasters ---
+      # Load first year's lc and vght (constant across period)
+      first_year <- years_in_period[1]
+      lc_match <- lc_df$file[lc_df$year == first_year]
+      vh_match <- vh_df$file[vh_df$year == first_year]
+      
       lc   <- terra::rast(lc_match)
       vght <- terra::rast(vh_match)
-      lai  <- terra::rast(lai_match)
+
+      # Load LAI files for all months in the period
+      yms_needed <- sprintf("%d_%02d", month_seq$year, month_seq$month)
+      lai_match <- lai_df$file[lai_df$ym %in% yms_needed]
+      lai_match <- lai_match[order(match(
+        regmatches(lai_match, regexpr("[0-9]{4}_[0-9]{2}", lai_match)), yms_needed
+      ))]
+      
+      if (length(lai_match) != length(yms_needed)) {
+        stop(sprintf("Expected %d LAI files for period, found %d",
+                     length(yms_needed), length(lai_match)))
+      }
+
+      lai <- terra::rast(lai_match)
+
+      # Collect reflectance files for snow-free months across all years
+      sf_pattern <- paste(sprintf("%02d", snow_free_months), collapse = "|")
+      lf_files <- list.files(file.path(refl_dir, "Lref"),
+                             pattern = "\\.tif$", full.names = TRUE)
+      gf_files <- list.files(file.path(refl_dir, "Gref"),
+                             pattern = "\\.tif$", full.names = TRUE)
+
+      if (!is.null(study_area)) {
+        lf_files <- lf_files[grepl(study_area, lf_files)]
+        gf_files <- gf_files[grepl(study_area, gf_files)]
+      }
+
+      # Filter to years in this period and snow-free months
+      lf_files <- lf_files[
+        (grepl(sprintf("_%s", paste(years_in_period, collapse = "|")), lf_files)) &
+        grepl(sf_pattern, lf_files)
+      ]
+      gf_files <- gf_files[
+        (grepl(sprintf("_%s", paste(years_in_period, collapse = "|")), gf_files)) &
+        grepl(sf_pattern, gf_files)
+      ]
+
+      if (length(lf_files) == 0) stop("No leaf reflectance files found for period")
+      if (length(gf_files) == 0) stop("No ground reflectance files found for period")
 
       refldata <- list(
         gref = terra::mean(terra::rast(gf_files)),
@@ -2110,7 +2220,7 @@ Pkg_Veg_Soil_data <- function(years,
       gc()
 
       # --- Name LAI layers by month ---
-      names(lai_rs) <- sprintf("month_%02d", months[seq_len(terra::nlyr(lai_rs))])
+      names(lai_rs) <- sprintf("month_%04d%02d", month_seq$year, month_seq$month)
 
       # --- Create vegetation parameter grid ---
       cat("  Building vegetation parameter grids...\n")
@@ -2128,9 +2238,9 @@ Pkg_Veg_Soil_data <- function(years,
       vegp <- vegp.list[[1]]
 
       if (terra::nlyr(lai_rs) > 1) {
-        for (i in 2:terra::nlyr(lai_rs)) {
-          pai   <- vegp.list[[i]]$pai
-          clump <- vegp.list[[i]]$clump
+        for (j in 2:terra::nlyr(lai_rs)) {
+          pai   <- vegp.list[[j]]$pai
+          clump <- vegp.list[[j]]$clump
           vegp$pai   <- terra::wrap(c(terra::unwrap(vegp$pai),   terra::unwrap(pai)))
           vegp$clump <- terra::wrap(c(terra::unwrap(vegp$clump), terra::unwrap(clump)))
         }
@@ -2140,9 +2250,9 @@ Pkg_Veg_Soil_data <- function(years,
 
       # --- Save vegetation parameters ---
       veg_out <- file.path(vegpara_dir, if (!is.null(study_area)) {
-        sprintf("%s_VegPara_%d.RDS", study_area, y)
+        sprintf("%s_VegPara_%s.RDS", study_area, period_label)
       } else {
-        sprintf("VegPara_%d.RDS", y)
+        sprintf("VegPara_%s.RDS", period_label)
       })
       readr::write_rds(vegp, file = veg_out)
       cat(sprintf("  Saved: %s\n", basename(veg_out)))
@@ -2160,36 +2270,37 @@ Pkg_Veg_Soil_data <- function(years,
       )
 
       soil_out <- file.path(soilpara_dir, if (!is.null(study_area)) {
-        sprintf("%s_SoilPara_%d.RDS", study_area, y)
+        sprintf("%s_SoilPara_%s.RDS", study_area, period_label)
       } else {
-        sprintf("SoilPara_%d.RDS", y)
+        sprintf("SoilPara_%s.RDS", period_label)
       })
       readr::write_rds(soilc, file = soil_out)
       cat(sprintf("  Saved: %s\n", basename(soil_out)))
 
-      log$status[log$year == y] <- "success"
+      log <- rbind(log, data.frame(period = period_label, status = "success", stringsAsFactors = FALSE))
 
     }, error = function(e) {
-      warning(sprintf("Failed year %d: %s", y, e$message))
-      log$status[log$year == y] <<- paste("failed -", e$message)
+      warning(sprintf("Failed period %s: %s", period_label, e$message))
+      log <<- rbind(log, data.frame(period = period_label, status = paste("failed -", e$message), stringsAsFactors = FALSE))
     })
 
     gc()
   }
 
-  cat(sprintf("\nDone. %d/%d years processed successfully.\n",
-              sum(log$status == "success", na.rm = TRUE), length(years)))
+  log <- log[!is.na(log$period), ]
+  cat(sprintf("\nDone. %d/%d periods processed successfully.\n",
+              sum(log$status == "success", na.rm = TRUE), nrow(log)))
 
   return(invisible(log))
 }
 
 #' Compute Multi-Year Climate Normals from AORC and Diffuse Radiation Data
 #'
-#' For each month, stacks a given hour across all available years and computes
-#' user-specified summary statistics. Output is one multi-layer GeoTIFF per
-#' variable per month per statistic, with layers ordered chronologically
-#' representing each hour of the month. The representative hour sequence is
-#' derived from the most recent non-leap year.
+#' For each month in the provided date vector, stacks a given hour across all 
+#' available years and computes user-specified summary statistics. Output is 
+#' one multi-layer GeoTIFF per variable per month per statistic, with layers 
+#' ordered chronologically representing each hour of the month. The representative 
+#' hour sequence is derived from the most recent non-leap year.
 #'
 #' @details AORC variables processed are: APCP_surface, DLWRF_surface,
 #'   DSWRF_surface, PRES_surface, SPFH_2maboveground, TMP_2maboveground,
@@ -2198,8 +2309,10 @@ Pkg_Veg_Soil_data <- function(years,
 #'   \code{download_aorc()} and \code{estimate_diffuse_rad()}.
 #'   Missing files for individual years are skipped and logged.
 #'
-#' @param months Integer vector of months to include in the summary e.g. 3:6
-#' @param years Integer vector of years to include in the summary e.g. 1995:2024
+#' @param dates Vector of class Date specifying year-month combinations to process.
+#'   The day component is ignored; only the unique months and years are used.
+#'   E.g. as.Date(c("2020-03-01", "2021-03-01", "2022-03-01")) to use March 
+#'   across years 2020-2022.
 #' @param aorc_dir Base directory containing AORC data organized as
 #'   \code{aorc_dir/study_area/year/month/} or \code{aorc_dir/year/month/}
 #' @param out_dir Base directory for output files organized as
@@ -2214,13 +2327,17 @@ Pkg_Veg_Soil_data <- function(years,
 #' @return Invisibly returns a data frame logging the status of each
 #'   month/variable combination processed
 #' @export
-summarize_climate_normals <- function(months,
-                                      years,
-                                      aorc_dir,
-                                      out_dir,
-                                      stats = c("mean", "median", "mode", "sd", "min", "max"),
-                                      study_area = NULL,
-                                      workers = 1) {
+summarize_climate_normals <- function(dates,
+                                     aorc_dir,
+                                     out_dir,
+                                     stats = c("mean", "median", "mode", "sd", "min", "max"),
+                                     study_area = NULL,
+                                     workers = 1) {
+
+  # Extract year and month from dates
+  dates <- as.Date(dates)
+  years <- unique(lubridate::year(dates))
+  months <- unique(lubridate::month(dates))
 
   # Validate stats
   valid_stats <- c("mean", "median", "mode", "sd", "min", "max")
@@ -2256,8 +2373,8 @@ summarize_climate_normals <- function(months,
     stringsAsFactors = FALSE
   )
 
-  cat(sprintf("\n--- Climate Normals: %d year(s), %d month/variable combos ---\n\n",
-              length(years), nrow(combos)))
+  cat(sprintf("\n--- Climate Normals: %d year(s), %d unique month(s), %d month/variable combos ---\n\n",
+              length(years), length(months), nrow(combos)))
 
   # Mode helper
   rast_mode <- function(x) {
@@ -2449,8 +2566,8 @@ summarize_climate_normals <- function(months,
 #' Loads AORC climate data, converts units, computes derived variables
 #' (relative humidity, wind speed, wind direction), reprojects and crops
 #' to a template raster, and assembles everything into a microclimf-ready
-#' named list. Outputs one RDS per year concatenating all months in the
-#' order they are provided. Monthly RDS files are saved to a temporary
+#' named list. Outputs one RDS per date range concatenating all months in
+#' chronological order. Monthly RDS files are saved to a temporary
 #' subdirectory and optionally cleaned up after concatenation.
 #'
 #' @details Unit conversions applied:
@@ -2466,16 +2583,17 @@ summarize_climate_normals <- function(months,
 #'   A warning is issued reminding the user that the template raster should
 #'   be representative of vegetation or soil parameter outputs.
 #'
-#' @param months Integer vector of months to process in the desired
-#'   concatenation order e.g. c(3:8) for spring/summer or c(7:12, 1:6)
-#'   for a water year. Months are processed and concatenated in this order
-#' @param years Integer vector of years to process e.g. c(2020, 2021).
-#'   A separate RDS is created per year
+#' @param dates A data.frame with columns \code{Start_Dates} and \code{End_Dates},
+#'   where each row defines a date range to process. Alternatively, a vector of
+#'   length 2 with \code{as.Date()} values where first is start date and last is
+#'   end date. The day component is ignored; all months between start and end
+#'   (inclusive) are processed in chronological order.
+#'   E.g. data.frame with columns Start_Dates and End_Dates, or as.Date(c("2020-10-01", "2021-03-01"))
 #' @param input_dir Base directory containing AORC data organized as
 #'   \code{input_dir/year/month/} matching the structure produced by
 #'   \code{download_aorc()}
-#' @param output_dir Directory to save final yearly output RDS files.
-#'   Temporary monthly RDS files are saved to \code{output_dir/year/}
+#' @param output_dir Directory to save final output RDS files.
+#'   Temporary monthly RDS files are saved to \code{output_dir/date_range/}
 #'   subdirectories
 #' @param template A SpatRaster used as the CRS and extent template for
 #'   reprojection and cropping. Should be representative of vegetation or
@@ -2484,14 +2602,13 @@ summarize_climate_normals <- function(months,
 #'   e.g. "GMU1". If provided, used to filter input files and prefix output
 #'   file names
 #' @param keep_monthly Logical. Whether to keep the temporary monthly RDS
-#'   files after the yearly RDS has been created. If FALSE the temporary
-#'   year subdirectory and its contents are deleted after concatenation.
+#'   files after the final RDS has been created. If FALSE the temporary
+#'   period subdirectory and its contents are deleted after concatenation.
 #'   Default is FALSE
 #'
-#' @return Invisibly returns a named list of output file paths keyed by year
+#' @return Invisibly returns a named list of output file paths keyed by period
 #' @export
-package_climate <- function(months,
-                            years,
+package_climate <- function(dates,
                             input_dir,
                             output_dir,
                             template,
@@ -2504,7 +2621,45 @@ package_climate <- function(months,
 
   warning("Ensure the template raster is representative of vegetation or soil parameter outputs for correct spatial alignment.")
 
+  # Process dates input
+  if (is.data.frame(dates)) {
+    if (!all(c("Start_Dates", "End_Dates") %in% names(dates))) {
+      stop("dates data.frame must contain columns 'Start_Dates' and 'End_Dates'")
+    }
+    date_ranges <- dates
+  } else if (is.vector(dates) && length(dates) == 2) {
+    date_ranges <- data.frame(
+      Start_Dates = as.Date(dates[1]),
+      End_Dates = as.Date(dates[2]),
+      stringsAsFactors = FALSE
+    )
+  } else {
+    stop("dates must be either a data.frame with Start_Dates and End_Dates columns, or a vector of length 2")
+  }
+
   dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
+
+  # Helper to generate month sequence between two dates
+  generate_month_sequence <- function(start_date, end_date) {
+    start_date <- as.Date(start_date)
+    end_date <- as.Date(end_date)
+    start_year <- lubridate::year(start_date)
+    start_month <- lubridate::month(start_date)
+    end_year <- lubridate::year(end_date)
+    end_month <- lubridate::month(end_date)
+    
+    months_list <- list()
+    for (y in start_year:end_year) {
+      m_start <- if (y == start_year) start_month else 1
+      m_end <- if (y == end_year) end_month else 12
+      months_list[[length(months_list) + 1]] <- data.frame(
+        year = y,
+        month = m_start:m_end,
+        stringsAsFactors = FALSE
+      )
+    }
+    do.call(rbind, months_list)
+  }
 
   # Helper to load, sort, reproject and crop a variable raster
   load_var <- function(files, template) {
@@ -2526,19 +2681,32 @@ package_climate <- function(months,
   # Build log
   log <- list()
 
-  for (y in years) {
+  for (i in seq_len(nrow(date_ranges))) {
 
-    cat(sprintf("\n--- Packaging climate for year: %d ---\n", y))
+    start_date <- as.Date(date_ranges$Start_Dates[i])
+    end_date <- as.Date(date_ranges$End_Dates[i])
+    period_label <- sprintf("%s_to_%s", 
+                            format(start_date, "%Y%m%d"), 
+                            format(end_date, "%Y%m%d"))
+
+    cat(sprintf("\n--- Packaging climate for period: %s ---\n", period_label))
+
+    # Generate month sequence for this period
+    # Generate month sequence for this period
+    month_seq <- generate_month_sequence(start_date, end_date)
 
     # Create temp directory for monthly RDS files
-    temp_dir <- file.path(output_dir, as.character(y))
+    temp_dir <- file.path(output_dir, period_label)
     dir.create(temp_dir, recursive = TRUE, showWarnings = FALSE)
 
     month_rds_paths <- list()
 
-    for (m in months) {
+    for (j in seq_len(nrow(month_seq))) {
 
-      cat(sprintf("  Processing month: %02d\n", m))
+      y <- month_seq$year[j]
+      m <- month_seq$month[j]
+
+      cat(sprintf("  Processing month: %04d-%02d\n", y, m))
 
       # Build month directory matching download_aorc() structure
       month_dir <- file.path(input_dir, y, m)
@@ -2667,36 +2835,32 @@ package_climate <- function(months,
 
       # --- Save monthly RDS to temp directory ---
       month_file <- if (!is.null(study_area)) {
-        file.path(temp_dir, sprintf("%s_Climate_%d_Month_%02d.RDS", study_area, y, m))
+        file.path(temp_dir, sprintf("%s_Climate_%04d_%02d.RDS", study_area, y, m))
       } else {
-        file.path(temp_dir, sprintf("Climate_%d_Month_%02d.RDS", y, m))
+        file.path(temp_dir, sprintf("Climate_%04d_%02d.RDS", y, m))
       }
 
       readr::write_rds(out, file = month_file)
       cat(sprintf("    Saved temp: %s\n", basename(month_file)))
-      month_rds_paths[[sprintf("%02d", m)]] <- month_file
+      month_rds_paths[[length(month_rds_paths) + 1]] <- month_file
 
       rm(out, r.pr, r.at, r.rh, r.lw, r.sw, r.pa, r.ws, r.wd, r.df)
       gc()
     }
 
-    # --- Concatenate months in the order provided ---
+    # --- Concatenate months in chronological order ---
     if (length(month_rds_paths) >= 1) {
 
-      cat(sprintf("  Concatenating months for year %d in specified order...\n", y))
-
-      ordered_keys  <- sprintf("%02d", months)
-      ordered_keys  <- ordered_keys[ordered_keys %in% names(month_rds_paths)]
-      ordered_paths <- month_rds_paths[ordered_keys]
+      cat(sprintf("  Concatenating months for period %s in chronological order...\n", period_label))
 
       # Load first month as base
-      int    <- readr::read_rds(ordered_paths[[1]])
+      int    <- readr::read_rds(month_rds_paths[[1]])
       vnames <- names(int)
 
       # Concatenate remaining months if more than one
-      if (length(ordered_paths) > 1) {
-        for (k in seq_along(ordered_paths)[-1]) {
-          out <- readr::read_rds(ordered_paths[[k]])
+      if (length(month_rds_paths) > 1) {
+        for (k in seq_along(month_rds_paths)[-1]) {
+          out <- readr::read_rds(month_rds_paths[[k]])
           int <- lapply(vnames, function(x) {
             var1 <- terra::rast(int[[x]])
             var2 <- terra::rast(out[[x]])
@@ -2708,16 +2872,16 @@ package_climate <- function(months,
         }
       }
 
-      # --- Save year RDS to base output directory ---
-      year_file <- if (!is.null(study_area)) {
-        file.path(output_dir, sprintf("%s_Climate_%d.RDS", study_area, y))
+      # --- Save period RDS to base output directory ---
+      period_file <- if (!is.null(study_area)) {
+        file.path(output_dir, sprintf("%s_Climate_%s.RDS", study_area, period_label))
       } else {
-        file.path(output_dir, sprintf("Climate_%d.RDS", y))
+        file.path(output_dir, sprintf("Climate_%s.RDS", period_label))
       }
 
-      readr::write_rds(int, file = year_file)
-      cat(sprintf("  Saved: %s\n", basename(year_file)))
-      log[[as.character(y)]] <- year_file
+      readr::write_rds(int, file = period_file)
+      cat(sprintf("  Saved: %s\n", basename(period_file)))
+      log[[period_label]] <- period_file
 
       rm(int)
       gc()
@@ -2725,7 +2889,7 @@ package_climate <- function(months,
       # --- Clean up temp directory if keep_monthly is FALSE ---
       if (!keep_monthly) {
         unlink(temp_dir, recursive = TRUE)
-        cat(sprintf("  Temporary monthly files removed for year %d.\n", y))
+        cat(sprintf("  Temporary monthly files removed for period %s.\n", period_label))
       } else {
         cat(sprintf("  Temporary monthly files kept in: %s\n", temp_dir))
       }
