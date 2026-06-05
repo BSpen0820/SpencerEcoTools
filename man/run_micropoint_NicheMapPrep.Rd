@@ -16,58 +16,65 @@ run_micropoint_NicheMapPrep(
   windhgt = 10,
   matemp = NA,
   maxiter = 20,
-  year = NULL,
+  period_label = NULL,
   study_area = NULL,
   ...
 )
 }
 \arguments{
-\item{climarrayr}{List of wrapped terra SpatRasters containing climate variables
-(e.g., precipitation, temperature, wind speed). Each raster should have the
-same extent, resolution, and temporal dimensions.}
+\item{climarrayr}{List of wrapped terra SpatRasters containing climate
+variables (e.g., precipitation, temperature, wind speed). Each raster
+should have the same extent, resolution, and temporal dimensions.}
 
-\item{tme}{POSIXlt object representing the time dimension of the climate data.
-Should match the temporal dimension of climarrayr.}
+\item{tme}{POSIXlt object representing the time dimension of the climate
+data. Should match the temporal dimension of climarrayr.}
 
-\item{dtm}{terra SpatRaster of the digital terrain model (elevation). Should align
-with the extent and resolution of climate data.}
+\item{dtm}{terra SpatRaster of the digital terrain model (elevation). Should
+align with the extent and resolution of climate data.}
 
 \item{vegp}{List or data frame containing vegetation parameters required by
 microclimf::runpointmodela (e.g., vegetation height, ground cover).}
 
 \item{soilc}{List or data frame containing soil parameters required by
-microclimf::runpointmodela (e.g., soil texture, conductivity, heat capacity).}
+microclimf::runpointmodela (e.g., soil texture, conductivity, heat
+capacity).}
 
-\item{output_dir}{Character. Base directory where model outputs will be saved.
-Subdirectories will be created following the structure: output_dir/study_area/year/}
+\item{output_dir}{Character. Base directory where model outputs will be
+saved. Subdirectories are created as
+\code{output_dir/study_area/period_label/}.}
 
-\item{reqhgt}{Numeric. Desired height above ground (in meters) for above-ground
-microclimate predictions. Default is 2 (meters above ground).}
+\item{reqhgt}{Numeric. Desired height above ground (in meters) for
+above-ground microclimate predictions. Default is 2.}
 
-\item{zref}{Numeric. Reference height (in meters) for ambient measurements. Default is 10.}
+\item{zref}{Numeric. Reference height (in meters) for ambient measurements.
+Default is 2.}
 
-\item{windhgt}{Numeric. Height (in meters) at which wind speed is measured in input data.
-Default is 10.}
+\item{windhgt}{Numeric. Height (in meters) at which wind speed is measured
+in input data. Default is 10.}
 
-\item{matemp}{Numeric. Mean annual temperature (°C). If NA (default), will be
-calculated from climarrayr.}
+\item{matemp}{Numeric. Mean annual temperature (°C). If \code{NA}
+(default), will be calculated from \code{climarrayr}.}
 
 \item{maxiter}{Numeric. Maximum number of iterations for model convergence.
 Default is 20.}
 
-\item{year}{Character or numeric. Year identifier for output file naming. Optional;
-if provided, will be appended to output file names.}
+\item{period_label}{Character. Date-range label appended to output file
+names (e.g., \code{"20200101_to_20201231"}). Optional; if \code{NULL} no
+label is added.}
 
-\item{study_area}{Character. Study area identifier for output file naming. Optional;
-if provided, will be prepended to output file names.}
+\item{study_area}{Character. Study area identifier prepended to output file
+names. Optional.}
 
-\item{...}{Additional advanced options. Most users can ignore these. See details related to HPC usage for more information.}
+\item{...}{Additional advanced options for single-period HPC distribution.
+Accepted values are \code{clust_array_arg} and \code{clust_array_size}.
+For multi-period HPC distribution use \code{\link{run_iter_micropoint}}.}
 }
 \value{
 A data frame with columns:
-\item{depth}{Numeric. Soil depth in centimeters (negative for below surface).
-"Above ground" for above-ground model.}
-\item{file_path}{Character. Full file path where the model output was saved.}
+\item{depth}{Character. Soil depth in centimeters (negative for below
+surface) or the above-ground height in meters.}
+\item{file_path}{Character. Full file path where the model output was
+saved.}
 }
 \description{
 Preprocessing step that runs the micropoint model at multiple soil depths to
@@ -76,61 +83,64 @@ microclimate modeling workflow, followed by optional snow modeling and then
 the full microclimate model.
 }
 \details{
-Function arguments are those required to run the microclimf::runpointmodela function, as well as additional
-functionality. microclimf::runpointmodela documentation should be referenced for details on the required parameters and their formats.
+Function arguments are those required to run the microclimf::runpointmodela
+function, as well as additional functionality. microclimf::runpointmodela
+documentation should be referenced for details on the required parameters
+and their formats.
 
 This function runs microclimate preprocessing at 9 predefined soil depths:
-1.5 cm, 5 cm, 10 cm, 15 cm, 20 cm, 30 cm, 50 cm, 100 cm, and 200 cm below surface.
+1.5 cm, 5 cm, 10 cm, 15 cm, 20 cm, 30 cm, 50 cm, 100 cm, and 200 cm
+below surface.
 
 \strong{Output files:} Two types of outputs are generated:
 \itemize{
-\item Above-ground model: \verb{\{study_area\}_AbvGrd_MicropointModel_\{year\}.RDS}
-\item Below-ground models: \verb{\{study_area\}_BlwGrd_\{depth\}mm_MicropointModel_\{year\}.RDS}
-where depth is in millimeters (e.g., BlwGrd_0015_MicropointModel for 1.5 cm)
+\item Above-ground: \code{{study_area}_AbvGrd_MicropointModel_{period_label}.RDS}
+\item Below-ground: \code{{study_area}_BlwGrd_{depth_mm}_MicropointModel_{period_label}.RDS}
+where depth is zero-padded millimetres (e.g., \code{BlwGrd_0015} for
+1.5 cm).
 }
 
-\strong{Advanced HPC Usage}
+\strong{Single-period HPC usage}
 
-For high-performance computing environments, internal options can be
-supplied through \code{...} to distribute soil-depth calculations across
-multiple jobs. These options are not documented as part of the public API.
-
-For large datasets, distribute processing across HPC nodes by submitting a SLURM
-array job. Set clust_array_size = n and use
-the array index (1-9) as clust_array_arg in each job submission:
+To distribute the 10 tasks (1 above-ground + 9 soil depths) across a SLURM
+array for a single period, pass \code{clust_array_arg} and
+\code{clust_array_size} via \code{...}:
 \preformatted{
   #SBATCH --array=1-9
-  Rscript script.R --clust_array_arg=$SLURM_ARRAY_TASK_ID --clust_array_size=9
+  Rscript script.R --clust_array_arg=$SLURM_ARRAY_TASK_ID \
+                   --clust_array_size=9
 }
+For multi-period HPC with an array larger than 9, see
+\code{\link{run_iter_micropoint}}.
 }
 \examples{
 \dontrun{
-  # Basic usage with minimal parameters
+  # Basic usage
   log_df <- run_micropoint_NicheMapPrep(
     climarrayr = climate_list,
-    tme = time_vector,
-    dtm = dem_raster,
-    vegp = vegetation_params,
-    soilc = soil_params,
+    tme        = time_vector,
+    dtm        = dem_raster,
+    vegp       = vegetation_params,
+    soilc      = soil_params,
     output_dir = "./microclim_output"
   )
-  print(log_df)  # View saved files and depths
 
-  # With study area and year identifiers
+  # With period label and study area
   log_df <- run_micropoint_NicheMapPrep(
-    climarrayr = climate_list,
-    tme = time_vector,
-    dtm = dem_raster,
-    vegp = vegetation_params,
-    soilc = soil_params,
-    output_dir = "./microclim_output",
-    study_area = "GMU1",
-    year = 2020
+    climarrayr   = climate_list,
+    tme          = time_vector,
+    dtm          = dem_raster,
+    vegp         = vegetation_params,
+    soilc        = soil_params,
+    output_dir   = "./microclim_output",
+    study_area   = "GMU1",
+    period_label = "20200101_to_20201231"
   )
-
 }
 
 }
 \seealso{
-\code{\link[microclimf]{runpointmodela}} for the underlying microclimate model function.
+\code{\link[microclimf]{runpointmodela}} for the underlying microclimate
+model. \code{\link{run_iter_micropoint}} for multi-period iteration and
+large SLURM array support.
 }
