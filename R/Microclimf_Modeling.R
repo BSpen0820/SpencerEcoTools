@@ -294,6 +294,7 @@ run_micropoint_NicheMapPrep <- function(
   # Build output directory
   path_parts <- c(output_dir)
   if (!is.null(study_area))   path_parts <- c(path_parts, study_area)
+  path_parts <- c(path_parts, "Micropoint_Model")
   if (!is.null(period_label)) path_parts <- c(path_parts, period_label)
   output_dir_final <- do.call(file.path, as.list(path_parts))
   dir.create(output_dir_final, recursive = TRUE, showWarnings = FALSE)
@@ -592,7 +593,7 @@ run_iter_micropoint <- function(dates,
     # Create output directory for this period
     out_parts <- c(output_dir)
     if (!is.null(study_area)) out_parts <- c(out_parts, study_area)
-    out_parts <- c(out_parts, period_label)
+    out_parts <- c(out_parts, "Micropoint_Models", period_label)
     out_dir   <- do.call(file.path, as.list(out_parts))
     dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
 
