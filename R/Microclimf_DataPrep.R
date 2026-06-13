@@ -37,6 +37,7 @@ define_aoi <- function(aoi,
 
   range_buf <- sf::st_buffer(aoi, dist = buffer_dist)
   ee.ext <- sf::st_bbox(range_buf)
+  bbox_wgs84 <- as.numeric(sf::st_bbox(sf::st_transform(range_buf, 4326)))
   out <- sf::st_as_sfc(ee.ext)
   out <- sf::st_transform(out, crs_epsg)
 
@@ -45,13 +46,13 @@ define_aoi <- function(aoi,
     sf::st_write(out, out_path, delete_dsn = TRUE)
   }
 
-  ee_aoi <- rgee::ee$Geometry$Rectangle(
+  ee_aoi <- ee$Geometry$Rectangle(
     coords = as.numeric(ee.ext),
     proj = crs_epsg,
     geodesic = FALSE
   )
 
-  return(list(geometry = ee_aoi, crs = crs_epsg))
+  return(list(geometry = ee_aoi, crs = crs_epsg, bbox_wgs84 = bbox_wgs84))
 }
 
 
@@ -191,10 +192,10 @@ download_dem <- function(aoi,
   # Load and process DEM
   cat("Submitting DEM export task to GEE...\n")
 
-  dem <- rgee::ee$ImageCollection("COPERNICUS/DEM/GLO30")$mosaic()
+  dem <- ee$ImageCollection("COPERNICUS/DEM/GLO30")$mosaic()
   dem_clipped <- dem$select("DEM")$clip(ee_aoi)
 
-  task <- rgee::ee$batch$Export$image$toDrive(
+  task <- ee$batch$Export$image$toDrive(
     image = dem_clipped,
     description = "DEM_GLO30_AOI",
     folder = "GEE_Exports",
@@ -523,7 +524,7 @@ download_albedo <- function(aoi,
       start_date <- sprintf("%d-%02d-01", y, mo)
       end_date   <- as.character(lubridate::ceiling_date(as.Date(start_date), unit = "month"))
 
-      modis_ic <- rgee::ee$ImageCollection("MODIS/061/MCD43A3")$
+      modis_ic <- ee$ImageCollection("MODIS/061/MCD43A3")$
         filterDate(start_date, end_date)$
         filterBounds(ee_aoi)$
         select("Albedo_BSA_shortwave")
@@ -553,7 +554,7 @@ download_albedo <- function(aoi,
         sprintf("MODIS_Albedo_%d_%02d", y, mo)
       }
 
-      task <- rgee::ee$batch$Export$image$toDrive(
+      task <- ee$batch$Export$image$toDrive(
         image          = clim_img,
         description    = fname,
         folder         = "GEE_Exports",
@@ -618,13 +619,13 @@ download_albedo <- function(aoi,
 }
 
 .focalFillMasked <- function(img, radius = 10) {
-  kernel <- rgee::ee$Kernel$square(radius = radius)
+  kernel <- ee$Kernel$square(radius = radius)
   focal  <- img$focal_median(kernel = kernel, iterations = 1)
   img$unmask(focal)
 }
 
 .float32_cast <- function(img) {
-  img$cast(rgee::ee$Dictionary(list(
+  img$cast(ee$Dictionary(list(
     red   = "float",
     green = "float",
     blue  = "float",
@@ -635,7 +636,7 @@ download_albedo <- function(aoi,
 .temporal_weighted_fill <- function(ee_aoi, target_date, band_names, band_rename,
                                     max_months = 2) {
 
-  target_center       <- rgee::ee$Date(target_date)
+  target_center       <- ee$Date(target_date)
   target_month_center <- target_center$advance(15, "day")
   filled              <- NULL
 
@@ -645,7 +646,7 @@ download_albedo <- function(aoi,
       neighbor_start <- target_center$advance(direction * offset, "month")
       neighbor_end   <- neighbor_start$advance(1, "month")
 
-      neighbor_ic <- rgee::ee$ImageCollection("NASA/HLS/HLSS30/v002")$
+      neighbor_ic <- ee$ImageCollection("NASA/HLS/HLSS30/v002")$
         filterDate(neighbor_start, neighbor_end)$
         filterBounds(ee_aoi)$
         select(band_names, band_rename)
@@ -661,7 +662,7 @@ download_albedo <- function(aoi,
       # Cast to float32 and compute effective weights
       weighted_ic <- masked_ic$map(function(img) {
         img <- img$select("red", "green", "blue", "nir")$cast(
-          rgee::ee$Dictionary(list(
+          ee$Dictionary(list(
             red   = "float",
             green = "float",
             blue  = "float",
@@ -671,11 +672,11 @@ download_albedo <- function(aoi,
 
         img_date         <- img$date()
         day_dist         <- img_date$difference(target_month_center, "day")$abs()$add(1)
-        weight           <- rgee::ee$Number(1)$divide(day_dist)
+        weight           <- ee$Number(1)$divide(day_dist)
         pixel_mask       <- img$select("red")$mask()
         effective_weight <- pixel_mask$multiply(weight)$
           rename("effective_weight")$
-          cast(rgee::ee$Dictionary(list(effective_weight = "float")))
+          cast(ee$Dictionary(list(effective_weight = "float")))
 
         img$multiply(weight)$
           addBands(effective_weight)$
@@ -784,7 +785,7 @@ download_hls <- function(aoi,
     end_date   <- as.character(lubridate::ceiling_date(as.Date(start_date), unit = "month"))
 
     # Raw collection
-      hls_ic_raw <- rgee::ee$ImageCollection("NASA/HLS/HLSS30/v002")$
+      hls_ic_raw <- ee$ImageCollection("NASA/HLS/HLSS30/v002")$
         filterDate(start_date, end_date)$
         filterBounds(ee_aoi)$
         select(band_names, band_rename)
@@ -820,7 +821,7 @@ download_hls <- function(aoi,
       # Check for remaining gaps
       any_masked_result <- combined$select("red")$mask()$Not()$
         reduceRegion(
-          reducer   = rgee::ee$Reducer$anyNonZero(),
+          reducer   = ee$Reducer$anyNonZero(),
           geometry  = ee_aoi,
           scale     = scale,
           maxPixels = 1e13
@@ -859,7 +860,7 @@ download_hls <- function(aoi,
         sprintf("HLS_RGBNIR_%d_%02d", y, mo)
       }
 
-      task <- rgee::ee$batch$Export$image$toDrive(
+      task <- ee$batch$Export$image$toDrive(
         image          = combined,
         description    = fname,
         folder         = "GEE_Exports",
@@ -1021,7 +1022,7 @@ download_modis_lai <- function(aoi,
       start_date <- sprintf("%d-%02d-01", y, mo)
       end_date   <- as.character(lubridate::ceiling_date(as.Date(start_date), unit = "month"))
 
-      modis_ic_raw <- rgee::ee$ImageCollection("MODIS/061/MCD15A3H")$
+      modis_ic_raw <- ee$ImageCollection("MODIS/061/MCD15A3H")$
         filterDate(start_date, end_date)$
         filterBounds(ee_aoi)$
         select(c("Lai", "FparLai_QC"))
@@ -1050,7 +1051,7 @@ download_modis_lai <- function(aoi,
         sprintf("MODIS_LAI_%d_%02d", y, mo)
       }
 
-      task <- rgee::ee$batch$Export$image$toDrive(
+      task <- ee$batch$Export$image$toDrive(
         image          = lai_filled,
         description    = fname,
         folder         = "GEE_Exports",
@@ -1624,8 +1625,7 @@ download_aorc <- function(aoi,
 
   # Extract extent from aoi in WGS84
   if (is.list(aoi) && all(c("geometry", "crs") %in% names(aoi))) {
-    aoi_sf    <- rgee::ee_as_sf(aoi$geometry)
-    ext_wgs84 <- sf::st_bbox(sf::st_transform(aoi_sf, 4326))
+    ext_wgs84 <- aoi$bbox_wgs84
   } else if (inherits(aoi, "SpatRaster") || inherits(aoi, "SpatVector")) {
     ext_wgs84 <- terra::ext(terra::project(aoi, "epsg:4326"))
   } else if (inherits(aoi, "sf") || inherits(aoi, "sfc")) {
