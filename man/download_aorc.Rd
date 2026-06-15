@@ -11,7 +11,8 @@ download_aorc(
   study_area = NULL,
   overwrite = FALSE,
   workers = 1,
-  python_path = NULL
+  python_path = NULL,
+  retry_log = NULL
 )
 }
 \arguments{
@@ -39,6 +40,13 @@ parallelization via \code{future.apply}. Default is 1 (sequential)}
 
 \item{python_path}{Optional path to Python executable or conda environment.
 If NULL uses the currently configured Python environment. Default is NULL}
+
+\item{retry_log}{Optional data frame returned by a previous call to
+\code{download_aorc()}. When provided, only year/month combinations that
+had at least one failed variable in that log are retried. Variables that
+already downloaded successfully are skipped via the \code{overwrite = FALSE}
+default. This allows resuming a partially failed run without re-downloading
+completed files}
 }
 \value{
 Invisibly returns a data frame logging the status of each

@@ -6,8 +6,8 @@
 \usage{
 package_climate(
   dates,
-  input_dir,
-  output_dir,
+  aorc_dir,
+  out_dir,
   template,
   study_area = NULL,
   keep_monthly = FALSE
@@ -21,12 +21,12 @@ end date. The day component is ignored; all months between start and end
 (inclusive) are processed in chronological order.
 E.g. data.frame with columns Start_Dates and End_Dates, or as.Date(c("2020-10-01", "2021-03-01"))}
 
-\item{input_dir}{Base directory containing AORC data organized as
-\code{input_dir/year/month/} matching the structure produced by
+\item{aorc_dir}{Base directory containing AORC data organized as
+\code{aorc_dir/year/month/} matching the structure produced by
 \code{download_aorc()}}
 
-\item{output_dir}{Directory to save final output RDS files.
-Temporary monthly RDS files are saved to \code{output_dir/date_range/}
+\item{out_dir}{Directory to save final output RDS files.
+Temporary monthly RDS files are saved to \code{out_dir/date_range/}
 subdirectories}
 
 \item{template}{A SpatRaster used as the CRS and extent template for

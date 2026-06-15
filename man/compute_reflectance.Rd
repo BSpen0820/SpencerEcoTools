@@ -6,7 +6,7 @@
 \usage{
 compute_reflectance(
   dates,
-  lc_dir,
+  landcover,
   lai_dir,
   alb_dir,
   out_dir_lref,
@@ -21,7 +21,11 @@ compute_reflectance(
 The day component is ignored; only year and month are used.
 E.g. as.Date(c("2020-10-01", "2020-11-01"))}
 
-\item{lc_dir}{Directory containing annual land cover files}
+\item{landcover}{Either (a) a directory path containing annual land cover
+\code{.tif} files (one per year, matched by a four-digit year in the file
+name), or (b) a file path to a single land cover raster, or (c) a
+\code{SpatRaster} object. In cases (b) and (c) the same raster is used
+across all years (static mode).}
 
 \item{lai_dir}{Directory containing fine resolution LAI files}
 
@@ -31,8 +35,10 @@ E.g. as.Date(c("2020-10-01", "2020-11-01"))}
 
 \item{out_dir_gref}{Directory to save ground reflectance output files}
 
-\item{xcalc_dir}{Optional directory to save annual x calculation rasters.
-If NULL x rasters are kept in memory only. Default is NULL}
+\item{xcalc_dir}{Optional directory to save x calculation rasters. In
+directory mode rasters are saved with a year suffix; in static mode the
+raster is saved without a year suffix. If NULL x rasters are kept in
+memory only. Default is NULL}
 
 \item{study_area}{Optional character string identifying the study area e.g. "GMU1".
 If provided, used to filter input files and as a prefix in output file names}
@@ -47,6 +53,6 @@ year/month combination processed
 \description{
 Iterates over each date provided, computing leaf and ground reflectance
 using \code{microclimdata::reflectance_calc()}. Land cover based x values are
-computed annually and reused across all months within a year. LAI and albedo
-are processed monthly.
+computed annually (directory mode) or once (static mode) and reused across
+all months. LAI and albedo are processed monthly.
 }

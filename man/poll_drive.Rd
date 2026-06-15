@@ -4,10 +4,10 @@
 \alias{poll_drive}
 \title{Poll Google Drive and Download Files as They Appear}
 \usage{
-poll_drive(local_path, n_expected, poll_interval = 30, timeout = NULL)
+poll_drive(out_dir, n_expected, poll_interval = 30, timeout = NULL)
 }
 \arguments{
-\item{local_path}{Local directory path to save downloaded files}
+\item{out_dir}{Local directory path to save downloaded files}
 
 \item{n_expected}{Integer. Number of files expected to download}
 

@@ -6,7 +6,7 @@
 \usage{
 download_soil(
   dtm,
-  lc,
+  landcover,
   out_dir,
   study_area = NULL,
   water = 512,
@@ -16,8 +16,8 @@ download_soil(
 \arguments{
 \item{dtm}{A SpatRaster or file path to a Digital Elevation Model raster}
 
-\item{lc}{A SpatRaster or file path to a land cover raster. Should represent
-a single static year}
+\item{landcover}{A SpatRaster or file path to a land cover raster. Should
+represent a single static year}
 
 \item{out_dir}{Directory to save soil data outputs}
 

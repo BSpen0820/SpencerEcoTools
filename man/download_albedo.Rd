@@ -7,7 +7,7 @@
 download_albedo(
   aoi,
   dates,
-  local_path,
+  out_dir,
   study_area = NULL,
   scale = 500,
   poll = TRUE,
@@ -23,7 +23,7 @@ download_albedo(
 The day component is ignored; only year and month are used.
 E.g. as.Date(c("2020-10-01", "2020-11-01"))}
 
-\item{local_path}{Local directory path to save downloaded albedo files}
+\item{out_dir}{Local directory path to save downloaded albedo files}
 
 \item{study_area}{Optional character string identifying the study area e.g. "GMU1".
 If provided, used as a prefix in output file names}

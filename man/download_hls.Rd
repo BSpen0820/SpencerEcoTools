@@ -7,7 +7,7 @@
 download_hls(
   aoi,
   dates,
-  local_path,
+  out_dir,
   study_area = NULL,
   scale = 30,
   focal_radius = 10,
@@ -25,7 +25,7 @@ download_hls(
 The day component is ignored; only year and month are used.
 E.g. as.Date(c("2020-10-01", "2020-11-01"))}
 
-\item{local_path}{Local directory path to save downloaded imagery files}
+\item{out_dir}{Local directory path to save downloaded imagery files}
 
 \item{study_area}{Optional character string identifying the study area e.g. "GMU1".
 If provided, used as a prefix in output file names}

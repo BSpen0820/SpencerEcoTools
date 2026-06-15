@@ -4,14 +4,14 @@
 \alias{downscale_lai}
 \title{Downscale MODIS LAI to 30m Resolution Using NDVI}
 \usage{
-downscale_lai(dates, img_dir, lai_dir, out_dir, study_area = NULL)
+downscale_lai(dates, hls_dir, lai_dir, out_dir, study_area = NULL)
 }
 \arguments{
 \item{dates}{Vector of class Date specifying year-month combinations to process.
 The day component is ignored; only year and month are used.
 E.g. as.Date(c("2020-10-01", "2020-11-01"))}
 
-\item{img_dir}{Directory containing HLS imagery files}
+\item{hls_dir}{Directory containing HLS imagery files}
 
 \item{lai_dir}{Directory containing coarse MODIS LAI files}
 

@@ -4,15 +4,15 @@
 \alias{estimate_diffuse_rad}
 \title{Estimate Diffuse Solar Radiation from AORC Shortwave Radiation}
 \usage{
-estimate_diffuse_rad(dates, base_dir, study_area = NULL, workers = 1)
+estimate_diffuse_rad(dates, aorc_dir, study_area = NULL, workers = 1)
 }
 \arguments{
 \item{dates}{Vector of class Date specifying year-month combinations to process.
 The day component is ignored; only year and month are used.
 E.g. as.Date(c("2020-10-01", "2020-11-01"))}
 
-\item{base_dir}{Base directory containing AORC data organized as
-\code{base_dir/study_area/year/month/} or \code{base_dir/year/month/}}
+\item{aorc_dir}{Base directory containing AORC data organized as
+\code{aorc_dir/study_area/year/month/} or \code{aorc_dir/year/month/}}
 
 \item{study_area}{Optional character string identifying the study area e.g. "GMU1".
 If provided, used to locate input files and prefix output file names}

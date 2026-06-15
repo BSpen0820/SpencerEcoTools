@@ -6,7 +6,7 @@
 \usage{
 download_dem(
   aoi,
-  local_path = "./Data/DEM",
+  out_dir = "./Data/DEM",
   scale = 30,
   timeout = 120,
   poll_interval = 30
@@ -16,7 +16,7 @@ download_dem(
 \item{aoi}{A named list returned by define_aoi() containing elements
 \code{geometry} (ee$Geometry) and \code{crs} (CRS string)}
 
-\item{local_path}{Local directory path to save the DEM. Default is "./Data/DEM"}
+\item{out_dir}{Local directory path to save the DEM. Default is "./Data/DEM"}
 
 \item{scale}{Spatial resolution in meters. Default is 30}
 
