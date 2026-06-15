@@ -2045,7 +2045,11 @@ estimate_diffuse_rad <- function(dates,
 #'   \code{.extract_year()}), (b) a path to a single land cover file, or (c) a
 #'   \code{SpatRaster}. Cases (b) and (c) are static mode — the same land cover
 #'   is reused across all periods without per-year indexing
-#' @param vh_dir Directory containing annual vegetation height files
+#' @param veg_height Either (a) a directory path containing annual vegetation
+#'   height files named with a 4-digit year (one file per year, matched via
+#'   \code{.extract_year()}), (b) a path to a single vegetation height file,
+#'   or (c) a \code{SpatRaster}. Cases (b) and (c) are static mode — the same
+#'   raster is reused across all periods without per-year indexing
 #' @param soil_path File path to the fine resolution soil data raster
 #' @param lai_dir Directory containing fine resolution LAI files
 #' @param refl_dir Directory containing leaf and ground reflectance files
@@ -2067,7 +2071,7 @@ estimate_diffuse_rad <- function(dates,
 package_veg_soil <- function(dates,
                              snow_free_months,
                              landcover,
-                             vh_dir,
+                             veg_height,
                              soil_path,
                              lai_dir,
                              refl_dir,
@@ -2108,6 +2112,13 @@ package_veg_soil <- function(dates,
     if (inherits(landcover, "SpatRaster")) landcover else terra::rast(landcover)
   } else NULL
 
+  is_static_vh <- inherits(veg_height, "SpatRaster") ||
+    (is.character(veg_height) && file.exists(veg_height) && !dir.exists(veg_height))
+
+  vh_static <- if (is_static_vh) {
+    if (inherits(veg_height, "SpatRaster")) veg_height else terra::rast(veg_height)
+  } else NULL
+
   # Load soil data once - does not change by date range
   if (!file.exists(soil_path)) stop(sprintf("Soil file not found:\n  %s", soil_path))
   SD <- terra::rast(soil_path)
@@ -2137,29 +2148,13 @@ package_veg_soil <- function(dates,
       month_seq <- .generate_month_sequence(start_date, end_date)
 
       # List input files
-      vh_files  <- list.files(vh_dir,  pattern = "\\.tif$", full.names = TRUE)
       lai_files <- list.files(lai_dir, pattern = "\\.tif$", full.names = TRUE)
-
-      if (!is.null(study_area)) {
-        vh_files  <- vh_files[grepl(study_area, vh_files)]
-        lai_files <- lai_files[grepl(study_area, lai_files)]
-      }
-
+      if (!is.null(study_area)) lai_files <- lai_files[grepl(study_area, lai_files)]
       lai_df <- .extract_ym(lai_files)
-      vh_df  <- .extract_year(vh_files)
 
       # Collect all unique years in the period
       years_in_period <- unique(month_seq$year)
-
-      # Check that we have veg height files for all required years
-      for (y in years_in_period) {
-        if (!(y %in% vh_df$year)) stop(sprintf("Vegetation height file not found for year %d", y))
-      }
-
-      # Load first year's vght (constant across period)
-      first_year <- years_in_period[1]
-      vh_match <- vh_df$file[vh_df$year == first_year]
-      vght <- terra::rast(vh_match)
+      first_year      <- years_in_period[1]
 
       if (is_static) {
         lc <- lc_static
@@ -2172,6 +2167,19 @@ package_veg_soil <- function(dates,
         }
         lc_match <- lc_df$file[lc_df$year == first_year]
         lc <- terra::rast(lc_match)
+      }
+
+      if (is_static_vh) {
+        vght <- vh_static
+      } else {
+        vh_files <- list.files(veg_height, pattern = "\\.tif$", full.names = TRUE)
+        if (!is.null(study_area)) vh_files <- vh_files[grepl(study_area, vh_files)]
+        vh_df <- .extract_year(vh_files)
+        for (y in years_in_period) {
+          if (!(y %in% vh_df$year)) stop(sprintf("Vegetation height file not found for year %d", y))
+        }
+        vh_match <- vh_df$file[vh_df$year == first_year]
+        vght <- terra::rast(vh_match)
       }
 
       # Load LAI files for all months in the period

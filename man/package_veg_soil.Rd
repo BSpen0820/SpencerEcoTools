@@ -8,7 +8,7 @@ package_veg_soil(
   dates,
   snow_free_months,
   landcover,
-  vh_dir,
+  veg_height,
   soil_path,
   lai_dir,
   refl_dir,
@@ -36,7 +36,11 @@ files named with a 4-digit year (one file per year, matched via
 \code{SpatRaster}. Cases (b) and (c) are static mode — the same land cover
 is reused across all periods without per-year indexing}
 
-\item{vh_dir}{Directory containing annual vegetation height files}
+\item{veg_height}{Either (a) a directory path containing annual vegetation
+height files named with a 4-digit year (one file per year, matched via
+\code{.extract_year()}), (b) a path to a single vegetation height file,
+or (c) a \code{SpatRaster}. Cases (b) and (c) are static mode — the same
+raster is reused across all periods without per-year indexing}
 
 \item{soil_path}{File path to the fine resolution soil data raster}
 
