@@ -5,72 +5,96 @@
 \title{Create Tiles for Large Raster Processing}
 \usage{
 create_tiles(
-  dem,
+  coarse_dem,
+  fine_dem,
+  dates,
   tile_dims = NULL,
   buffer_size = 1,
+  snow_modeling = FALSE,
+  mem_fraction = 0.7,
   return_tiles_rast = FALSE,
   output_path = NULL
 )
 }
 \arguments{
-\item{dem}{A terra SpatRaster representing the digital elevation model. This raster
-should have a coarse resolution matching the weather data that will be used in
-the analysis.}
+\item{coarse_dem}{A \code{SpatRaster} at the weather-data resolution used as
+the tile grid. Must match the resolution of climate inputs passed to
+downstream micropoint model functions.}
 
-\item{tile_dims}{Either NULL (default), a single numeric value, or a vector of
-two numeric values. If NULL, automatically calculates the smallest tile dimensions
-that divide evenly into the raster. If a single number (e.g., 2), creates square
-tiles of size 2×2. If a vector c(nrow, ncol), creates rectangular tiles with
-specified dimensions.}
+\item{fine_dem}{A \code{SpatRaster} at the fine (e.g. 30 m) resolution.
+Used to compute the fine-to-coarse scale ratio for memory estimation and
+to resample the output tile ID raster.}
 
-\item{buffer_size}{Numeric. Number of cells to use as buffer around each tile.
-Default is 1. Used to account for edge effects during processing.}
+\item{dates}{Length-2 vector of class \code{Date} giving the start and end
+of the modeling period e.g. \code{as.Date(c("2020-01-01", "2020-12-31"))}.
+Used to compute the number of hourly time steps for memory estimation.}
 
-\item{return_tiles_rast}{Logical. If TRUE, includes the tile raster (tiles_rast) in
-the returned list. Default is FALSE.}
+\item{tile_dims}{Either \code{NULL} (default), a single numeric value, or a
+vector of two numeric values specifying \code{c(nrow, ncol)} of each tile
+in coarse DEM cells. When \code{NULL} the memory-based auto-sizing is used.
+When provided, a warning is issued if the tile exceeds the memory budget but
+processing continues.}
 
-\item{output_path}{Character. File path where the tile raster should be saved
-(e.g., "./Data/TileProcessingRast.tif"). If NULL (default), the tile raster
-is not saved. If a path is provided, the tile raster is automatically saved.}
+\item{buffer_size}{Integer. Number of coarse DEM cells added as buffer around
+each tile for \code{tiles_proc}. Default is 1. Memory estimation uses the
+buffered tile size as peak usage occurs on \code{tiles_proc}, not
+\code{tiles_core}.}
+
+\item{snow_modeling}{Logical. If \code{TRUE}, the memory estimate includes
+\code{smod} (6 arrays) in addition to \code{mout} (10 arrays). Default is
+\code{FALSE}.}
+
+\item{mem_fraction}{Numeric. Fraction of total system RAM to target for peak
+tile memory usage. Default is 0.7.}
+
+\item{return_tiles_rast}{Logical. If \code{TRUE}, includes the fine-resolution
+tile ID raster (\code{tiles_rast}) in the returned list. Default is
+\code{FALSE}.}
+
+\item{output_path}{Character. File path to save the fine-resolution tile ID
+raster. If \code{NULL} (default), not saved.}
 }
 \value{
 A list containing:
-\item{tiles_proc}{SpatRaster with tile extents including buffer for processing}
-\item{tiles_core}{SpatRaster with tile extents without buffer (core processing areas)}
-\item{tiles_rast}{SpatRaster with tile IDs (only if return_tiles_rast = TRUE)}
+\item{tiles_proc}{Matrix of tile extents including buffer for processing}
+\item{tiles_core}{Matrix of tile extents without buffer (core areas)}
+\item{tiles_rast}{Fine-resolution \code{SpatRaster} with tile IDs (only if
+\code{return_tiles_rast = TRUE})}
 }
 \description{
 Creates a tile raster for processing large rasters in memory-efficient chunks.
-Useful for working with large spatial datasets where processing the full raster
-would exceed memory limitations. The DEM raster should match the resolution of
-weather data being used in downstream processing.
+When \code{tile_dims} is \code{NULL} (default), automatically selects the
+largest tile size whose peak in-memory footprint stays within \code{mem_fraction}
+of total system RAM. Peak usage accounts for \code{mout} (10 arrays),
+optionally \code{smod} (6 arrays) when \code{snow_modeling = TRUE}, and
+\code{micropointa} (one element per coarse cell) — all sized to the buffered
+tile extent (\code{tiles_proc}).
 }
 \details{
-The function creates two sets of tile extents:
-\itemize{
-\item \strong{tiles_proc}: Processing tiles with specified buffer to account for edge effects
-\item \strong{tiles_core}: Core tiles without buffer, representing the true processing area
-}
-
-The function will print a message reminding users that the DEM resolution must
-match the weather data resolution for accurate microclimate modeling.
+Memory estimation formula per tile:
+\code{n_eff_coarse * n_hours * (8 * n_arrays * ratio_r * ratio_c + 257)}
+where \code{n_eff_coarse = (tile_nrow + 2*buffer_size) * (tile_ncol + 2*buffer_size)},
+\code{n_arrays} is 16 (snow) or 10 (no snow), \code{ratio_r}/\code{ratio_c}
+are the fine-to-coarse row/column ratios, and 257 bytes per coarse cell per
+hour is an empirical estimate for \code{micropointa} overhead.
 }
 \examples{
 \dontrun{
-  # Automatic tile size calculation with default 1-cell buffer
-  tiles_list <- create_tiles(dem)
+  # Memory-based auto sizing (recommended)
+  tiles <- create_tiles(coarse_dem, fine_dem,
+                        dates = as.Date(c("2020-01-01", "2020-12-31")))
 
-  # Square 2x2 tiles with default buffer
-  tiles_list <- create_tiles(dem, tile_dims = 2)
+  # With snow modeling — more conservative tile size
+  tiles <- create_tiles(coarse_dem, fine_dem,
+                        dates = as.Date(c("2020-10-01", "2021-03-31")),
+                        snow_modeling = TRUE)
 
-  # Rectangular 2x3 tiles with 2-cell buffer, returning tile raster
-  tiles_list <- create_tiles(dem, tile_dims = c(2, 3), buffer_size = 2, return_tiles_rast = TRUE)
-
-  # Save tile raster to file
-  tiles_list <- create_tiles(dem,
-                             tile_dims = 2,
-                             buffer_size = 1,
-                             output_path = "./Data/TileProcessingRast.tif")
+  # Manual override with 2-cell buffer, save fine-res tile raster
+  tiles <- create_tiles(coarse_dem, fine_dem,
+                        dates = as.Date(c("2020-01-01", "2020-12-31")),
+                        tile_dims = c(4, 4),
+                        buffer_size = 2,
+                        output_path = "./Data/TileRast.tif")
 }
 
 }
