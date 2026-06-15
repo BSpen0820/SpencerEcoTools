@@ -31,10 +31,10 @@ from \code{\link{package_climate}}.}
 \item{dtm}{\code{terra} SpatRaster of the digital terrain model.}
 
 \item{vegp_dir}{Character. Directory containing vegetation parameter RDS
-files from \code{\link{Pkg_Veg_Soil_data}}.}
+files from \code{\link{package_veg_soil}}.}
 
 \item{soilc_dir}{Character. Directory containing soil parameter RDS files
-from \code{\link{Pkg_Veg_Soil_data}}.}
+from \code{\link{package_veg_soil}}.}
 
 \item{output_dir}{Character. Base directory for model outputs. A
 subdirectory named \code{study_area/period_label} is created for each
@@ -72,7 +72,7 @@ run the same height for the same period.
 }
 \details{
 Input files must follow the naming conventions produced by
-\code{\link{package_climate}} and \code{\link{Pkg_Veg_Soil_data}}:
+\code{\link{package_climate}} and \code{\link{package_veg_soil}}:
 \itemize{
 \item \code{{study_area}_Climate_{start}_to_{end}.RDS}
 \item \code{{study_area}_VegPara_{start}_to_{end}.RDS}
@@ -150,6 +150,6 @@ head(log_df)
 }
 \seealso{
 \code{\link{run_micropoint_NicheMapPrep}} for single-period execution.
-\code{\link{package_climate}} and \code{\link{Pkg_Veg_Soil_data}} for
+\code{\link{package_climate}} and \code{\link{package_veg_soil}} for
 producing the required input files.
 }

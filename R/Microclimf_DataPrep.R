@@ -2040,7 +2040,11 @@ estimate_diffuse_rad <- function(dates,
 #'   E.g. data.frame with columns Start_Dates and End_Dates, or as.Date(c("2020-10-01", "2021-03-01"))
 #' @param snow_free_months Integer vector of months to use for reflectance
 #'   averaging e.g. 6:8
-#' @param lc_dir Directory containing annual land cover files
+#' @param landcover Either (a) a directory path containing annual land cover
+#'   files named with a 4-digit year (one file per year, matched via
+#'   \code{.extract_year()}), (b) a path to a single land cover file, or (c) a
+#'   \code{SpatRaster}. Cases (b) and (c) are static mode — the same land cover
+#'   is reused across all periods without per-year indexing
 #' @param vh_dir Directory containing annual vegetation height files
 #' @param soil_path File path to the fine resolution soil data raster
 #' @param lai_dir Directory containing fine resolution LAI files
@@ -2060,9 +2064,9 @@ estimate_diffuse_rad <- function(dates,
 #' @return Invisibly returns a data frame logging the status of each
 #'   date range processed
 #' @export
-Pkg_Veg_Soil_data <- function(dates,
+package_veg_soil <- function(dates,
                              snow_free_months,
-                             lc_dir,
+                             landcover,
                              vh_dir,
                              soil_path,
                              lai_dir,
@@ -2097,6 +2101,13 @@ Pkg_Veg_Soil_data <- function(dates,
   dir.create(vegpara_dir,  recursive = TRUE, showWarnings = FALSE)
   dir.create(soilpara_dir, recursive = TRUE, showWarnings = FALSE)
 
+  is_static <- inherits(landcover, "SpatRaster") ||
+    (is.character(landcover) && file.exists(landcover) && !dir.exists(landcover))
+
+  lc_static <- if (is_static) {
+    if (inherits(landcover, "SpatRaster")) landcover else terra::rast(landcover)
+  } else NULL
+
   # Load soil data once - does not change by date range
   if (!file.exists(soil_path)) stop(sprintf("Soil file not found:\n  %s", soil_path))
   SD <- terra::rast(soil_path)
@@ -2126,36 +2137,42 @@ Pkg_Veg_Soil_data <- function(dates,
       month_seq <- .generate_month_sequence(start_date, end_date)
 
       # List input files
-      lc_files  <- list.files(lc_dir,  pattern = "\\.tif$", full.names = TRUE)
       vh_files  <- list.files(vh_dir,  pattern = "\\.tif$", full.names = TRUE)
       lai_files <- list.files(lai_dir, pattern = "\\.tif$", full.names = TRUE)
 
       if (!is.null(study_area)) {
-        lc_files  <- lc_files[grepl(study_area, lc_files)]
         vh_files  <- vh_files[grepl(study_area, vh_files)]
         lai_files <- lai_files[grepl(study_area, lai_files)]
       }
 
-      lc_df  <- .extract_year(lc_files)
       lai_df <- .extract_ym(lai_files)
       vh_df  <- .extract_year(vh_files)
 
       # Collect all unique years in the period
       years_in_period <- unique(month_seq$year)
 
-      # Check that we have files for all required years
+      # Check that we have veg height files for all required years
       for (y in years_in_period) {
-        if (!(y %in% lc_df$year)) stop(sprintf("Land cover file not found for year %d", y))
         if (!(y %in% vh_df$year)) stop(sprintf("Vegetation height file not found for year %d", y))
       }
 
-      # Load first year's lc and vght (constant across period)
+      # Load first year's vght (constant across period)
       first_year <- years_in_period[1]
-      lc_match <- lc_df$file[lc_df$year == first_year]
       vh_match <- vh_df$file[vh_df$year == first_year]
-
-      lc   <- terra::rast(lc_match)
       vght <- terra::rast(vh_match)
+
+      if (is_static) {
+        lc <- lc_static
+      } else {
+        lc_files <- list.files(landcover, pattern = "\\.tif$", full.names = TRUE)
+        if (!is.null(study_area)) lc_files <- lc_files[grepl(study_area, lc_files)]
+        lc_df <- .extract_year(lc_files)
+        for (y in years_in_period) {
+          if (!(y %in% lc_df$year)) stop(sprintf("Land cover file not found for year %d", y))
+        }
+        lc_match <- lc_df$file[lc_df$year == first_year]
+        lc <- terra::rast(lc_match)
+      }
 
       # Load LAI files for all months in the period
       yms_needed <- sprintf("%d_%02d", month_seq$year, month_seq$month)
