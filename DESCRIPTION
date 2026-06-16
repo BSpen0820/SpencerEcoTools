@@ -22,13 +22,13 @@ Imports:
     solaR,
     zoo,
     readr,
-    microclimf
+    microclimfPara
 Suggests:
     rhdf5,
     ncdf4
 Remotes:
     ilyamaclean/microclimdata,
-    BSpen0820/microclimf
+    BSpen0820/microclimfPara
 Depends: 
     R (>= 3.5)
 LazyData: true
