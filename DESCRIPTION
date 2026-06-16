@@ -23,6 +23,9 @@ Imports:
     zoo,
     readr,
     microclimf
+Suggests:
+    rhdf5,
+    ncdf4
 Remotes:
     ilyamaclean/microclimdata,
     BSpen0820/microclimf
