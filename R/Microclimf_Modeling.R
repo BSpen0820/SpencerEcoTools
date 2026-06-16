@@ -1288,7 +1288,7 @@ run_micro_big_nichemap <- function(tiles,        # tile object from create_tiles
     if (!all(c("Start_Dates", "End_Dates") %in% names(dates)))
       stop("dates data.frame must contain columns 'Start_Dates' and 'End_Dates'")
     date_ranges <- dates
-  } else if (is.vector(dates) && length(dates) == 2) {
+  } else if (inherits(dates, "Date") && length(dates) == 2) {
     date_ranges <- data.frame(
       Start_Dates      = as.Date(dates[1]),
       End_Dates        = as.Date(dates[2]),
@@ -1443,6 +1443,24 @@ run_micro_big_nichemap <- function(tiles,        # tile object from create_tiles
     climdatag <- readr::read_rds(clim_resolved)
     clim.crop <- lapply(climdatag, function(x) terra::wrap(terra::crop(terra::unwrap(x), dem_coarse_tile)))
     rm(climdatag); invisible(gc())
+
+    # Coverage check: soil/veg rasters can have NA wedges at domain corners from
+    # reprojection. Skip rather than run models on all-NA inputs.
+    soil_chk <- Find(function(el) inherits(el, "PackedSpatRaster"), soil.crop)
+    if (!is.null(soil_chk) &&
+        terra::global(terra::unwrap(soil_chk), "notNA")[[1]] == 0L) {
+      cat(sprintf("  Tile %d: outside soil/veg data coverage (reprojection edge) — skipping.\n",
+                  tile_i))
+      log_df <<- rbind(log_df,
+        .log_row(tile_i, period_label, "", "micropoint",
+                 "skipped: outside data coverage", ""))
+      rm(soil_chk, soil.crop, veg.crop, clim.crop, tme,
+         dem_coarse_tile, dem_fine_tile, dem_fine_core,
+         slope_tile, aspect_tile, twi_tile, hor_tile, svfa_tile, wsa_tile)
+      invisible(gc())
+      next
+    }
+    rm(soil_chk)
 
     # --- micropoint models for all heights -------------------------------------
     for (h in allheights) {

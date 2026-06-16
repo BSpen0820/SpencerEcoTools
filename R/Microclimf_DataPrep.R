@@ -2805,8 +2805,8 @@ package_climate <- function(dates,
       at_f <- clim_files[grepl("TMP", names(clim_files))]
       if (length(at_f) == 0) stop(sprintf("No TMP files found for year %d month %02d", y, m))
       r_at_k <- load_var(at_f, template)
-      at_k   <- r_at_k
-      r_at   <- terra::wrap(r_at_k - 273.15)
+      at_c   <- r_at_k - 273.15
+      r_at   <- terra::wrap(at_c)
       rm(r_at_k)
 
       # --- Pressure: Pa to kPa ---
@@ -2822,12 +2822,12 @@ package_climate <- function(dates,
       if (length(sh_f) == 0) stop(sprintf("No SPFH files found for year %d month %02d", y, m))
       r_sh     <- load_var(sh_f, template)
       e        <- (r_sh * pa_pa) / (0.622 + 0.378 * r_sh)
-      es_water <- 611.2 * exp((17.67 * at_k) / (at_k + 243.5))
+      es_water <- 611.2 * exp((17.67 * at_c) / (at_c + 243.5))
       es       <- es_water
       RH       <- 100 * (e / es)
       RH       <- terra::clamp(RH, lower = 0, upper = 100)
       r_rh     <- terra::wrap(RH)
-      rm(e, es, es_water, RH, at_k, pa_pa, r_sh)
+      rm(e, es, es_water, RH, at_c, pa_pa, r_sh)
 
       # --- Wind speed and direction from U and V components ---
       uw_f <- clim_files[grepl("UGRD", names(clim_files))]
