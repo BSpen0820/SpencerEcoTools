@@ -317,74 +317,231 @@ create_tiles <- function(coarse_dem,
 
 .write_nc <- function(data_list, var_meta, tme, out_path, dtm, data_type,
                       compression) {
+
   nrow_  <- dim(data_list[[1]])[1]
   ncol_  <- dim(data_list[[1]])[2]
   ntime_ <- dim(data_list[[1]])[3]
 
   if (!is.null(dtm)) {
+
     x_vals <- terra::xFromCol(dtm, seq_len(ncol_))
     y_vals <- terra::yFromRow(dtm, seq_len(nrow_))
+
+    is_lonlat <- terra::is.lonlat(dtm)
+
   } else {
-    warning("dtm is NULL: x/y coordinate variables will use integer indices.")
+
+    warning("dtm is NULL: coordinate variables will use integer indices.")
+
     x_vals <- seq_len(ncol_)
     y_vals <- seq_len(nrow_)
+    is_lonlat <- FALSE
   }
 
   t_origin <- if (!is.null(tme)) {
-    format(as.POSIXct(tme[1], tz = "UTC"), "%Y-%m-%dT%H:%M:%S")
+    format(as.POSIXct(tme[1], tz = "UTC"),
+           "%Y-%m-%dT%H:%M:%S")
   } else {
     "1970-01-01T00:00:00"
   }
+
   t_vals <- if (!is.null(tme)) {
-    as.numeric(difftime(as.POSIXct(tme, tz = "UTC"),
-                        as.POSIXct(tme[1], tz = "UTC"), units = "hours"))
+    as.numeric(
+      difftime(
+        as.POSIXct(tme, tz = "UTC"),
+        as.POSIXct(tme[1], tz = "UTC"),
+        units = "hours"
+      )
+    )
   } else {
     seq_len(ntime_) - 1L
   }
 
-  dim_x    <- ncdf4::ncdim_def("x",    "m",     x_vals, longname = "x coordinate")
-  dim_y    <- ncdf4::ncdim_def("y",    "m",     y_vals, longname = "y coordinate")
-  dim_time <- ncdf4::ncdim_def("time", sprintf("hours since %s UTC", t_origin),
-                               t_vals, unlim = TRUE,
-                               longname = "time", calendar = "standard")
+  if (is_lonlat) {
 
-  var_crs <- ncdf4::ncvar_def("crs", "", list(), prec = "integer",
-                              longname = "CRS definition")
+    dim_x <- ncdf4::ncdim_def(
+      "lon",
+      "degrees_east",
+      x_vals,
+      longname = "longitude",
+      create_dimvar = TRUE
+    )
+
+    dim_y <- ncdf4::ncdim_def(
+      "lat",
+      "degrees_north",
+      y_vals,
+      longname = "latitude",
+      create_dimvar = TRUE
+    )
+
+  } else {
+
+    dim_x <- ncdf4::ncdim_def(
+      "x",
+      "m",
+      x_vals,
+      longname = "x coordinate",
+      create_dimvar = TRUE
+    )
+
+    dim_y <- ncdf4::ncdim_def(
+      "y",
+      "m",
+      y_vals,
+      longname = "y coordinate",
+      create_dimvar = TRUE
+    )
+  }
+
+  dim_time <- ncdf4::ncdim_def(
+    "time",
+    sprintf("hours since %s UTC", t_origin),
+    t_vals,
+    unlim = TRUE,
+    longname = "time",
+    calendar = "standard"
+  )
+
+  var_crs <- ncdf4::ncvar_def(
+    "crs",
+    "",
+    list(),
+    prec = "integer",
+    longname = "CRS definition"
+  )
 
   data_vars <- lapply(names(var_meta), function(vn) {
-    ncdf4::ncvar_def(vn, var_meta[[vn]]$units,
-                     list(dim_x, dim_y, dim_time),
-                     missval     = -9999.0,
-                     longname    = var_meta[[vn]]$long_name,
-                     compression = compression,
-                     prec        = "double")
+
+    ncdf4::ncvar_def(
+      vn,
+      var_meta[[vn]]$units,
+      list(dim_x, dim_y, dim_time),
+      missval     = -9999,
+      longname    = var_meta[[vn]]$long_name,
+      compression = compression,
+      prec        = "double"
+    )
+
   })
+
   names(data_vars) <- names(var_meta)
 
-  nc <- ncdf4::nc_create(out_path, c(list(var_crs), data_vars))
+  nc <- ncdf4::nc_create(
+    out_path,
+    c(list(var_crs), data_vars)
+  )
+
   on.exit(ncdf4::nc_close(nc), add = TRUE)
 
   ncdf4::ncvar_put(nc, var_crs, 0L)
+
   if (!is.null(dtm)) {
-    ncdf4::ncatt_put(nc, "crs", "crs_wkt",          terra::crs(dtm, proj = FALSE))
-    ncdf4::ncatt_put(nc, "crs", "grid_mapping_name", "unknown")
+
+    crs_wkt <- terra::crs(dtm, proj = FALSE)
+
+    ncdf4::ncatt_put(nc, "crs", "crs_wkt", crs_wkt)
+
+    if (is_lonlat) {
+
+      ncdf4::ncatt_put(
+        nc,
+        "crs",
+        "grid_mapping_name",
+        "latitude_longitude"
+      )
+
+    } else {
+
+      ncdf4::ncatt_put(
+        nc,
+        "crs",
+        "grid_mapping_name",
+        "projected_coordinate_system"
+      )
+    }
+  }
+
+  if (is_lonlat) {
+
+    ncdf4::ncatt_put(nc, "lon", "standard_name", "longitude")
+    ncdf4::ncatt_put(nc, "lon", "axis", "X")
+
+    ncdf4::ncatt_put(nc, "lat", "standard_name", "latitude")
+    ncdf4::ncatt_put(nc, "lat", "axis", "Y")
+
+  } else {
+
+    ncdf4::ncatt_put(nc, "x", "standard_name",
+                     "projection_x_coordinate")
+    ncdf4::ncatt_put(nc, "x", "axis", "X")
+
+    ncdf4::ncatt_put(nc, "y", "standard_name",
+                     "projection_y_coordinate")
+    ncdf4::ncatt_put(nc, "y", "axis", "Y")
   }
 
   for (vn in names(var_meta)) {
+
     arr <- aperm(data_list[[vn]], c(2L, 1L, 3L))
-    arr[is.na(arr)] <- -9999.0
-    ncdf4::ncvar_put(nc, data_vars[[vn]], arr)
-    ncdf4::ncatt_put(nc, vn, "units",        var_meta[[vn]]$units)
-    ncdf4::ncatt_put(nc, vn, "long_name",    var_meta[[vn]]$long_name)
-    ncdf4::ncatt_put(nc, vn, "grid_mapping", "crs")
+
+    arr[is.na(arr)] <- -9999
+
+    ncdf4::ncvar_put(
+      nc,
+      data_vars[[vn]],
+      arr
+    )
+
+    ncdf4::ncatt_put(
+      nc,
+      vn,
+      "units",
+      var_meta[[vn]]$units
+    )
+
+    ncdf4::ncatt_put(
+      nc,
+      vn,
+      "long_name",
+      var_meta[[vn]]$long_name
+    )
+
+    ncdf4::ncatt_put(
+      nc,
+      vn,
+      "grid_mapping",
+      "crs"
+    )
+
+    ncdf4::ncatt_put(
+      nc,
+      vn,
+      "coordinates",
+      if (is_lonlat) "lon lat" else "x y"
+    )
   }
 
   ncdf4::ncatt_put(nc, 0, "Conventions", "CF-1.8")
-  ncdf4::ncatt_put(nc, 0, "data_type",   data_type)
-  ncdf4::ncatt_put(nc, 0, "history",
-                   sprintf("Created %s by R %s / SpencerEcoTools",
-                           format(Sys.time(), "%Y-%m-%dT%H:%M:%S"),
-                           paste(R.version$major, R.version$minor, sep = ".")))
+
+  ncdf4::ncatt_put(
+    nc,
+    0,
+    "data_type",
+    data_type
+  )
+
+  ncdf4::ncatt_put(
+    nc,
+    0,
+    "history",
+    sprintf(
+      "Created %s by R %s / SpencerEcoTools",
+      format(Sys.time(), "%Y-%m-%dT%H:%M:%S"),
+      paste(R.version$major, R.version$minor, sep = ".")
+    )
+  )
+
   invisible(NULL)
 }
 
