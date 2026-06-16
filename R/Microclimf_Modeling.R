@@ -317,74 +317,231 @@ create_tiles <- function(coarse_dem,
 
 .write_nc <- function(data_list, var_meta, tme, out_path, dtm, data_type,
                       compression) {
+
   nrow_  <- dim(data_list[[1]])[1]
   ncol_  <- dim(data_list[[1]])[2]
   ntime_ <- dim(data_list[[1]])[3]
 
   if (!is.null(dtm)) {
+
     x_vals <- terra::xFromCol(dtm, seq_len(ncol_))
     y_vals <- terra::yFromRow(dtm, seq_len(nrow_))
+
+    is_lonlat <- terra::is.lonlat(dtm)
+
   } else {
-    warning("dtm is NULL: x/y coordinate variables will use integer indices.")
+
+    warning("dtm is NULL: coordinate variables will use integer indices.")
+
     x_vals <- seq_len(ncol_)
     y_vals <- seq_len(nrow_)
+    is_lonlat <- FALSE
   }
 
   t_origin <- if (!is.null(tme)) {
-    format(as.POSIXct(tme[1], tz = "UTC"), "%Y-%m-%dT%H:%M:%S")
+    format(as.POSIXct(tme[1], tz = "UTC"),
+           "%Y-%m-%dT%H:%M:%S")
   } else {
     "1970-01-01T00:00:00"
   }
+
   t_vals <- if (!is.null(tme)) {
-    as.numeric(difftime(as.POSIXct(tme, tz = "UTC"),
-                        as.POSIXct(tme[1], tz = "UTC"), units = "hours"))
+    as.numeric(
+      difftime(
+        as.POSIXct(tme, tz = "UTC"),
+        as.POSIXct(tme[1], tz = "UTC"),
+        units = "hours"
+      )
+    )
   } else {
     seq_len(ntime_) - 1L
   }
 
-  dim_x    <- ncdf4::ncdim_def("x",    "m",     x_vals, longname = "x coordinate")
-  dim_y    <- ncdf4::ncdim_def("y",    "m",     y_vals, longname = "y coordinate")
-  dim_time <- ncdf4::ncdim_def("time", sprintf("hours since %s UTC", t_origin),
-                               t_vals, unlim = TRUE,
-                               longname = "time", calendar = "standard")
+  if (is_lonlat) {
 
-  var_crs <- ncdf4::ncvar_def("crs", "", list(), prec = "integer",
-                              longname = "CRS definition")
+    dim_x <- ncdf4::ncdim_def(
+      "lon",
+      "degrees_east",
+      x_vals,
+      longname = "longitude",
+      create_dimvar = TRUE
+    )
+
+    dim_y <- ncdf4::ncdim_def(
+      "lat",
+      "degrees_north",
+      y_vals,
+      longname = "latitude",
+      create_dimvar = TRUE
+    )
+
+  } else {
+
+    dim_x <- ncdf4::ncdim_def(
+      "x",
+      "m",
+      x_vals,
+      longname = "x coordinate",
+      create_dimvar = TRUE
+    )
+
+    dim_y <- ncdf4::ncdim_def(
+      "y",
+      "m",
+      y_vals,
+      longname = "y coordinate",
+      create_dimvar = TRUE
+    )
+  }
+
+  dim_time <- ncdf4::ncdim_def(
+    "time",
+    sprintf("hours since %s UTC", t_origin),
+    t_vals,
+    unlim = TRUE,
+    longname = "time",
+    calendar = "standard"
+  )
+
+  var_crs <- ncdf4::ncvar_def(
+    "crs",
+    "",
+    list(),
+    prec = "integer",
+    longname = "CRS definition"
+  )
 
   data_vars <- lapply(names(var_meta), function(vn) {
-    ncdf4::ncvar_def(vn, var_meta[[vn]]$units,
-                     list(dim_x, dim_y, dim_time),
-                     missval     = -9999.0,
-                     longname    = var_meta[[vn]]$long_name,
-                     compression = compression,
-                     prec        = "double")
+
+    ncdf4::ncvar_def(
+      vn,
+      var_meta[[vn]]$units,
+      list(dim_x, dim_y, dim_time),
+      missval     = -9999,
+      longname    = var_meta[[vn]]$long_name,
+      compression = compression,
+      prec        = "double"
+    )
+
   })
+
   names(data_vars) <- names(var_meta)
 
-  nc <- ncdf4::nc_create(out_path, c(list(var_crs), data_vars))
+  nc <- ncdf4::nc_create(
+    out_path,
+    c(list(var_crs), data_vars)
+  )
+
   on.exit(ncdf4::nc_close(nc), add = TRUE)
 
   ncdf4::ncvar_put(nc, var_crs, 0L)
+
   if (!is.null(dtm)) {
-    ncdf4::ncatt_put(nc, "crs", "crs_wkt",          terra::crs(dtm, proj = FALSE))
-    ncdf4::ncatt_put(nc, "crs", "grid_mapping_name", "unknown")
+
+    crs_wkt <- terra::crs(dtm, proj = FALSE)
+
+    ncdf4::ncatt_put(nc, "crs", "crs_wkt", crs_wkt)
+
+    if (is_lonlat) {
+
+      ncdf4::ncatt_put(
+        nc,
+        "crs",
+        "grid_mapping_name",
+        "latitude_longitude"
+      )
+
+    } else {
+
+      ncdf4::ncatt_put(
+        nc,
+        "crs",
+        "grid_mapping_name",
+        "projected_coordinate_system"
+      )
+    }
+  }
+
+  if (is_lonlat) {
+
+    ncdf4::ncatt_put(nc, "lon", "standard_name", "longitude")
+    ncdf4::ncatt_put(nc, "lon", "axis", "X")
+
+    ncdf4::ncatt_put(nc, "lat", "standard_name", "latitude")
+    ncdf4::ncatt_put(nc, "lat", "axis", "Y")
+
+  } else {
+
+    ncdf4::ncatt_put(nc, "x", "standard_name",
+                     "projection_x_coordinate")
+    ncdf4::ncatt_put(nc, "x", "axis", "X")
+
+    ncdf4::ncatt_put(nc, "y", "standard_name",
+                     "projection_y_coordinate")
+    ncdf4::ncatt_put(nc, "y", "axis", "Y")
   }
 
   for (vn in names(var_meta)) {
+
     arr <- aperm(data_list[[vn]], c(2L, 1L, 3L))
-    arr[is.na(arr)] <- -9999.0
-    ncdf4::ncvar_put(nc, data_vars[[vn]], arr)
-    ncdf4::ncatt_put(nc, vn, "units",        var_meta[[vn]]$units)
-    ncdf4::ncatt_put(nc, vn, "long_name",    var_meta[[vn]]$long_name)
-    ncdf4::ncatt_put(nc, vn, "grid_mapping", "crs")
+
+    arr[is.na(arr)] <- -9999
+
+    ncdf4::ncvar_put(
+      nc,
+      data_vars[[vn]],
+      arr
+    )
+
+    ncdf4::ncatt_put(
+      nc,
+      vn,
+      "units",
+      var_meta[[vn]]$units
+    )
+
+    ncdf4::ncatt_put(
+      nc,
+      vn,
+      "long_name",
+      var_meta[[vn]]$long_name
+    )
+
+    ncdf4::ncatt_put(
+      nc,
+      vn,
+      "grid_mapping",
+      "crs"
+    )
+
+    ncdf4::ncatt_put(
+      nc,
+      vn,
+      "coordinates",
+      if (is_lonlat) "lon lat" else "x y"
+    )
   }
 
   ncdf4::ncatt_put(nc, 0, "Conventions", "CF-1.8")
-  ncdf4::ncatt_put(nc, 0, "data_type",   data_type)
-  ncdf4::ncatt_put(nc, 0, "history",
-                   sprintf("Created %s by R %s / SpencerEcoTools",
-                           format(Sys.time(), "%Y-%m-%dT%H:%M:%S"),
-                           paste(R.version$major, R.version$minor, sep = ".")))
+
+  ncdf4::ncatt_put(
+    nc,
+    0,
+    "data_type",
+    data_type
+  )
+
+  ncdf4::ncatt_put(
+    nc,
+    0,
+    "history",
+    sprintf(
+      "Created %s by R %s / SpencerEcoTools",
+      format(Sys.time(), "%Y-%m-%dT%H:%M:%S"),
+      paste(R.version$major, R.version$minor, sep = ".")
+    )
+  )
+
   invisible(NULL)
 }
 
@@ -488,10 +645,12 @@ write_tile <- function(data, out_path, dtm = NULL, tme = NULL,
 }
 
 .read_nc_tile_attrs <- function(path) {
-  nc    <- ncdf4::nc_open(path)
+  nc   <- ncdf4::nc_open(path)
   on.exit(ncdf4::nc_close(nc), add = TRUE)
-  x_v   <- nc$dim$x$vals
-  y_v   <- nc$dim$y$vals
+  x_nm <- if ("lon" %in% names(nc$dim)) "lon" else "x"
+  y_nm <- if ("lat" %in% names(nc$dim)) "lat" else "y"
+  x_v  <- nc$dim[[x_nm]]$vals
+  y_v  <- nc$dim[[y_nm]]$vals
   res_x <- abs(diff(x_v))[1]
   res_y <- abs(diff(y_v))[1]
   list(
@@ -501,8 +660,8 @@ write_tile <- function(data, out_path, dtm = NULL, tme = NULL,
     ymax  = max(y_v) + res_y / 2,
     res_x = res_x,
     res_y = res_y,
-    nrow  = nc$dim$y$len,
-    ncol  = nc$dim$x$len,
+    nrow  = nc$dim[[y_nm]]$len,
+    ncol  = nc$dim[[x_nm]]$len,
     ntime = nc$dim$time$len
   )
 }
@@ -588,51 +747,91 @@ write_tile <- function(data, out_path, dtm = NULL, tme = NULL,
   }
 }
 
-.stitch_nc_vrt <- function(tile_files, out_file, var_names,
-                            full_nrow, full_ncol, ntime,
-                            full_xmin, full_ymax, res_x, res_y) {
-  out_stem   <- tools::file_path_sans_ext(out_file)
-  abs_tiles  <- normalizePath(tile_files, mustWork = TRUE)
-  tile_attrs <- lapply(tile_files, .read_nc_tile_attrs)
-  vrt_paths  <- setNames(character(length(var_names)), var_names)
+.stitch_nc_vrt <- function(tile_files, out_file, var_names) {
+  if (!requireNamespace("sf",    quietly = TRUE))
+    stop('Package \'sf\' is required for VRT stitching. Install with: install.packages("sf")')
+  if (!requireNamespace("ncdf4", quietly = TRUE))
+    stop('Package \'ncdf4\' is required. Install with: install.packages("ncdf4")')
 
-  tile_info <- lapply(seq_along(tile_files), function(k) {
-    ta <- tile_attrs[[k]]
-    list(
-      path    = abs_tiles[k],
-      col_off = as.integer(round((as.numeric(ta$xmin) - full_xmin) / res_x)),
-      row_off = as.integer(round((full_ymax - as.numeric(ta$ymax)) / res_y)),
-      t_ncol  = as.integer(ta$ncol),
-      t_nrow  = as.integer(ta$nrow)
-    )
-  })
+  out_stem  <- tools::file_path_sans_ext(out_file)
+  abs_tiles <- normalizePath(tile_files, mustWork = TRUE)
+  vrt_paths <- setNames(character(length(var_names)), var_names)
+
+  data_type <- if ("Tz" %in% var_names) "mout" else "smod"
+  var_meta  <- if (data_type == "mout") .mout_meta else .smod_meta
+
+  # Read time axis from first tile
+  nc0        <- ncdf4::nc_open(tile_files[1])
+  time_units <- nc0$dim$time$units
+  time_vals  <- nc0$dim$time$vals
+  ncdf4::nc_close(nc0)
+  origin_str   <- trimws(sub("hours since\\s+", "", time_units))
+  origin_str   <- sub("\\s+UTC$", "", origin_str)
+  origin_posix <- as.POSIXct(origin_str, tz = "UTC", format = "%Y-%m-%dT%H:%M:%S")
+  tme_iso      <- format(origin_posix + time_vals * 3600,
+                         "%Y-%m-%dT%H:%M:%S", tz = "UTC")
+
+  # Forward-slash versions of abs paths for matching in GDAL-generated VRT XML
+  abs_fwd <- gsub("\\\\", "/", abs_tiles)
 
   for (vn in var_names) {
-    vrt_path <- sprintf("%s_%s.vrt", out_stem, vn)
+    vrt_path  <- sprintf("%s_%s.vrt", out_stem, vn)
+    gdal_srcs <- sprintf('NETCDF:"%s":%s', abs_tiles, vn)
 
-    hdr <- c(
-      sprintf('<VRTDataset rasterXSize="%d" rasterYSize="%d">', full_ncol, full_nrow),
-      sprintf('  <GeoTransform>%.15g, %.15g, 0, %.15g, 0, %.15g</GeoTransform>',
-              full_xmin, res_x, full_ymax, -res_y)
+    # Build VRT — GDAL requires absolute paths to open sources and read metadata
+    sf::gdal_utils(util        = "buildvrt",
+                   source      = gdal_srcs,
+                   destination = vrt_path,
+                   quiet       = TRUE)
+
+    # --- Post-process VRT: relative paths + metadata -------------------------
+    vm       <- var_meta[[vn]]
+    vrt_text <- paste(readLines(vrt_path, warn = FALSE), collapse = "\n")
+
+    # 1. Swap absolute source paths → paths relative to the VRT file.
+    #    GDAL on Windows may embed paths with backslashes or forward slashes;
+    #    try both to ensure a match regardless of platform.
+    for (k in seq_along(abs_tiles)) {
+      rel_fwd <- gsub("\\\\", "/", .rel_path(abs_tiles[k], vrt_path))
+      for (abs_variant in unique(c(abs_tiles[k], abs_fwd[k]))) {
+        vrt_text <- gsub(
+          paste0('relativeToVRT="0">NETCDF:"', abs_variant, '":'),
+          paste0('relativeToVRT="1">NETCDF:"', rel_fwd,     '":'),
+          vrt_text, fixed = TRUE
+        )
+      }
+    }
+
+    # 2. Insert dataset-level metadata block after the opening VRTDataset tag
+    meta_block <- paste0(
+      "  <Metadata>\n",
+      sprintf('    <MDI key="data_type">%s</MDI>\n', data_type),
+      sprintf('    <MDI key="varname">%s</MDI>\n',   vn),
+      sprintf('    <MDI key="units">%s</MDI>\n',     vm$units),
+      sprintf('    <MDI key="long_name">%s</MDI>\n', vm$long_name),
+      "  </Metadata>"
     )
+    vrt_text <- sub("(<VRTDataset[^>]*>\n)",
+                    paste0("\\1", meta_block, "\n"),
+                    vrt_text, perl = TRUE)
 
-    band_lines <- unlist(lapply(seq_len(ntime), function(b) {
-      src <- unlist(lapply(tile_info, function(ti) {
-        c('    <ComplexSource>',
-          sprintf('      <SourceFilename relativeToVRT="0">NETCDF:%s:%s</SourceFilename>',
-                  ti$path, vn),
-          sprintf('      <SourceBand>%d</SourceBand>', b),
-          sprintf('      <SrcRect xOff="0" yOff="0" xSize="%d" ySize="%d"/>',
-                  ti$t_ncol, ti$t_nrow),
-          sprintf('      <DstRect xOff="%d" yOff="%d" xSize="%d" ySize="%d"/>',
-                  ti$col_off, ti$row_off, ti$t_ncol, ti$t_nrow),
-          '    </ComplexSource>')
-      }))
-      c(sprintf('  <VRTRasterBand dataType="Float64" band="%d">', b), src,
-        '  </VRTRasterBand>')
-    }))
+    # 3. Add per-band <Description> (ISO8601 time) — fully vectorized:
+    #    split on "<VRTRasterBand ", insert description after the first newline
+    #    in each part (= after the band opening tag), then rejoin
+    parts <- strsplit(vrt_text, "<VRTRasterBand ", fixed = TRUE)[[1L]]
+    if (length(parts) > 1L) {
+      band_parts <- parts[-1L]
+      nl_pos     <- regexpr("\n", band_parts, fixed = TRUE)
+      band_parts <- paste0(
+        substr(band_parts, 1L, nl_pos),
+        "    <Description>", tme_iso, "</Description>\n",
+        substr(band_parts, nl_pos + 1L, nchar(band_parts))
+      )
+      vrt_text <- paste0(parts[1L],
+                         paste(paste0("<VRTRasterBand ", band_parts), collapse = ""))
+    }
 
-    writeLines(c(hdr, band_lines, '</VRTDataset>'), vrt_path)
+    writeLines(strsplit(vrt_text, "\n", fixed = TRUE)[[1L]], vrt_path)
     vrt_paths[[vn]] <- vrt_path
   }
 
@@ -771,9 +970,7 @@ stitch_tiles <- function(tile_dir, out_file, data_type = "mout", file_fmt = "h5"
                    full_xmin, full_ymax, res_x, res_y,
                    fill_value, python_path)
   } else {
-    .stitch_nc_vrt(tile_files, out_file, var_names,
-                   full_nrow, full_ncol, ntime,
-                   full_xmin, full_ymax, res_x, res_y)
+    .stitch_nc_vrt(tile_files, out_file, var_names)
   }
 
   invisible(data.frame(tile_file = tile_files, status = "stitched",
