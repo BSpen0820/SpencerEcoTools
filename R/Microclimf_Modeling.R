@@ -588,58 +588,56 @@ write_tile <- function(data, out_path, dtm = NULL, tme = NULL,
   }
 }
 
-.stitch_nc_merge <- function(tile_files, out_file, var_names, var_meta,
-                              full_nrow, full_ncol, full_xmin, full_xmax,
-                              full_ymin, full_ymax, data_type, fill_value,
-                              compression) {
-  # Derive resolution from full domain
-  res_x <- (full_xmax - full_xmin) / full_ncol
-  res_y <- (full_ymax - full_ymin) / full_nrow
+.stitch_nc_vrt <- function(tile_files, out_file, var_names,
+                            full_nrow, full_ncol, ntime,
+                            full_xmin, full_ymax, res_x, res_y) {
+  out_stem   <- tools::file_path_sans_ext(out_file)
+  abs_tiles  <- normalizePath(tile_files, mustWork = TRUE)
+  tile_attrs <- lapply(tile_files, .read_nc_tile_attrs)
+  vrt_paths  <- setNames(character(length(var_names)), var_names)
 
-  # Time axis and CRS from first tile
-  nc0     <- ncdf4::nc_open(tile_files[1])
-  t_vals  <- ncdf4::ncvar_get(nc0, "time")
-  t_units <- nc0$dim$time$units
-  crs_wkt <- tryCatch(ncdf4::ncatt_get(nc0, "crs", "crs_wkt")$value,
-                      error = function(e) "")
-  ncdf4::nc_close(nc0)
+  tile_info <- lapply(seq_along(tile_files), function(k) {
+    ta <- tile_attrs[[k]]
+    list(
+      path    = abs_tiles[k],
+      col_off = as.integer(round((as.numeric(ta$xmin) - full_xmin) / res_x)),
+      row_off = as.integer(round((full_ymax - as.numeric(ta$ymax)) / res_y)),
+      t_ncol  = as.integer(ta$ncol),
+      t_nrow  = as.integer(ta$nrow)
+    )
+  })
 
-  t_origin <- as.POSIXct(sub("hours since ", "", t_units), tz = "UTC")
-  tme      <- t_origin + as.numeric(t_vals) * 3600
+  for (vn in var_names) {
+    vrt_path <- sprintf("%s_%s.vrt", out_stem, vn)
 
-  # Build full-domain SpatRaster for coordinate generation
-  full_dtm <- terra::rast(nrows = full_nrow, ncols = full_ncol,
-                           xmin = full_xmin, xmax = full_xmax,
-                           ymin = full_ymin, ymax = full_ymax)
-  if (nchar(crs_wkt) > 0L) terra::crs(full_dtm) <- crs_wkt
+    hdr <- c(
+      sprintf('<VRTDataset rasterXSize="%d" rasterYSize="%d">', full_ncol, full_nrow),
+      sprintf('  <GeoTransform>%.15g, %.15g, 0, %.15g, 0, %.15g</GeoTransform>',
+              full_xmin, res_x, full_ymax, -res_y)
+    )
 
-  # Initialize full arrays to fill value
-  fv <- if (is.na(fill_value)) NA_real_ else fill_value
-  full_arrays <- setNames(
-    lapply(var_names, function(v) array(fv, dim = c(full_nrow, full_ncol, length(tme)))),
-    var_names
-  )
+    band_lines <- unlist(lapply(seq_len(ntime), function(b) {
+      src <- unlist(lapply(tile_info, function(ti) {
+        c('    <ComplexSource>',
+          sprintf('      <SourceFilename relativeToVRT="0">NETCDF:%s:%s</SourceFilename>',
+                  ti$path, vn),
+          sprintf('      <SourceBand>%d</SourceBand>', b),
+          sprintf('      <SrcRect xOff="0" yOff="0" xSize="%d" ySize="%d"/>',
+                  ti$t_ncol, ti$t_nrow),
+          sprintf('      <DstRect xOff="%d" yOff="%d" xSize="%d" ySize="%d"/>',
+                  ti$col_off, ti$row_off, ti$t_ncol, ti$t_nrow),
+          '    </ComplexSource>')
+      }))
+      c(sprintf('  <VRTRasterBand dataType="Float64" band="%d">', b), src,
+        '  </VRTRasterBand>')
+    }))
 
-  # Read each tile and place at correct row/col offset
-  for (tf in tile_files) {
-    attrs   <- .read_nc_tile_attrs(tf)
-    row_off <- as.integer(round((full_ymax - attrs$ymax) / res_y))
-    col_off <- as.integer(round((attrs$xmin  - full_xmin) / res_x))
-    t_nrow  <- as.integer(attrs$nrow)
-    t_ncol  <- as.integer(attrs$ncol)
-    row_idx <- seq(row_off + 1L, row_off + t_nrow)
-    col_idx <- seq(col_off + 1L, col_off + t_ncol)
-    nc_t    <- ncdf4::nc_open(tf)
-    for (vn in var_names) {
-      arr <- ncdf4::ncvar_get(nc_t, vn)   # ncdf4 returns [ncol, nrow, ntime]
-      arr[arr == -9999] <- NA_real_
-      full_arrays[[vn]][row_idx, col_idx, ] <- aperm(arr, c(2L, 1L, 3L))
-    }
-    ncdf4::nc_close(nc_t)
+    writeLines(c(hdr, band_lines, '</VRTDataset>'), vrt_path)
+    vrt_paths[[vn]] <- vrt_path
   }
 
-  .write_nc(full_arrays, var_meta, tme, out_file, full_dtm, data_type, compression)
-  invisible(NULL)
+  cat(sprintf("Created %d VRT file(s) with stem: %s\n", length(vrt_paths), out_stem))
+  invisible(vrt_paths)
 }
 
 # --------------------------------------------------------------------------- #
@@ -651,19 +649,22 @@ write_tile <- function(data, out_path, dtm = NULL, tme = NULL,
 #' Discovers all per-tile HDF5 or NetCDF files produced by
 #' \code{\link{write_tile}} in \code{tile_dir}, reads their embedded spatial
 #' metadata to determine each tile's position within the full domain, and
-#' assembles them into either an HDF5 virtual dataset (VDS) or a single merged
-#' NetCDF file.
+#' assembles them into either an HDF5 virtual dataset (VDS) or a set of
+#' per-variable GDAL VRT files.
 #'
 #' @param tile_dir Character. Directory containing tile files written by
 #'   \code{\link{write_tile}}.
-#' @param out_file Character. Output path for the assembled file.
+#' @param out_file Character. Output path (including stem) for the assembled
+#'   file(s). For \code{file_fmt = "vrt"}, the extension is stripped and each
+#'   variable is written as \code{<stem>_<varname>.vrt}.
 #' @param data_type Character. \code{"mout"} or \code{"smod"}. Used to filter
 #'   which files in \code{tile_dir} are included.
 #' @param file_fmt Character. \code{"h5"} builds an HDF5 Virtual Dataset
 #'   (requires h5py in the active Python environment, or falls back to external
-#'   links); \code{"nc"} reads all tile NetCDF files into memory, assembles the
-#'   full domain arrays, and writes a single merged NetCDF file (requires
-#'   \code{ncdf4}). Default \code{"h5"}.
+#'   links); \code{"vrt"} creates one GDAL VRT per variable referencing the
+#'   tile NC files via NETCDF subdatasets — no data is copied and tile files
+#'   must remain at their original paths (requires \code{ncdf4} and
+#'   \code{terra}). Default \code{"h5"}.
 #' @param dtm Optional \code{terra::SpatRaster} covering the full domain. When
 #'   supplied, it defines the authoritative full-domain extent, row count, and
 #'   column count. When \code{NULL}, these are inferred from the union of all
@@ -672,11 +673,10 @@ write_tile <- function(data, out_path, dtm = NULL, tme = NULL,
 #'   \code{h5py} installed. Only used when \code{file_fmt = "h5"}. Defaults to
 #'   \code{reticulate}'s currently configured Python.
 #' @param fill_value Numeric. Value used to initialise cells not covered by any
-#'   tile. For \code{file_fmt = "h5"} this becomes the VDS fill value (NaN when
-#'   \code{NA_real_}). For \code{file_fmt = "nc"} full arrays are initialised to
-#'   this value before tiles are placed. Default \code{NA_real_}.
-#' @param compression Integer 0–9. Gzip compression level for the merged output
-#'   file. Only used when \code{file_fmt = "nc"}. Default \code{4L}.
+#'   tile. Only used when \code{file_fmt = "h5"} (becomes the VDS fill value;
+#'   NaN when \code{NA_real_}). Default \code{NA_real_}.
+#' @param compression Integer 0–9. Unused; retained for compatibility.
+#'   Default \code{4L}.
 #'
 #' @return Invisibly, a \code{data.frame} with columns \code{tile_file} and
 #'   \code{status}.
@@ -689,11 +689,12 @@ write_tile <- function(data, out_path, dtm = NULL, tme = NULL,
 #' their original paths for the VDS to remain readable. If h5py is unavailable,
 #' falls back to a master file with HDF5 external links.
 #'
-#' **NetCDF merge path** (\code{file_fmt = "nc"}): Reads all tile files into
-#' memory, assembles the full-domain arrays, and writes a single merged NetCDF
-#' file using the same CF-1.8 layout as \code{\link{write_tile}}. Peak memory
-#' cost is approximately \code{full_nrow × full_ncol × ntime × n_vars × 8}
-#' bytes. Tile files are not needed after the merged file is written.
+#' **VRT path** (\code{file_fmt = "vrt"}): For each variable, writes a
+#' \code{.vrt} file using \code{terra::vrt()} with GDAL
+#' \code{NETCDF:filepath:varname} subdataset references. The VRT mosaics all
+#' tile extents spatially; each hourly time step is one band. Absolute paths
+#' are embedded so VRTs work regardless of working directory. Tile NC files
+#' must stay in place.
 #'
 #' Tile files are discovered by listing all files in \code{tile_dir} whose
 #' names contain \code{data_type} (case-insensitive) and end in \code{.h5} or
@@ -707,7 +708,7 @@ stitch_tiles <- function(tile_dir, out_file, data_type = "mout", file_fmt = "h5"
                          dtm = NULL, python_path = NULL, fill_value = NA_real_,
                          compression = 4L) {
   data_type   <- match.arg(data_type, c("mout", "smod"))
-  file_fmt    <- match.arg(file_fmt, c("h5", "nc"))
+  file_fmt    <- match.arg(file_fmt, c("h5", "vrt"))
   compression <- as.integer(compression)
   var_meta    <- if (data_type == "mout") .mout_meta else .smod_meta
   var_names   <- names(var_meta)
@@ -770,9 +771,9 @@ stitch_tiles <- function(tile_dir, out_file, data_type = "mout", file_fmt = "h5"
                    full_xmin, full_ymax, res_x, res_y,
                    fill_value, python_path)
   } else {
-    .stitch_nc_merge(tile_files, out_file, var_names, var_meta,
-                     full_nrow, full_ncol, full_xmin, full_xmax,
-                     full_ymin, full_ymax, data_type, fill_value, compression)
+    .stitch_nc_vrt(tile_files, out_file, var_names,
+                   full_nrow, full_ncol, ntime,
+                   full_xmin, full_ymax, res_x, res_y)
   }
 
   invisible(data.frame(tile_file = tile_files, status = "stitched",
