@@ -1039,3 +1039,601 @@ stitch_tiles <- function(tile_dir, out_file, data_type = "mout", file_fmt = "h5"
   invisible(data.frame(tile_file = tile_files, status = "stitched",
                        stringsAsFactors = FALSE))
 }
+
+# --------------------------------------------------------------------------- #
+#  Internal helpers for run_micro_big_nichemap
+# --------------------------------------------------------------------------- #
+
+# Height → label: positive = above ground, zero/negative = soil depth in mm
+.hgt_label <- function(h) {
+  if (h > 0) "AbvGrd"
+  else sprintf("BlwGrd_%04d", as.integer(round(abs(h) * 1000)))
+}
+
+# Suppress cat(), messages, and warnings from noisy model calls
+.quiet_run <- function(expr) {
+  local({
+    invisible(utils::capture.output(
+      suppressMessages(suppressWarnings(r <- expr)),
+      type = "output"
+    ))
+    r
+  })
+}
+
+# Resolve an RDS input that may be a file path or a directory.
+# When a directory, constructs the expected filename from stem + period_label + study_area.
+.resolve_rds_path <- function(input, stem, period_label, study_area) {
+  if (dir.exists(input)) {
+    fname <- if (!is.null(study_area)) {
+      sprintf("%s_%s_%s.RDS", study_area, stem, period_label)
+    } else {
+      sprintf("%s_%s.RDS", stem, period_label)
+    }
+    path <- file.path(input, fname)
+    if (!file.exists(path))
+      stop(sprintf("%s file not found for period %s:\n  %s", stem, period_label, path))
+    return(path)
+  }
+  if (!file.exists(input))
+    stop(sprintf("%s file not found:\n  %s", stem, input))
+  input
+}
+
+# --------------------------------------------------------------------------- #
+#  run_micro_big_nichemap — exported
+# --------------------------------------------------------------------------- #
+
+#' Run Full Microclimate Pipeline for Large Tiled Domains
+#'
+#' Executes the complete NicheMapR–microclimf microclimate pipeline — micropoint
+#' models, an optional snow model, and microclimate models — across all tiles
+#' and date periods for a large spatial domain.  Terrain features (slope,
+#' aspect, topographic wetness index, horizon angles, sky-view factor, and wind
+#' shelter) are derived from the full fine DEM once before the tile loop and
+#' cropped per tile, avoiding redundant full-domain computation.  SLURM array
+#' job distribution is provided via hidden \code{...} arguments.
+#'
+#' @param tiles List returned by \code{\link{create_tiles}} containing
+#'   \code{tiles_proc} (buffered tile extents) and \code{tiles_core} (core tile
+#'   extents without buffer).
+#' @param clim Character. File path to a packaged climate \code{.RDS}, or a
+#'   directory containing one \code{.RDS} per period following the naming
+#'   convention \code{{study_area}_Climate_{period_label}.RDS}.
+#' @param dates Either a \code{data.frame} with columns \code{Start_Dates} and
+#'   \code{End_Dates} (one row per modeling period), or a length-2 \code{Date}
+#'   vector defining a single period.  Period labels take the form
+#'   \code{YYYYMMDD_to_YYYYMMDD}.
+#' @param dtm_fine \code{SpatRaster}. Fine-resolution DEM (e.g. 30 m) covering
+#'   the full domain.  Must share the CRS and extent assumed by
+#'   \code{\link{create_tiles}}.
+#' @param dtm_coarse \code{SpatRaster}. Coarse-resolution DEM matching the
+#'   weather-data grid (e.g. the AORC grid).
+#' @param vegp Character. File path to a packaged vegetation parameters
+#'   \code{.RDS}, or a directory containing one \code{.RDS} per period following
+#'   \code{{study_area}_VegPara_{period_label}.RDS}.
+#' @param soilc Character. File path to a packaged soil parameters \code{.RDS},
+#'   or a directory containing one \code{.RDS} per period following
+#'   \code{{study_area}_SoilPara_{period_label}.RDS}.
+#' @param output_dir Character. Root output directory.  Sub-directories are
+#'   created automatically (see Details).
+#' @param reqhgt Numeric. Above-ground model height in metres.  Must be
+#'   positive.  Default \code{2}.
+#' @param zref Numeric. Reference height (m) for input air temperature and
+#'   humidity.  Default \code{2}.
+#' @param windhgt Numeric. Height (m) at which wind speed is measured.  Default
+#'   \code{10}.
+#' @param matemp Numeric or \code{NA}. Mean annual temperature
+#'   (\eqn{^\circ}C) used to initialise soil temperature.  \code{NA} lets
+#'   microclimf estimate it internally (default).
+#' @param snow Logical. If \code{TRUE}, a snow model is run for each
+#'   (tile, period) combination after the above-ground micropoint model, and
+#'   its output is passed to the microclimate model.  Default \code{FALSE}.
+#' @param snowenv Character. Snow environment type passed to
+#'   \code{microclimfPara::runsnowmodel}.  Default \code{"Taiga"}.
+#' @param Dynreqhgt Logical. If \code{TRUE}, \code{reqhgt} is adjusted
+#'   dynamically for canopy height inside
+#'   \code{microclimfPara::runmicro}.  Default \code{FALSE}.
+#' @param altcorrect Integer. Altitude correction method passed to
+#'   \code{microclimfPara::runsnowmodel} and \code{microclimfPara::runmicro}.
+#'   \code{0} = no correction (default).
+#' @param parallel Logical. If \code{TRUE}, \code{microclimfPara::runmicro} is
+#'   run in parallel.  Default \code{FALSE}.
+#' @param ncores Integer. Number of cores to use when \code{parallel = TRUE}.
+#'   Default \code{2}.
+#' @param study_area Character or \code{NULL}.  When provided, input RDS files
+#'   are resolved with this prefix and output files are written under
+#'   \code{output_dir/study_area/}.  Default \code{NULL}.
+#' @param file_fmt Character.  Output format for microclimate and snow model
+#'   results: \code{"h5"} (HDF5 via \code{rhdf5}) or \code{"nc"} (NetCDF-4 via
+#'   \code{ncdf4}).  Micropoint model outputs are always written as \code{.RDS}.
+#'   Default \code{"h5"}.
+#' @param compression Integer 0–9. Gzip compression level applied to HDF5/NetCDF
+#'   output files.  Default \code{4L}.
+#' @param ... Hidden SLURM array arguments:
+#'   \describe{
+#'     \item{\code{clust_array_arg}}{Integer.  Value of
+#'       \code{$SLURM_ARRAY_TASK_ID} for this node (1-based).}
+#'     \item{\code{clust_array_size}}{Integer.  Total number of array tasks.
+#'       Required when \code{clust_array_arg} is set.}
+#'   }
+#'   When supplied, the full set of \code{(tile, period)} tasks is distributed
+#'   round-robin across \code{clust_array_size} nodes and only this node's
+#'   subset is processed.
+#'
+#' @return Invisibly, a \code{data.frame} with one row per completed or failed
+#'   step and columns:
+#'   \describe{
+#'     \item{tile_id}{Integer tile index.}
+#'     \item{period_label}{Character period string, e.g.
+#'       \code{"20200101_to_20201231"}.}
+#'     \item{height_label}{Character height label: \code{"AbvGrd"} or
+#'       \code{"BlwGrd_XXXX"} where \code{XXXX} is depth in zero-padded
+#'       millimetres (e.g. 1.5 cm → \code{"BlwGrd_0015"}).}
+#'     \item{step}{One of \code{"micropoint"}, \code{"snow"}, or
+#'       \code{"microclimate"}.}
+#'     \item{status}{\code{"success"} or \code{"error: <message>"}.}
+#'     \item{file_path}{Path of the output file attempted.}
+#'     \item{timestamp}{ISO 8601 wall-clock time of the step.}
+#'   }
+#'
+#' @details
+#' **Heights modeled.**  The above-ground height (\code{reqhgt}, labelled
+#' \code{"AbvGrd"}) and ten soil depths — 0, 1.5, 5, 10, 15, 20, 30, 50, 100,
+#' and 200 cm — are always modeled.  Depth labels use the \code{BlwGrd_XXXX}
+#' convention where \code{XXXX} is the depth in zero-padded millimetres
+#' (ground surface = \code{BlwGrd_0000}).
+#'
+#' **Output directory layout.**
+#' \preformatted{
+#' output_dir/
+#'   {study_area}/                      # omitted when study_area = NULL
+#'     Micropoint_Models/{period}/{hgt}/
+#'       Tile_NNN_{prefix}_MicropointModel_{period}.RDS
+#'     Snow_Models/{period}/
+#'       Tile_NNN_{prefix}_SnowModel_{period}.{ext}
+#'     Microclim_Models/{period}/{hgt}/
+#'       Tile_NNN_{prefix}_MicroclimModel_{period}.{ext}
+#' }
+#'
+#' **Processing order per (tile, period) task.**
+#' \enumerate{
+#'   \item Load and crop climate, vegetation, and soil inputs to the buffered
+#'     tile extent (\code{tiles_proc}).
+#'   \item Run \code{microclimfPara::runpointmodela} for every height and save
+#'     each result as an \code{.RDS}.
+#'   \item If \code{snow = TRUE}, run \code{microclimfPara::runsnowmodel} using
+#'     the above-ground micropoint output, trim the tile buffer with
+#'     \code{\link{trim_tile_buffer}}, and write to disk.
+#'   \item Run \code{microclimfPara::runmicro} for every height, trim the
+#'     buffer, and write to disk with \code{\link{write_tile}}.
+#' }
+#' Each step is wrapped in \code{tryCatch}: a failure is logged and a warning
+#' issued, but processing continues for the remaining heights and tiles.
+#'
+#' **SLURM usage.**  In an SBATCH array script, pass
+#' \code{clust_array_arg = as.integer(Sys.getenv("SLURM_ARRAY_TASK_ID"))} and
+#' \code{clust_array_size = <total tasks>}.  All \code{(tile, period)}
+#' combinations are enumerated 1–N and distributed round-robin so each node
+#' receives an equal share.  Tile index cycles fastest (all tiles for period 1
+#' before period 2, etc.).
+#'
+#' **Terrain pre-computation.**  Slope, aspect, topographic wetness index (TWI),
+#' 24-direction horizon angles (at 15° intervals), sky-view factor, and wind
+#' shelter arrays are computed from \code{dtm_fine} once before the tile loop
+#' using internal microclimf helpers (\code{microclimf:::.topidx},
+#' \code{microclimf:::.horizon}, \code{microclimf:::.windsheltera}).  Per-tile
+#' subsets are extracted by row/column index, avoiding repeated full-domain
+#' computations.
+#'
+#' @seealso \code{\link{create_tiles}} to generate \code{tiles} input.
+#'   \code{\link{trim_tile_buffer}} for buffer removal.
+#'   \code{\link{write_tile}} for output file format details.
+#'   \code{\link{stitch_tiles}} to assemble tile outputs into a single file.
+#'   \code{\link{package_climate}} and \code{\link{Pkg_Veg_Soil_data}} to
+#'   produce the \code{clim}, \code{vegp}, and \code{soilc} inputs.
+#'
+#' @export
+run_micro_big_nichemap <- function(tiles,        # tile object from create_tiles
+                                   clim,         # file path or directory for packaged climate RDS
+                                   dates,        # data.frame(Start_Dates, End_Dates) or length-2 Date vector
+                                   dtm_fine,     # fine DEM SpatRaster or file path
+                                   dtm_coarse,   # coarse DEM SpatRaster or file path
+                                   vegp,         # file path or directory for packaged veg params RDS
+                                   soilc,        # file path or directory for packaged soil params RDS
+                                   output_dir,   # root output folder
+                                   reqhgt       = 2,
+                                   zref         = 2,
+                                   windhgt      = 10,
+                                   matemp       = NA,
+                                   snow         = FALSE,
+                                   snowenv      = "Taiga",
+                                   Dynreqhgt    = FALSE,
+                                   altcorrect   = 0,
+                                   parallel     = FALSE,
+                                   ncores       = 2,
+                                   study_area   = NULL,
+                                   file_fmt     = c("h5", "nc"),
+                                   compression  = 4L,
+                                   ...) {
+
+  file_fmt <- match.arg(file_fmt)
+
+  # ... SLURM hidden args -------------------------------------------------------
+  dots    <- list(...)
+  allowed <- c("clust_array_arg", "clust_array_size")
+  unknown <- setdiff(names(dots), allowed)
+  if (length(unknown) > 0)
+    stop("Unknown argument(s): ", paste(unknown, collapse = ", "))
+
+  clust_array_arg  <- dots$clust_array_arg
+  clust_array_size <- dots$clust_array_size
+
+  if (!is.null(clust_array_arg) &&
+      (!is.numeric(clust_array_arg) || length(clust_array_arg) != 1))
+    stop("clust_array_arg must be a single numeric value or NULL")
+  if (!is.null(clust_array_size) &&
+      (!is.numeric(clust_array_size) || length(clust_array_size) != 1))
+    stop("clust_array_size must be a single numeric value or NULL")
+  if (!is.null(clust_array_arg) && is.null(clust_array_size))
+    stop("clust_array_size must be provided when clust_array_arg is set")
+  if (!is.null(clust_array_arg) &&
+      (clust_array_arg < 1 || clust_array_arg > clust_array_size))
+    stop("clust_array_arg must be between 1 and clust_array_size")
+
+  if (reqhgt <= 0) stop("reqhgt must be positive")
+
+  # --- normalise dates ---------------------------------------------------------
+  if (is.data.frame(dates)) {
+    if (!all(c("Start_Dates", "End_Dates") %in% names(dates)))
+      stop("dates data.frame must contain columns 'Start_Dates' and 'End_Dates'")
+    date_ranges <- dates
+  } else if (is.vector(dates) && length(dates) == 2) {
+    date_ranges <- data.frame(
+      Start_Dates      = as.Date(dates[1]),
+      End_Dates        = as.Date(dates[2]),
+      stringsAsFactors = FALSE
+    )
+  } else {
+    stop("dates must be a data.frame with Start_Dates/End_Dates columns, or a length-2 Date vector")
+  }
+
+  # --- validate clim / vegp / soilc inputs ------------------------------------
+  for (.inp in list(list(clim, "clim"), list(vegp, "vegp"), list(soilc, "soilc"))) {
+    if (!file.exists(.inp[[1]]) && !dir.exists(.inp[[1]]))
+      stop(sprintf("'%s' does not exist as a file or directory:\n  %s", .inp[[2]], .inp[[1]]))
+  }
+
+  # --- heights -----------------------------------------------------------------
+  sdepth     <- c(0, 1.5, 5, 10, 15, 20, 30, 50, 100, 200) / -100
+  allheights <- c(reqhgt, sdepth)
+
+  out_ext <- if (file_fmt == "h5") ".h5" else ".nc"
+
+  # --- terrain features (full DEM, computed once) ------------------------------
+  cat(sprintf("\n--- run_micro_big_nichemap: computing terrain features ---\n"))
+
+  slope <- terra::terrain(dtm_fine, v = "slope")
+  aspect <- terra::terrain(dtm_fine, v = "aspect")
+  twi   <- microclimf:::.topidx(dtm_fine)
+
+  hor <- array(NA, dim = c(dim(dtm_fine)[1:2], 24))
+  for (i in 1:24) hor[,,i] <- microclimf:::.horizon(dtm_fine, (i - 1) * 15)
+
+  msl  <- tan(apply(atan(hor), c(1, 2), mean))
+  svfa <- 0.5 * cos(2 * msl) + 0.5
+  wsa  <- microclimf:::.windsheltera(dtm_fine, 2, 1)
+  rm(msl); invisible(gc())
+
+  # --- flat task table: all (tile, date) combinations --------------------------
+  n_tiles <- nrow(tiles$tiles_proc)
+  n_dates <- nrow(date_ranges)
+
+  all_combos <- expand.grid(
+    tile_idx = seq_len(n_tiles),
+    date_idx = seq_len(n_dates),
+    KEEP.OUT.ATTRS = FALSE
+  )
+
+  all_combos$node <- if (is.null(clust_array_size)) 1L else
+    rep(seq_len(clust_array_size), length.out = nrow(all_combos))
+
+  task_combos <- if (is.null(clust_array_arg)) all_combos else
+    all_combos[all_combos$node == clust_array_arg, ]
+
+  cat(sprintf("Tasks this node: %d of %d total (tile x period combinations)\n",
+              nrow(task_combos), nrow(all_combos)))
+
+  # --- log data.frame ----------------------------------------------------------
+  log_df <- data.frame(
+    tile_id      = integer(),
+    period_label = character(),
+    height_label = character(),
+    step         = character(),
+    status       = character(),
+    file_path    = character(),
+    timestamp    = character(),
+    stringsAsFactors = FALSE
+  )
+
+  .log_row <- function(tile_id, period_label, height_label, step, status, file_path) {
+    data.frame(
+      tile_id      = tile_id,
+      period_label = period_label,
+      height_label = height_label,
+      step         = step,
+      status       = status,
+      file_path    = file_path,
+      timestamp    = format(Sys.time(), "%Y-%m-%dT%H:%M:%S"),
+      stringsAsFactors = FALSE
+    )
+  }
+
+  # --- flat loop over (tile, date) tasks ---------------------------------------
+  current_d      <- NULL
+  clim_resolved  <- NULL
+  vegp_resolved  <- NULL
+  soilc_resolved <- NULL
+
+  for (k in seq_len(nrow(task_combos))) {
+
+    tile_i <- task_combos$tile_idx[k]
+    d      <- task_combos$date_idx[k]
+
+    tile_proc <- tiles$tiles_proc[tile_i, ]
+    tile_core <- tiles$tiles_core[tile_i, ]
+
+    start_date   <- as.Date(date_ranges$Start_Dates[d])
+    end_date     <- as.Date(date_ranges$End_Dates[d])
+    period_label <- sprintf("%s_to_%s",
+                            format(start_date, "%Y%m%d"),
+                            format(end_date,   "%Y%m%d"))
+
+    if (is.null(current_d) || d != current_d) {
+      clim_resolved  <- .resolve_rds_path(clim,  "Climate",  period_label, study_area)
+      vegp_resolved  <- .resolve_rds_path(vegp,  "VegPara",  period_label, study_area)
+      soilc_resolved <- .resolve_rds_path(soilc, "SoilPara", period_label, study_area)
+      current_d <- d
+    }
+
+    cat(sprintf("\n=== Task %d/%d | Tile %d | Period: %s ===\n",
+                k, nrow(task_combos), tile_i, period_label))
+
+    dem_coarse_tile <- terra::crop(dtm_coarse, terra::ext(tile_proc))
+    dem_fine_tile   <- terra::crop(dtm_fine,   dem_coarse_tile, snap = "out")
+    dem_fine_core   <- terra::crop(dtm_fine,   terra::ext(tile_core))
+
+    slope_tile  <- terra::crop(slope,  dem_fine_tile)
+    aspect_tile <- terra::crop(aspect, dem_fine_tile)
+    twi_tile    <- terra::crop(twi,    dem_fine_tile)
+
+    crop_cells  <- terra::cellFromXY(
+      dtm_fine,
+      terra::xyFromCell(dem_fine_tile,
+                        seq_len(terra::nrow(dem_fine_tile) * terra::ncol(dem_fine_tile)))
+    )
+    crop_rowcol <- terra::rowColFromCell(dtm_fine, crop_cells)
+    row_idx <- unique(crop_rowcol[, 1])
+    col_idx <- unique(crop_rowcol[, 2])
+
+    hor_tile  <- hor [row_idx, col_idx, , drop = FALSE]
+    svfa_tile <- svfa[row_idx, col_idx,   drop = FALSE]
+    wsa_tile  <- wsa [row_idx, col_idx, , drop = FALSE]
+    invisible(gc())
+
+    tme <- as.POSIXlt(
+      seq(as.POSIXct(sprintf("%s 00:00:00", start_date), tz = "UTC"),
+          as.POSIXct(sprintf("%s 23:00:00", end_date),   tz = "UTC"),
+          by = "1 hour")
+    )
+
+    # --- load and crop inputs --------------------------------------------------
+    cat(sprintf("  Loading and cropping inputs...\n"))
+
+    soilc.d   <- readr::read_rds(soilc_resolved)
+    soil.crop <- lapply(soilc.d, function(x) terra::wrap(terra::crop(terra::unwrap(x), dem_fine_tile)))
+    attr(soil.crop, "class") <- attr(soilc.d, "class")
+    rm(soilc.d); invisible(gc())
+
+    vegp.d   <- readr::read_rds(vegp_resolved)
+    veg.crop <- lapply(vegp.d, function(x) terra::wrap(terra::crop(terra::unwrap(x), dem_fine_tile)))
+    attr(veg.crop, "class") <- attr(vegp.d, "class")
+    rm(vegp.d); invisible(gc())
+
+    climdatag <- readr::read_rds(clim_resolved)
+    clim.crop <- lapply(climdatag, function(x) terra::wrap(terra::crop(terra::unwrap(x), dem_coarse_tile)))
+    rm(climdatag); invisible(gc())
+
+    # --- micropoint models for all heights -------------------------------------
+    for (h in allheights) {
+
+      hgt_lbl  <- .hgt_label(h)
+      prefix   <- if (!is.null(study_area)) sprintf("%s_%s", study_area, hgt_lbl) else hgt_lbl
+
+      mp_parts <- c(output_dir)
+      if (!is.null(study_area)) mp_parts <- c(mp_parts, study_area)
+      mp_parts <- c(mp_parts, "Micropoint_Models", period_label, hgt_lbl)
+      mp_dir   <- do.call(file.path, as.list(mp_parts))
+      dir.create(mp_dir, recursive = TRUE, showWarnings = FALSE)
+
+      mp_file <- file.path(mp_dir,
+                           sprintf("Tile_%03d_%s_MicropointModel_%s.RDS",
+                                   tile_i, prefix, period_label))
+
+      cat(sprintf("  [Tile %d | %s | %s] Running micropoint model...",
+                  tile_i, period_label, hgt_lbl))
+
+      tryCatch({
+        pointa <- .quiet_run(
+          microclimfPara::runpointmodela(
+            climarrayr = clim.crop, tme = tme, reqhgt = h,
+            dtm = dem_fine_tile, vegp = veg.crop, soilc = soil.crop,
+            matemp = matemp, zref = zref, windhgt = windhgt
+          )
+        )
+        readr::write_rds(pointa, mp_file)
+        cat(" done.\n")
+        log_df <<- rbind(log_df, .log_row(tile_i, period_label, hgt_lbl,
+                                          "micropoint", "success", mp_file))
+      }, error = function(e) {
+        cat(sprintf(" FAILED: %s\n", conditionMessage(e)))
+        warning(sprintf("Tile %d | %s | %s | micropoint: %s",
+                        tile_i, period_label, hgt_lbl, conditionMessage(e)))
+        log_df <<- rbind(log_df, .log_row(tile_i, period_label, hgt_lbl,
+                                          "micropoint",
+                                          paste0("error: ", conditionMessage(e)),
+                                          mp_file))
+      })
+    }
+
+    # --- snow model (once per tile+period, uses AbvGrd micropoint) -------------
+    smod <- NULL
+
+    if (snow) {
+
+      abv_lbl    <- .hgt_label(reqhgt)
+      abv_prefix <- if (!is.null(study_area)) sprintf("%s_%s", study_area, abv_lbl) else abv_lbl
+
+      abv_parts <- c(output_dir)
+      if (!is.null(study_area)) abv_parts <- c(abv_parts, study_area)
+      abv_parts <- c(abv_parts, "Micropoint_Models", period_label, abv_lbl)
+      abv_dir   <- do.call(file.path, as.list(abv_parts))
+
+      abv_file <- file.path(abv_dir,
+                            sprintf("Tile_%03d_%s_MicropointModel_%s.RDS",
+                                    tile_i, abv_prefix, period_label))
+
+      smod_parts <- c(output_dir)
+      if (!is.null(study_area)) smod_parts <- c(smod_parts, study_area)
+      smod_parts <- c(smod_parts, "Snow_Models", period_label)
+      smod_dir   <- do.call(file.path, as.list(smod_parts))
+      dir.create(smod_dir, recursive = TRUE, showWarnings = FALSE)
+
+      smod_prefix <- if (!is.null(study_area)) study_area else "SnowModel"
+      smod_file <- file.path(smod_dir,
+                             sprintf("Tile_%03d_%s_SnowModel_%s%s",
+                                     tile_i, smod_prefix, period_label, out_ext))
+
+      cat(sprintf("  [Tile %d | %s] Running snow model...", tile_i, period_label))
+
+      tryCatch({
+        pointa_abv <- readr::read_rds(abv_file)
+
+        smod <- .quiet_run(
+          microclimfPara::runsnowmodel(
+            weather    = clim.crop,   micropoint = pointa_abv,
+            vegp       = veg.crop,    soilc      = soil.crop,
+            dtm        = dem_fine_tile, dtmc     = dem_coarse_tile,
+            tme        = tme,         altcorrect = altcorrect,
+            snowenv    = snowenv,     method     = "slow",
+            zref       = zref,        windhgt    = windhgt,
+            parallel   = parallel,    ncores     = ncores
+          )
+        )
+
+        smod.trim <- trim_tile_buffer(smod, dem_proc = dem_fine_tile, dem_core = dem_fine_core)
+        write_tile(smod.trim, out_path = smod_file, tme = tme,
+                   compression = compression, file_fmt = file_fmt, dtm = dem_fine_core)
+        rm(smod.trim)
+        cat(" done.\n")
+        log_df <<- rbind(log_df, .log_row(tile_i, period_label, "",
+                                          "snow", "success", smod_file))
+      }, error = function(e) {
+        cat(sprintf(" FAILED: %s\n", conditionMessage(e)))
+        warning(sprintf("Tile %d | %s | snow: %s",
+                        tile_i, period_label, conditionMessage(e)))
+        log_df <<- rbind(log_df, .log_row(tile_i, period_label, "",
+                                          "snow",
+                                          paste0("error: ", conditionMessage(e)),
+                                          smod_file))
+      })
+    }
+
+    # --- microclimate models for all heights -----------------------------------
+    for (h in allheights) {
+
+      hgt_lbl <- .hgt_label(h)
+      prefix  <- if (!is.null(study_area)) sprintf("%s_%s", study_area, hgt_lbl) else hgt_lbl
+
+      mp_parts <- c(output_dir)
+      if (!is.null(study_area)) mp_parts <- c(mp_parts, study_area)
+      mp_parts <- c(mp_parts, "Micropoint_Models", period_label, hgt_lbl)
+      mp_dir   <- do.call(file.path, as.list(mp_parts))
+
+      mp_file <- file.path(mp_dir,
+                           sprintf("Tile_%03d_%s_MicropointModel_%s.RDS",
+                                   tile_i, prefix, period_label))
+
+      mc_parts <- c(output_dir)
+      if (!is.null(study_area)) mc_parts <- c(mc_parts, study_area)
+      mc_parts <- c(mc_parts, "Microclim_Models", period_label, hgt_lbl)
+      mc_dir   <- do.call(file.path, as.list(mc_parts))
+      dir.create(mc_dir, recursive = TRUE, showWarnings = FALSE)
+
+      mc_file <- file.path(mc_dir,
+                           sprintf("Tile_%03d_%s_MicroclimModel_%s%s",
+                                   tile_i, prefix, period_label, out_ext))
+
+      cat(sprintf("  [Tile %d | %s | %s] Running microclimate model...",
+                  tile_i, period_label, hgt_lbl))
+
+      tryCatch({
+        pointa <- readr::read_rds(mp_file)
+
+        if (snow && !is.null(smod)) {
+          mout <- .quiet_run(
+            microclimfPara::runmicro(
+              micropoint = pointa,       reqhgt     = h,
+              vegp       = veg.crop,     soilc      = soil.crop,
+              dtm        = dem_fine_tile, dtmc      = dem_coarse_tile,
+              altcorrect = altcorrect,   snow       = snow,
+              snowmod    = smod,         runchecks  = TRUE,
+              slr        = slope_tile,   apr        = aspect_tile,
+              hor        = hor_tile,     twi        = twi_tile,
+              wsa        = wsa_tile,     svf        = svfa_tile,
+              Dynreqhgt  = Dynreqhgt,   parallel   = parallel,
+              ncores     = ncores
+            )
+          )
+        } else {
+          mout <- .quiet_run(
+            microclimfPara::runmicro(
+              micropoint = pointa,       reqhgt     = h,
+              vegp       = veg.crop,     soilc      = soil.crop,
+              dtm        = dem_fine_tile, dtmc      = dem_coarse_tile,
+              altcorrect = altcorrect,   snow       = snow,
+              runchecks  = TRUE,         slr        = slope_tile,
+              apr        = aspect_tile,  hor        = hor_tile,
+              twi        = twi_tile,     wsa        = wsa_tile,
+              svf        = svfa_tile,    Dynreqhgt  = Dynreqhgt,
+              parallel   = parallel,     ncores     = ncores
+            )
+          )
+        }
+
+        mout.trim <- trim_tile_buffer(mout, dem_proc = dem_fine_tile, dem_core = dem_fine_core)
+        write_tile(mout.trim, out_path = mc_file, tme = tme,
+                   compression = compression, file_fmt = file_fmt, dtm = dem_fine_core)
+        rm(mout, mout.trim)
+        cat(" done.\n")
+        log_df <<- rbind(log_df, .log_row(tile_i, period_label, hgt_lbl,
+                                          "microclimate", "success", mc_file))
+      }, error = function(e) {
+        cat(sprintf(" FAILED: %s\n", conditionMessage(e)))
+        warning(sprintf("Tile %d | %s | %s | microclimate: %s",
+                        tile_i, period_label, hgt_lbl, conditionMessage(e)))
+        log_df <<- rbind(log_df, .log_row(tile_i, period_label, hgt_lbl,
+                                          "microclimate",
+                                          paste0("error: ", conditionMessage(e)),
+                                          mc_file))
+      })
+    }
+
+    if (!is.null(smod)) rm(smod)
+    invisible(gc())
+  }
+
+  cat(sprintf("\n--- run_micro_big_nichemap complete: %d tile(s), %d period(s) ---\n",
+              n_tiles, n_dates))
+  invisible(log_df)
+}

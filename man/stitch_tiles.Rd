@@ -19,16 +19,19 @@ stitch_tiles(
 \item{tile_dir}{Character. Directory containing tile files written by
 \code{\link{write_tile}}.}
 
-\item{out_file}{Character. Output path for the assembled file.}
+\item{out_file}{Character. Output path (including stem) for the assembled
+file(s). For \code{file_fmt = "vrt"}, the extension is stripped and each
+variable is written as \code{<stem>_<varname>.vrt}.}
 
 \item{data_type}{Character. \code{"mout"} or \code{"smod"}. Used to filter
 which files in \code{tile_dir} are included.}
 
 \item{file_fmt}{Character. \code{"h5"} builds an HDF5 Virtual Dataset
 (requires h5py in the active Python environment, or falls back to external
-links); \code{"nc"} reads all tile NetCDF files into memory, assembles the
-full domain arrays, and writes a single merged NetCDF file (requires
-\code{ncdf4}). Default \code{"h5"}.}
+links); \code{"vrt"} creates one GDAL VRT per variable referencing the
+tile NC files via NETCDF subdatasets — no data is copied and tile files
+must remain at their original paths (requires \code{ncdf4} and
+\code{terra}). Default \code{"h5"}.}
 
 \item{dtm}{Optional \code{terra::SpatRaster} covering the full domain. When
 supplied, it defines the authoritative full-domain extent, row count, and
@@ -40,12 +43,11 @@ tile spatial attrs embedded by \code{write_tile}.}
 \code{reticulate}'s currently configured Python.}
 
 \item{fill_value}{Numeric. Value used to initialise cells not covered by any
-tile. For \code{file_fmt = "h5"} this becomes the VDS fill value (NaN when
-\code{NA_real_}). For \code{file_fmt = "nc"} full arrays are initialised to
-this value before tiles are placed. Default \code{NA_real_}.}
+tile. Only used when \code{file_fmt = "h5"} (becomes the VDS fill value;
+NaN when \code{NA_real_}). Default \code{NA_real_}.}
 
-\item{compression}{Integer 0–9. Gzip compression level for the merged output
-file. Only used when \code{file_fmt = "nc"}. Default \code{4L}.}
+\item{compression}{Integer 0–9. Unused; retained for compatibility.
+Default \code{4L}.}
 }
 \value{
 Invisibly, a \code{data.frame} with columns \code{tile_file} and
@@ -55,8 +57,8 @@ Invisibly, a \code{data.frame} with columns \code{tile_file} and
 Discovers all per-tile HDF5 or NetCDF files produced by
 \code{\link{write_tile}} in \code{tile_dir}, reads their embedded spatial
 metadata to determine each tile's position within the full domain, and
-assembles them into either an HDF5 virtual dataset (VDS) or a single merged
-NetCDF file.
+assembles them into either an HDF5 virtual dataset (VDS) or a set of
+per-variable GDAL VRT files.
 }
 \details{
 \strong{HDF5 VDS path} (\code{file_fmt = "h5"}): Uses \code{reticulate} and
@@ -66,11 +68,12 @@ its correct spatial position without copying data. Tile files must remain at
 their original paths for the VDS to remain readable. If h5py is unavailable,
 falls back to a master file with HDF5 external links.
 
-\strong{NetCDF merge path} (\code{file_fmt = "nc"}): Reads all tile files into
-memory, assembles the full-domain arrays, and writes a single merged NetCDF
-file using the same CF-1.8 layout as \code{\link{write_tile}}. Peak memory
-cost is approximately \code{full_nrow × full_ncol × ntime × n_vars × 8}
-bytes. Tile files are not needed after the merged file is written.
+\strong{VRT path} (\code{file_fmt = "vrt"}): For each variable, writes a
+\code{.vrt} file using \code{terra::vrt()} with GDAL
+\code{NETCDF:filepath:varname} subdataset references. The VRT mosaics all
+tile extents spatially; each hourly time step is one band. Absolute paths
+are embedded so VRTs work regardless of working directory. Tile NC files
+must stay in place.
 
 Tile files are discovered by listing all files in \code{tile_dir} whose
 names contain \code{data_type} (case-insensitive) and end in \code{.h5} or
