@@ -213,6 +213,69 @@ create_tiles <- function(coarse_dem,
 }
 
 # --------------------------------------------------------------------------- #
+#  trim_tile_buffer — exported
+# --------------------------------------------------------------------------- #
+
+#' Trim buffer rows and columns from microclimf tile output arrays
+#'
+#' Removes the spatial buffer from every 3D array in an \code{mout} or
+#' \code{smod} list by comparing the extents of the buffered processing
+#' raster (\code{dem_proc}) and the core raster (\code{dem_core}).
+#' Non-array elements (e.g., \code{$tme}) are passed through unchanged.
+#'
+#' @param data List. An \code{mout} or \code{smod} object whose 3D arrays
+#'   have spatial dimensions matching the extent of \code{dem_proc}.
+#' @param dem_proc \code{SpatRaster} covering the buffered tile extent used
+#'   during modeling (i.e., the \code{tiles_proc} raster). Its resolution
+#'   and extent define the outer bounds of the arrays.
+#' @param dem_core \code{SpatRaster} covering the core tile extent to retain
+#'   (i.e., the \code{tiles_core} raster). Its extent must be contained
+#'   within that of \code{dem_proc}.
+#'
+#' @return A list with the same structure as \code{data}: all 3D arrays are
+#'   spatially trimmed to the \code{dem_core} footprint; non-3D elements
+#'   are returned unchanged.
+#'
+#' @seealso \code{\link{create_tiles}} for generating \code{tiles_proc} and
+#'   \code{tiles_core} extents. \code{\link{write_tile}} for writing trimmed
+#'   tiles to disk.
+#'
+#' @export
+trim_tile_buffer <- function(data, dem_proc, dem_core) {
+  e_proc <- terra::ext(dem_proc)
+  e_core <- terra::ext(dem_core)
+  res_x  <- terra::res(dem_proc)[1]
+  res_y  <- terra::res(dem_proc)[2]
+
+  row_top  <- as.integer(round((as.numeric(e_proc$ymax) - as.numeric(e_core$ymax)) / res_y))
+  row_bot  <- as.integer(round((as.numeric(e_core$ymin) - as.numeric(e_proc$ymin)) / res_y))
+  col_left <- as.integer(round((as.numeric(e_core$xmin) - as.numeric(e_proc$xmin)) / res_x))
+  col_rght <- as.integer(round((as.numeric(e_proc$xmax) - as.numeric(e_core$xmax)) / res_x))
+
+  if (any(c(row_top, row_bot, col_left, col_rght) < 0L))
+    stop("dem_core extent exceeds dem_proc on at least one side — check raster inputs")
+
+  is_3d <- vapply(data, function(x) length(dim(x)) == 3L, logical(1L))
+  if (!any(is_3d)) stop("No 3D arrays found in data")
+
+  first <- data[[which(is_3d)[1L]]]
+  nr    <- dim(first)[1L]
+  nc    <- dim(first)[2L]
+
+  if (nr - row_top - row_bot < 1L || nc - col_left - col_rght < 1L)
+    stop("Computed trim exceeds array dimensions — dem_proc and dem_core may not match the data arrays")
+
+  row_idx <- seq.int(row_top  + 1L, nr - row_bot)
+  col_idx <- seq.int(col_left + 1L, nc - col_rght)
+
+  result <- lapply(data, function(x) {
+    if (length(dim(x)) == 3L) x[row_idx, col_idx, , drop = FALSE] else x
+  })
+  names(result) <- names(data)
+  result
+}
+
+# --------------------------------------------------------------------------- #
 #  Metadata lookup lists for write_tile / stitch_tiles
 # --------------------------------------------------------------------------- #
 
