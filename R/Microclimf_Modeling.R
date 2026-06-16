@@ -195,7 +195,7 @@ create_tiles <- function(coarse_dem,
   for (i in seq_len(nrow(tiles_core))) {
     ext_i    <- terra::ext(tiles_core[i, "xmin"], tiles_core[i, "xmax"],
                             tiles_core[i, "ymin"], tiles_core[i, "ymax"])
-    cell_ids <- terra::cells(tiles_rast, ext_i, touches = TRUE)[, "cell"]
+    cell_ids <- terra::cells(tiles_rast, ext_i)
     tiles_rast[cell_ids] <- i
   }
 
