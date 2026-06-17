@@ -35,7 +35,8 @@
 #'   When provided, a warning is issued if the tile exceeds the memory budget but
 #'   processing continues. Each dimension must be at least
 #'   \code{2 * buffer_size + 1} to ensure at least one non-buffer cell per
-#'   dimension.
+#'   dimension. Tile dimensions need not divide evenly into the DEM; edge tiles
+#'   will be slightly smaller.
 #' @param buffer_size Integer. Number of coarse DEM cells added as buffer around
 #'   each tile for \code{tiles_proc}. Default is 1. Memory estimation uses the
 #'   buffered tile size as peak usage occurs on \code{tiles_proc}, not
@@ -115,41 +116,48 @@ create_tiles <- function(coarse_dem,
 
   if (is.null(tile_dims)) {
 
-    div_r <- which(nrow(coarse_dem) %% seq_len(nrow(coarse_dem)) == 0)
-    div_c <- which(ncol(coarse_dem) %% seq_len(ncol(coarse_dem)) == 0)
-    div_r <- div_r[div_r >= min_dim]
-    div_c <- div_c[div_c >= min_dim]
+    nr <- nrow(coarse_dem)
+    nc <- ncol(coarse_dem)
+    max_splits_r <- floor(nr / min_dim)
+    max_splits_c <- floor(nc / min_dim)
 
     best_score <- 0
-    tile_nrow  <- NA_integer_
-    tile_ncol  <- NA_integer_
+    n_tiles_r  <- NA_integer_
+    n_tiles_c  <- NA_integer_
 
-    for (r in div_r) {
-      for (c in div_c) {
-        n_eff <- (r + 2 * buffer_size) * (c + 2 * buffer_size)
+    for (sr in seq_len(max_splits_r)) {
+      tile_r <- ceiling(nr / sr)
+      for (sc in seq_len(max_splits_c)) {
+        tile_c <- ceiling(nc / sc)
+        n_eff  <- (tile_r + 2 * buffer_size) * (tile_c + 2 * buffer_size)
         if (n_eff <= max_eff_coarse) {
-          score <- r * c * (min(r, c) / max(r, c))
+          score <- tile_r * tile_c * (min(tile_r, tile_c) / max(tile_r, tile_c))
           if (score > best_score) {
             best_score <- score
-            tile_nrow  <- r
-            tile_ncol  <- c
+            n_tiles_r  <- sr
+            n_tiles_c  <- sc
           }
         }
       }
     }
 
-    if (is.na(tile_nrow)) {
+    if (is.na(n_tiles_r)) {
       stop(sprintf(
-        "Even a 1x1 coarse tile (buffered to %dx%d) exceeds %.0f%% of RAM (%.1f GB).\n  Reduce mem_fraction, use a shorter date range, or add more RAM.",
-        1 + 2 * buffer_size, 1 + 2 * buffer_size,
+        "Even a %dx%d coarse tile (buffered to %dx%d) exceeds %.0f%% of RAM (%.1f GB).\n  Reduce mem_fraction, use a shorter date range, or add more RAM.",
+        min_dim, min_dim,
+        min_dim + 2 * buffer_size, min_dim + 2 * buffer_size,
         mem_fraction * 100,
         mem_budget / 1024^3
       ))
     }
 
+    tile_nrow <- ceiling(nr / n_tiles_r)
+    tile_ncol <- ceiling(nc / n_tiles_c)
+
     cat(sprintf(
-      "Auto tile size: %d x %d coarse cells (~%.2f GB estimated peak memory)\n",
-      tile_nrow, tile_ncol, .est_mem_gb(tile_nrow, tile_ncol)
+      "Auto tile size: %d x %d coarse cells (%d x %d grid, ~%.2f GB estimated peak memory)\n",
+      tile_nrow, tile_ncol, n_tiles_r, n_tiles_c,
+      .est_mem_gb(tile_nrow, tile_ncol)
     ))
 
   } else if (length(tile_dims) == 1) {
@@ -162,14 +170,13 @@ create_tiles <- function(coarse_dem,
     stop("tile_dims must be NULL, a single numeric value, or a vector of length 2.")
   }
 
-  if (tile_nrow < min_dim || tile_ncol < min_dim) {
-    stop(sprintf(
-      "Tile dimensions (%d, %d) are below the minimum (%d x %d) required for buffer_size = %d.",
-      tile_nrow, tile_ncol, min_dim, min_dim, buffer_size
-    ))
-  }
-
   if (!is.null(tile_dims)) {
+    if (tile_nrow < min_dim || tile_ncol < min_dim) {
+      stop(sprintf(
+        "Tile dimensions (%d, %d) are below the minimum (%d x %d) required for buffer_size = %d.",
+        tile_nrow, tile_ncol, min_dim, min_dim, buffer_size
+      ))
+    }
     est_gb <- .est_mem_gb(tile_nrow, tile_ncol)
     if (est_gb > mem_budget / 1024^3) {
       warning(sprintf(
@@ -182,17 +189,9 @@ create_tiles <- function(coarse_dem,
         tile_nrow, tile_ncol, est_gb
       ))
     }
+    n_tiles_r <- ceiling(nrow(coarse_dem) / tile_nrow)
+    n_tiles_c <- ceiling(ncol(coarse_dem) / tile_ncol)
   }
-
-  if (nrow(coarse_dem) %% tile_nrow != 0 || ncol(coarse_dem) %% tile_ncol != 0) {
-    stop(sprintf(
-      "Tile dimensions (%d, %d) do not divide evenly into coarse DEM dimensions (%d, %d).",
-      tile_nrow, tile_ncol, nrow(coarse_dem), ncol(coarse_dem)
-    ))
-  }
-
-  n_tiles_r <- nrow(coarse_dem) / tile_nrow
-  n_tiles_c <- ncol(coarse_dem) / tile_ncol
 
   tiles_rast_coarse <- terra::rast(
     nrow   = n_tiles_r,
