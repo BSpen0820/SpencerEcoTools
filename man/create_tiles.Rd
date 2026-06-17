@@ -67,7 +67,7 @@ When \code{tile_dims} is \code{NULL} (default), automatically selects the
 largest tile size whose peak in-memory footprint stays within \code{mem_fraction}
 of total system RAM. Peak usage accounts for \code{mout} (10 arrays),
 optionally \code{smod} (6 arrays) when \code{snow_modeling = TRUE}, and
-\code{micropointa} (one element per coarse cell) — all sized to the buffered
+\code{micropointa} (one element per coarse cell) -- all sized to the buffered
 tile extent (\code{tiles_proc}).
 }
 \details{
@@ -84,7 +84,7 @@ hour is an empirical estimate for \code{micropointa} overhead.
   tiles <- create_tiles(coarse_dem, fine_dem,
                         dates = as.Date(c("2020-01-01", "2020-12-31")))
 
-  # With snow modeling — more conservative tile size
+  # With snow modeling -- more conservative tile size
   tiles <- create_tiles(coarse_dem, fine_dem,
                         dates = as.Date(c("2020-10-01", "2021-03-31")),
                         snow_modeling = TRUE)
