@@ -33,7 +33,9 @@
 #'   vector of two numeric values specifying \code{c(nrow, ncol)} of each tile
 #'   in coarse DEM cells. When \code{NULL} the memory-based auto-sizing is used.
 #'   When provided, a warning is issued if the tile exceeds the memory budget but
-#'   processing continues.
+#'   processing continues. Each dimension must be at least
+#'   \code{2 * buffer_size + 1} to ensure at least one non-buffer cell per
+#'   dimension.
 #' @param buffer_size Integer. Number of coarse DEM cells added as buffer around
 #'   each tile for \code{tiles_proc}. Default is 1. Memory estimation uses the
 #'   buffered tile size as peak usage occurs on \code{tiles_proc}, not
@@ -95,6 +97,7 @@ create_tiles <- function(coarse_dem,
 
   dates   <- as.Date(dates)
   n_hours <- as.integer(difftime(dates[2], dates[1], units = "days") + 1L) * 24L
+  min_dim <- 2L * buffer_size + 1L
 
   n_arrays   <- if (snow_modeling) 16L else 10L
   mem_budget <- .get_total_ram() * mem_fraction
@@ -114,18 +117,23 @@ create_tiles <- function(coarse_dem,
 
     div_r <- which(nrow(coarse_dem) %% seq_len(nrow(coarse_dem)) == 0)
     div_c <- which(ncol(coarse_dem) %% seq_len(ncol(coarse_dem)) == 0)
+    div_r <- div_r[div_r >= min_dim]
+    div_c <- div_c[div_c >= min_dim]
 
-    best_area <- 0L
-    tile_nrow <- NA_integer_
-    tile_ncol <- NA_integer_
+    best_score <- 0
+    tile_nrow  <- NA_integer_
+    tile_ncol  <- NA_integer_
 
     for (r in div_r) {
       for (c in div_c) {
         n_eff <- (r + 2 * buffer_size) * (c + 2 * buffer_size)
-        if (n_eff <= max_eff_coarse && r * c > best_area) {
-          best_area <- r * c
-          tile_nrow <- r
-          tile_ncol <- c
+        if (n_eff <= max_eff_coarse) {
+          score <- r * c * (min(r, c) / max(r, c))
+          if (score > best_score) {
+            best_score <- score
+            tile_nrow  <- r
+            tile_ncol  <- c
+          }
         }
       }
     }
@@ -152,6 +160,13 @@ create_tiles <- function(coarse_dem,
     tile_ncol <- tile_dims[2]
   } else {
     stop("tile_dims must be NULL, a single numeric value, or a vector of length 2.")
+  }
+
+  if (tile_nrow < min_dim || tile_ncol < min_dim) {
+    stop(sprintf(
+      "Tile dimensions (%d, %d) are below the minimum (%d x %d) required for buffer_size = %d.",
+      tile_nrow, tile_ncol, min_dim, min_dim, buffer_size
+    ))
   }
 
   if (!is.null(tile_dims)) {
