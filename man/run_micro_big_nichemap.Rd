@@ -40,8 +40,11 @@ convention \code{{study_area}_Climate_{period_label}.RDS}.}
 
 \item{dates}{Either a \code{data.frame} with columns \code{Start_Dates} and
 \code{End_Dates} (one row per modeling period), or a length-2 \code{Date}
-vector defining a single period.  Period labels take the form
-\code{YYYYMMDD_to_YYYYMMDD}.}
+vector defining a single period.  Only year and month matter; the day
+component is ignored.  Dates are normalised internally to the first of
+each month, so period labels always take the form
+\code{YYYYMM01_to_YYYYMM01} and the hourly time sequence spans from the
+first hour of the start month through the last hour of the end month.}
 
 \item{dtm_fine}{\code{SpatRaster}. Fine-resolution DEM (e.g. 30 m) covering
 the full domain.  Must share the CRS and extent assumed by
@@ -104,7 +107,7 @@ results: \code{"h5"} (HDF5 via \code{rhdf5}) or \code{"nc"} (NetCDF-4 via
 \code{ncdf4}).  Micropoint model outputs are always written as \code{.RDS}.
 Default \code{"h5"}.}
 
-\item{compression}{Integer 0–9. Gzip compression level applied to HDF5/NetCDF
+\item{compression}{Integer 0-9. Gzip compression level applied to HDF5/NetCDF
 output files.  Default \code{4L}.}
 
 \item{...}{Hidden SLURM array arguments:
@@ -127,7 +130,7 @@ step and columns:
 \code{"20200101_to_20201231"}.}
 \item{height_label}{Character height label: \code{"AbvGrd"} or
 \code{"BlwGrd_XXXX"} where \code{XXXX} is depth in zero-padded
-millimetres (e.g. 1.5 cm → \code{"BlwGrd_0015"}).}
+millimetres (e.g. 1.5 cm -> \code{"BlwGrd_0015"}).}
 \item{step}{One of \code{"micropoint"}, \code{"snow"}, or
 \code{"microclimate"}.}
 \item{status}{\code{"success"} or \code{"error: <message>"}.}
@@ -136,8 +139,8 @@ millimetres (e.g. 1.5 cm → \code{"BlwGrd_0015"}).}
 }
 }
 \description{
-Executes the complete NicheMapR–microclimf microclimate pipeline — micropoint
-models, an optional snow model, and microclimate models — across all tiles
+Executes the complete NicheMapR-microclimf microclimate pipeline -- micropoint
+models, an optional snow model, and microclimate models -- across all tiles
 and date periods for a large spatial domain.  Terrain features (slope,
 aspect, topographic wetness index, horizon angles, sky-view factor, and wind
 shelter) are derived from the full fine DEM once before the tile loop and
@@ -146,8 +149,8 @@ job distribution is provided via hidden \code{...} arguments.
 }
 \details{
 \strong{Heights modeled.}  The above-ground height (\code{reqhgt}, labelled
-\code{"AbvGrd"}) and ten soil depths — 0, 1.5, 5, 10, 15, 20, 30, 50, 100,
-and 200 cm — are always modeled.  Depth labels use the \code{BlwGrd_XXXX}
+\code{"AbvGrd"}) and ten soil depths -- 0, 1.5, 5, 10, 15, 20, 30, 50, 100,
+and 200 cm -- are always modeled.  Depth labels use the \code{BlwGrd_XXXX}
 convention where \code{XXXX} is the depth in zero-padded millimetres
 (ground surface = \code{BlwGrd_0000}).
 
@@ -187,12 +190,12 @@ issued, but processing continues for the remaining heights and tiles.
 \strong{SLURM usage.}  In an SBATCH array script, pass
 \code{clust_array_arg = as.integer(Sys.getenv("SLURM_ARRAY_TASK_ID"))} and
 \code{clust_array_size = <total tasks>}.  All \code{(tile, period)}
-combinations are enumerated 1–N and distributed round-robin so each node
+combinations are enumerated 1-N and distributed round-robin so each node
 receives an equal share.  Tile index cycles fastest (all tiles for period 1
 before period 2, etc.).
 
 \strong{Terrain pre-computation.}  Slope, aspect, topographic wetness index (TWI),
-24-direction horizon angles (at 15° intervals), sky-view factor, and wind
+24-direction horizon angles (at 15-degree intervals), sky-view factor, and wind
 shelter arrays are computed from \code{dtm_fine} once before the tile loop
 using internal microclimf helpers (\code{microclimf:::.topidx},
 \code{microclimf:::.horizon}, \code{microclimf:::.windsheltera}).  Per-tile

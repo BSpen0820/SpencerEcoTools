@@ -34,7 +34,7 @@ microclimate files (containing \code{"MicroclimModel"} but not
 \item{file_fmt}{Character. \code{"h5"} builds an HDF5 Virtual Dataset
 (requires h5py in the active Python environment, or falls back to external
 links); \code{"vrt"} creates one GDAL VRT per variable referencing the
-tile NC files via NETCDF subdatasets — no data is copied and tile files
+tile NC files via NETCDF subdatasets -- no data is copied and tile files
 must remain at their original paths (requires \code{ncdf4} and
 \code{terra}). Default \code{"h5"}.}
 
@@ -51,7 +51,7 @@ tile spatial attrs embedded by \code{write_tile}.}
 tile. Only used when \code{file_fmt = "h5"} (becomes the VDS fill value;
 NaN when \code{NA_real_}). Default \code{NA_real_}.}
 
-\item{compression}{Integer 0–9. Unused; retained for compatibility.
+\item{compression}{Integer 0-9. Unused; retained for compatibility.
 Default \code{4L}.}
 }
 \value{

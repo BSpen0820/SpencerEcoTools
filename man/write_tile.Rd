@@ -36,7 +36,7 @@ defaults to \code{data$tme} when \code{NULL}.}
 \code{rhdf5}) or \code{"nc"} (NetCDF-4 via \code{ncdf4}). Default
 \code{"h5"}.}
 
-\item{compression}{Integer 0–9. Gzip compression level applied to each data
+\item{compression}{Integer 0-9. Gzip compression level applied to each data
 variable. 0 = no compression; 9 = maximum compression. Default 4.}
 
 \item{depth_label}{Character or \code{NULL}. When non-\code{NULL} (e.g.

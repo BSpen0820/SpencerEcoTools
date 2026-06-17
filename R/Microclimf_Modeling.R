@@ -190,6 +190,9 @@ create_tiles <- function(coarse_dem,
   tiles_proc <- terra::getTileExtents(coarse_dem, tiles_rast_coarse, buffer = buffer_size, extend = TRUE)
   tiles_core <- terra::getTileExtents(coarse_dem, tiles_rast_coarse, buffer = 0,           extend = TRUE)
 
+  rownames(tiles_proc) <- seq_len(nrow(tiles_proc))
+  rownames(tiles_core) <- seq_len(nrow(tiles_core))
+
   tiles_rast <- terra::rast(fine_dem)
   terra::values(tiles_rast) <- NA_integer_
   for (i in seq_len(nrow(tiles_core))) {
@@ -1468,8 +1471,11 @@ stitch_tiles <- function(tile_dir, out_file, data_type = "mout", file_fmt = "h5"
 #'   convention \code{{study_area}_Climate_{period_label}.RDS}.
 #' @param dates Either a \code{data.frame} with columns \code{Start_Dates} and
 #'   \code{End_Dates} (one row per modeling period), or a length-2 \code{Date}
-#'   vector defining a single period.  Period labels take the form
-#'   \code{YYYYMMDD_to_YYYYMMDD}.
+#'   vector defining a single period.  Only year and month matter; the day
+#'   component is ignored.  Dates are normalised internally to the first of
+#'   each month, so period labels always take the form
+#'   \code{YYYYMM01_to_YYYYMM01} and the hourly time sequence spans from the
+#'   first hour of the start month through the last hour of the end month.
 #' @param dtm_fine \code{SpatRaster}. Fine-resolution DEM (e.g. 30 m) covering
 #'   the full domain.  Must share the CRS and extent assumed by
 #'   \code{\link{create_tiles}}.
@@ -1752,11 +1758,14 @@ run_micro_big_nichemap <- function(tiles,        # tile object from create_tiles
     tile_i <- task_combos$tile_idx[k]
     d      <- task_combos$date_idx[k]
 
+    tile_rn <- rownames(tiles$tiles_proc)[tile_i]
+    tile_id <- if (!is.null(tile_rn)) as.integer(tile_rn) else tile_i
+
     tile_proc <- tiles$tiles_proc[tile_i, ]
     tile_core <- tiles$tiles_core[tile_i, ]
 
-    start_date   <- as.Date(date_ranges$Start_Dates[d])
-    end_date     <- as.Date(date_ranges$End_Dates[d])
+    start_date   <- as.Date(sprintf("%s-01", format(as.Date(date_ranges$Start_Dates[d]), "%Y-%m")))
+    end_date     <- as.Date(sprintf("%s-01", format(as.Date(date_ranges$End_Dates[d]),   "%Y-%m")))
     period_label <- sprintf("%s_to_%s",
                             format(start_date, "%Y%m%d"),
                             format(end_date,   "%Y%m%d"))
@@ -1769,7 +1778,7 @@ run_micro_big_nichemap <- function(tiles,        # tile object from create_tiles
     }
 
     cat(sprintf("\n=== Task %d/%d | Tile %d | Period: %s ===\n",
-                k, nrow(task_combos), tile_i, period_label))
+                k, nrow(task_combos), tile_id, period_label))
 
     dem_coarse_tile <- terra::crop(dtm_coarse, terra::ext(tile_proc))
     dem_fine_tile   <- terra::crop(dtm_fine,   dem_coarse_tile, snap = "out")
@@ -1822,9 +1831,9 @@ run_micro_big_nichemap <- function(tiles,        # tile object from create_tiles
     if (!is.null(soil_chk) &&
         terra::global(terra::unwrap(soil_chk), "notNA")[[1]] == 0L) {
       cat(sprintf("  Tile %d: outside soil/veg data coverage (reprojection edge) -- skipping.\n",
-                  tile_i))
+                  tile_id))
       log_df <<- rbind(log_df,
-        .log_row(tile_i, period_label, "", "micropoint",
+        .log_row(tile_id, period_label, "", "micropoint",
                  "skipped: outside data coverage", ""))
       rm(soil_chk, soil.crop, veg.crop, clim.crop, tme,
          dem_coarse_tile, dem_fine_tile, dem_fine_core,
@@ -1848,10 +1857,10 @@ run_micro_big_nichemap <- function(tiles,        # tile object from create_tiles
 
       mp_file <- file.path(mp_dir,
                            sprintf("Tile_%03d_%s_MicropointModel_%s.RDS",
-                                   tile_i, prefix, period_label))
+                                   tile_id, prefix, period_label))
 
       cat(sprintf("  [Tile %d | %s | %s] Running micropoint model...",
-                  tile_i, period_label, hgt_lbl))
+                  tile_id, period_label, hgt_lbl))
 
       tryCatch({
         pointa <- .quiet_run(
@@ -1863,13 +1872,13 @@ run_micro_big_nichemap <- function(tiles,        # tile object from create_tiles
         )
         readr::write_rds(pointa, mp_file)
         cat(" done.\n")
-        log_df <<- rbind(log_df, .log_row(tile_i, period_label, hgt_lbl,
+        log_df <<- rbind(log_df, .log_row(tile_id, period_label, hgt_lbl,
                                           "micropoint", "success", mp_file))
       }, error = function(e) {
         cat(sprintf(" FAILED: %s\n", conditionMessage(e)))
         warning(sprintf("Tile %d | %s | %s | micropoint: %s",
-                        tile_i, period_label, hgt_lbl, conditionMessage(e)))
-        log_df <<- rbind(log_df, .log_row(tile_i, period_label, hgt_lbl,
+                        tile_id, period_label, hgt_lbl, conditionMessage(e)))
+        log_df <<- rbind(log_df, .log_row(tile_id, period_label, hgt_lbl,
                                           "micropoint",
                                           paste0("error: ", conditionMessage(e)),
                                           mp_file))
@@ -1891,7 +1900,7 @@ run_micro_big_nichemap <- function(tiles,        # tile object from create_tiles
 
       abv_file <- file.path(abv_dir,
                             sprintf("Tile_%03d_%s_MicropointModel_%s.RDS",
-                                    tile_i, abv_prefix, period_label))
+                                    tile_id, abv_prefix, period_label))
 
       smod_parts <- c(output_dir)
       if (!is.null(study_area)) smod_parts <- c(smod_parts, study_area)
@@ -1902,9 +1911,9 @@ run_micro_big_nichemap <- function(tiles,        # tile object from create_tiles
       smod_prefix <- if (!is.null(study_area)) study_area else "SnowModel"
       smod_file <- file.path(smod_dir,
                              sprintf("Tile_%03d_%s_SnowModel_%s%s",
-                                     tile_i, smod_prefix, period_label, out_ext))
+                                     tile_id, smod_prefix, period_label, out_ext))
 
-      cat(sprintf("  [Tile %d | %s] Running snow model...", tile_i, period_label))
+      cat(sprintf("  [Tile %d | %s] Running snow model...", tile_id, period_label))
 
       tryCatch({
         pointa_abv <- readr::read_rds(abv_file)
@@ -1926,13 +1935,13 @@ run_micro_big_nichemap <- function(tiles,        # tile object from create_tiles
                    compression = compression, file_fmt = file_fmt, dtm = dem_fine_core)
         rm(smod.trim)
         cat(" done.\n")
-        log_df <<- rbind(log_df, .log_row(tile_i, period_label, "",
+        log_df <<- rbind(log_df, .log_row(tile_id, period_label, "",
                                           "snow", "success", smod_file))
       }, error = function(e) {
         cat(sprintf(" FAILED: %s\n", conditionMessage(e)))
         warning(sprintf("Tile %d | %s | snow: %s",
-                        tile_i, period_label, conditionMessage(e)))
-        log_df <<- rbind(log_df, .log_row(tile_i, period_label, "",
+                        tile_id, period_label, conditionMessage(e)))
+        log_df <<- rbind(log_df, .log_row(tile_id, period_label, "",
                                           "snow",
                                           paste0("error: ", conditionMessage(e)),
                                           smod_file))
@@ -1952,7 +1961,7 @@ run_micro_big_nichemap <- function(tiles,        # tile object from create_tiles
 
       mp_file <- file.path(mp_dir,
                            sprintf("Tile_%03d_%s_MicropointModel_%s.RDS",
-                                   tile_i, prefix, period_label))
+                                   tile_id, prefix, period_label))
 
       mc_parts <- c(output_dir)
       if (!is.null(study_area)) mc_parts <- c(mc_parts, study_area)
@@ -1962,10 +1971,10 @@ run_micro_big_nichemap <- function(tiles,        # tile object from create_tiles
 
       mc_file <- file.path(mc_dir,
                            sprintf("Tile_%03d_%s_MicroclimModel_%s%s",
-                                   tile_i, prefix, period_label, out_ext))
+                                   tile_id, prefix, period_label, out_ext))
 
       cat(sprintf("  [Tile %d | %s | %s] Running microclimate model...",
-                  tile_i, period_label, hgt_lbl))
+                  tile_id, period_label, hgt_lbl))
 
       tryCatch({
         pointa <- readr::read_rds(mp_file)
@@ -2006,13 +2015,13 @@ run_micro_big_nichemap <- function(tiles,        # tile object from create_tiles
                    compression = compression, file_fmt = file_fmt, dtm = dem_fine_core)
         rm(mout, mout.trim)
         cat(" done.\n")
-        log_df <<- rbind(log_df, .log_row(tile_i, period_label, hgt_lbl,
+        log_df <<- rbind(log_df, .log_row(tile_id, period_label, hgt_lbl,
                                           "microclimate", "success", mc_file))
       }, error = function(e) {
         cat(sprintf(" FAILED: %s\n", conditionMessage(e)))
         warning(sprintf("Tile %d | %s | %s | microclimate: %s",
-                        tile_i, period_label, hgt_lbl, conditionMessage(e)))
-        log_df <<- rbind(log_df, .log_row(tile_i, period_label, hgt_lbl,
+                        tile_id, period_label, hgt_lbl, conditionMessage(e)))
+        log_df <<- rbind(log_df, .log_row(tile_id, period_label, hgt_lbl,
                                           "microclimate",
                                           paste0("error: ", conditionMessage(e)),
                                           mc_file))
@@ -2031,7 +2040,7 @@ run_micro_big_nichemap <- function(tiles,        # tile object from create_tiles
 
       blw_file <- file.path(blw_dir,
                             sprintf("Tile_%03d_%s_MicroclimModel_%s%s",
-                                    tile_i, blw_prefix, period_label, out_ext))
+                                    tile_id, blw_prefix, period_label, out_ext))
 
       # On HPC restarts, a partial file from a previous run would cause
       # append errors (duplicate groups/variables). Start fresh each time.
@@ -2048,10 +2057,10 @@ run_micro_big_nichemap <- function(tiles,        # tile object from create_tiles
 
         mp_file <- file.path(mp_dir,
                              sprintf("Tile_%03d_%s_MicropointModel_%s.RDS",
-                                     tile_i, prefix, period_label))
+                                     tile_id, prefix, period_label))
 
         cat(sprintf("  [Tile %d | %s | %s] Running microclimate model...",
-                    tile_i, period_label, hgt_lbl))
+                    tile_id, period_label, hgt_lbl))
 
         tryCatch({
           pointa <- readr::read_rds(mp_file)
@@ -2093,13 +2102,13 @@ run_micro_big_nichemap <- function(tiles,        # tile object from create_tiles
                      dtm = dem_fine_core, depth_label = hgt_lbl)
           rm(mout, mout.trim)
           cat(" done.\n")
-          log_df <<- rbind(log_df, .log_row(tile_i, period_label, hgt_lbl,
+          log_df <<- rbind(log_df, .log_row(tile_id, period_label, hgt_lbl,
                                             "microclimate", "success", blw_file))
         }, error = function(e) {
           cat(sprintf(" FAILED: %s\n", conditionMessage(e)))
           warning(sprintf("Tile %d | %s | %s | microclimate: %s",
-                          tile_i, period_label, hgt_lbl, conditionMessage(e)))
-          log_df <<- rbind(log_df, .log_row(tile_i, period_label, hgt_lbl,
+                          tile_id, period_label, hgt_lbl, conditionMessage(e)))
+          log_df <<- rbind(log_df, .log_row(tile_id, period_label, hgt_lbl,
                                             "microclimate",
                                             paste0("error: ", conditionMessage(e)),
                                             blw_file))
