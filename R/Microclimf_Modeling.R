@@ -301,6 +301,10 @@ trim_tile_buffer <- function(data, dem_proc, dem_core) {
   umu             = list(units = "",          long_name = "umu")
 )
 
+.mout_blw_meta <- list(
+  Tz = list(units = "degrees_C", long_name = "Soil temperature")
+)
+
 .detect_data_type <- function(data) {
   nm <- names(data)
   if ("Tz" %in% nm) return("mout")
@@ -367,6 +371,100 @@ trim_tile_buffer <- function(data, dem_proc, dem_core) {
           gid, "period_end")
       }
     }, finally = rhdf5::H5Gclose(gid))
+  }, finally = {
+    rhdf5::H5Fclose(fid)
+    rhdf5::H5close()
+  })
+  invisible(NULL)
+}
+
+# --------------------------------------------------------------------------- #
+#  HDF5 below-ground write helpers
+# --------------------------------------------------------------------------- #
+
+.write_h5_blw <- function(data_list, var_meta, tme, out_path, dtm,
+                          depth_label, compression) {
+  rhdf5::h5createFile(out_path)
+
+  nrow_  <- dim(data_list[["Tz"]])[1]
+  ncol_  <- dim(data_list[["Tz"]])[2]
+  ntime_ <- dim(data_list[["Tz"]])[3]
+  chunk  <- c(nrow_, ncol_, min(ntime_, 24L))
+
+  fid <- rhdf5::H5Fopen(out_path)
+  tryCatch({
+    rhdf5::h5createGroup(fid, depth_label)
+    ds_path <- sprintf("%s/Tz", depth_label)
+    rhdf5::h5createDataset(fid, ds_path,
+                           dims         = c(nrow_, ncol_, ntime_),
+                           storage.mode = "double",
+                           chunk        = chunk,
+                           level        = compression)
+    rhdf5::h5write(data_list[["Tz"]], fid, ds_path)
+    did <- rhdf5::H5Dopen(fid, ds_path)
+    rhdf5::h5writeAttribute(var_meta$Tz$units,     did, "units")
+    rhdf5::h5writeAttribute(var_meta$Tz$long_name, did, "long_name")
+    rhdf5::H5Dclose(did)
+
+    if (!is.null(tme)) {
+      time_str <- format(as.POSIXct(tme), "%Y-%m-%dT%H:%M:%S", tz = "UTC")
+      rhdf5::h5write(time_str, fid, "time")
+    }
+
+    gid <- rhdf5::H5Gopen(fid, "/")
+    tryCatch({
+      if (!is.null(dtm)) {
+        e <- terra::ext(dtm)
+        rhdf5::h5writeAttribute(as.numeric(e$xmin),               gid, "xmin")
+        rhdf5::h5writeAttribute(as.numeric(e$xmax),               gid, "xmax")
+        rhdf5::h5writeAttribute(as.numeric(e$ymin),               gid, "ymin")
+        rhdf5::h5writeAttribute(as.numeric(e$ymax),               gid, "ymax")
+        rhdf5::h5writeAttribute(terra::res(dtm)[1],               gid, "res_x")
+        rhdf5::h5writeAttribute(terra::res(dtm)[2],               gid, "res_y")
+        rhdf5::h5writeAttribute(as.integer(terra::nrow(dtm)),     gid, "nrow")
+        rhdf5::h5writeAttribute(as.integer(terra::ncol(dtm)),     gid, "ncol")
+        rhdf5::h5writeAttribute(terra::crs(dtm, proj = FALSE),    gid, "crs_wkt")
+      } else {
+        warning("dtm is NULL: spatial metadata will not be written to HDF5 file.")
+      }
+      rhdf5::h5writeAttribute("mout_blw", gid, "data_type")
+      if (!is.null(tme)) {
+        rhdf5::h5writeAttribute(
+          format(as.POSIXct(tme[1]),          "%Y-%m-%dT%H:%M:%S", tz = "UTC"),
+          gid, "period_start")
+        rhdf5::h5writeAttribute(
+          format(as.POSIXct(tme[length(tme)]), "%Y-%m-%dT%H:%M:%S", tz = "UTC"),
+          gid, "period_end")
+      }
+    }, finally = rhdf5::H5Gclose(gid))
+  }, finally = {
+    rhdf5::H5Fclose(fid)
+    rhdf5::H5close()
+  })
+  invisible(NULL)
+}
+
+.append_h5_blw <- function(data_list, var_meta, out_path, depth_label,
+                           compression) {
+  nrow_  <- dim(data_list[["Tz"]])[1]
+  ncol_  <- dim(data_list[["Tz"]])[2]
+  ntime_ <- dim(data_list[["Tz"]])[3]
+  chunk  <- c(nrow_, ncol_, min(ntime_, 24L))
+
+  fid <- rhdf5::H5Fopen(out_path)
+  tryCatch({
+    rhdf5::h5createGroup(fid, depth_label)
+    ds_path <- sprintf("%s/Tz", depth_label)
+    rhdf5::h5createDataset(fid, ds_path,
+                           dims         = c(nrow_, ncol_, ntime_),
+                           storage.mode = "double",
+                           chunk        = chunk,
+                           level        = compression)
+    rhdf5::h5write(data_list[["Tz"]], fid, ds_path)
+    did <- rhdf5::H5Dopen(fid, ds_path)
+    rhdf5::h5writeAttribute(var_meta$Tz$units,     did, "units")
+    rhdf5::h5writeAttribute(var_meta$Tz$long_name, did, "long_name")
+    rhdf5::H5Dclose(did)
   }, finally = {
     rhdf5::H5Fclose(fid)
     rhdf5::H5close()
@@ -609,6 +707,152 @@ trim_tile_buffer <- function(data, dem_proc, dem_core) {
 }
 
 # --------------------------------------------------------------------------- #
+#  NetCDF below-ground write helpers
+# --------------------------------------------------------------------------- #
+
+.write_nc_blw <- function(data_list, var_meta, tme, out_path, dtm,
+                          depth_label, compression) {
+
+  nrow_  <- dim(data_list[["Tz"]])[1]
+  ncol_  <- dim(data_list[["Tz"]])[2]
+  ntime_ <- dim(data_list[["Tz"]])[3]
+
+  if (!is.null(dtm)) {
+    x_vals    <- terra::xFromCol(dtm, seq_len(ncol_))
+    y_vals    <- terra::yFromRow(dtm, seq_len(nrow_))
+    is_lonlat <- terra::is.lonlat(dtm)
+  } else {
+    warning("dtm is NULL: coordinate variables will use integer indices.")
+    x_vals    <- seq_len(ncol_)
+    y_vals    <- seq_len(nrow_)
+    is_lonlat <- FALSE
+  }
+
+  t_origin <- if (!is.null(tme)) {
+    format(as.POSIXct(tme[1], tz = "UTC"), "%Y-%m-%dT%H:%M:%S")
+  } else {
+    "1970-01-01T00:00:00"
+  }
+
+  t_vals <- if (!is.null(tme)) {
+    as.numeric(difftime(as.POSIXct(tme, tz = "UTC"),
+                        as.POSIXct(tme[1], tz = "UTC"),
+                        units = "hours"))
+  } else {
+    seq_len(ntime_) - 1L
+  }
+
+  if (is_lonlat) {
+    dim_x <- ncdf4::ncdim_def("lon", "degrees_east", x_vals,
+                              longname = "longitude", create_dimvar = TRUE)
+    dim_y <- ncdf4::ncdim_def("lat", "degrees_north", y_vals,
+                              longname = "latitude", create_dimvar = TRUE)
+  } else {
+    dim_x <- ncdf4::ncdim_def("x", "m", x_vals,
+                              longname = "x coordinate", create_dimvar = TRUE)
+    dim_y <- ncdf4::ncdim_def("y", "m", y_vals,
+                              longname = "y coordinate", create_dimvar = TRUE)
+  }
+
+  dim_time <- ncdf4::ncdim_def("time",
+                               sprintf("hours since %s UTC", t_origin),
+                               t_vals, unlim = TRUE,
+                               longname = "time", calendar = "standard")
+
+  var_crs <- ncdf4::ncvar_def("crs", "", list(), prec = "integer",
+                              longname = "CRS definition")
+
+  vn <- sprintf("Tz_%s", depth_label)
+  depth_var <- ncdf4::ncvar_def(vn, var_meta$Tz$units,
+                                list(dim_x, dim_y, dim_time),
+                                missval = -9999,
+                                longname = var_meta$Tz$long_name,
+                                compression = compression, prec = "double")
+
+  nc <- ncdf4::nc_create(out_path, c(list(var_crs), list(depth_var)))
+  on.exit(ncdf4::nc_close(nc), add = TRUE)
+
+  ncdf4::ncvar_put(nc, var_crs, 0L)
+
+  if (!is.null(dtm)) {
+    crs_wkt <- terra::crs(dtm, proj = FALSE)
+    ncdf4::ncatt_put(nc, "crs", "crs_wkt", crs_wkt)
+    if (is_lonlat) {
+      ncdf4::ncatt_put(nc, "crs", "grid_mapping_name", "latitude_longitude")
+    } else {
+      ncdf4::ncatt_put(nc, "crs", "grid_mapping_name",
+                       "projected_coordinate_system")
+    }
+  }
+
+  if (is_lonlat) {
+    ncdf4::ncatt_put(nc, "lon", "standard_name", "longitude")
+    ncdf4::ncatt_put(nc, "lon", "axis", "X")
+    ncdf4::ncatt_put(nc, "lat", "standard_name", "latitude")
+    ncdf4::ncatt_put(nc, "lat", "axis", "Y")
+  } else {
+    ncdf4::ncatt_put(nc, "x", "standard_name", "projection_x_coordinate")
+    ncdf4::ncatt_put(nc, "x", "axis", "X")
+    ncdf4::ncatt_put(nc, "y", "standard_name", "projection_y_coordinate")
+    ncdf4::ncatt_put(nc, "y", "axis", "Y")
+  }
+
+  arr <- aperm(data_list[["Tz"]], c(2L, 1L, 3L))
+  arr[is.na(arr)] <- -9999
+  ncdf4::ncvar_put(nc, depth_var, arr)
+
+  ncdf4::ncatt_put(nc, vn, "units",     var_meta$Tz$units)
+  ncdf4::ncatt_put(nc, vn, "long_name", var_meta$Tz$long_name)
+  ncdf4::ncatt_put(nc, vn, "grid_mapping", "crs")
+  ncdf4::ncatt_put(nc, vn, "coordinates",
+                   if (is_lonlat) "lon lat" else "x y")
+
+  ncdf4::ncatt_put(nc, 0, "Conventions", "CF-1.8")
+  ncdf4::ncatt_put(nc, 0, "data_type",   "mout_blw")
+  ncdf4::ncatt_put(nc, 0, "history",
+                   sprintf("Created %s by R %s / SpencerEcoTools",
+                           format(Sys.time(), "%Y-%m-%dT%H:%M:%S"),
+                           paste(R.version$major, R.version$minor, sep = ".")))
+
+  invisible(NULL)
+}
+
+.append_nc_blw <- function(data_list, var_meta, out_path, depth_label,
+                           compression) {
+  nc <- ncdf4::nc_open(out_path, write = TRUE)
+
+  x_nm <- if ("lon" %in% names(nc$dim)) "lon" else "x"
+  y_nm <- if ("lat" %in% names(nc$dim)) "lat" else "y"
+
+  dim_x    <- nc$dim[[x_nm]]
+  dim_y    <- nc$dim[[y_nm]]
+  dim_time <- nc$dim[["time"]]
+
+  vn <- sprintf("Tz_%s", depth_label)
+  new_var <- ncdf4::ncvar_def(vn, var_meta$Tz$units,
+                              list(dim_x, dim_y, dim_time),
+                              missval = -9999,
+                              longname = var_meta$Tz$long_name,
+                              compression = compression, prec = "double")
+
+  nc <- ncdf4::ncvar_add(nc, new_var)
+
+  arr <- aperm(data_list[["Tz"]], c(2L, 1L, 3L))
+  arr[is.na(arr)] <- -9999
+  ncdf4::ncvar_put(nc, vn, arr)
+
+  is_lonlat <- x_nm == "lon"
+  ncdf4::ncatt_put(nc, vn, "units",        var_meta$Tz$units)
+  ncdf4::ncatt_put(nc, vn, "long_name",    var_meta$Tz$long_name)
+  ncdf4::ncatt_put(nc, vn, "grid_mapping", "crs")
+  ncdf4::ncatt_put(nc, vn, "coordinates",
+                   if (is_lonlat) "lon lat" else "x y")
+
+  ncdf4::nc_close(nc)
+  invisible(NULL)
+}
+
+# --------------------------------------------------------------------------- #
 #  write_tile — exported
 # --------------------------------------------------------------------------- #
 
@@ -617,6 +861,13 @@ trim_tile_buffer <- function(data, dem_proc, dem_core) {
 #' Serializes a single \code{mout} or \code{smod} list returned by
 #' \code{microclimf} spatial model functions to an HDF5 or NetCDF-4 file with
 #' full variable metadata, spatial coordinates, and CRS information.
+#'
+#' When \code{depth_label} is non-\code{NULL}, below-ground mode is activated:
+#' only the \code{Tz} variable is written, and multiple depths can be
+#' accumulated into a single file by calling \code{write_tile} repeatedly with
+#' different \code{depth_label} values and the same \code{out_path}. The first
+#' call creates the file; subsequent calls append a new depth group (HDF5) or
+#' variable (NetCDF).
 #'
 #' @param data List. Either an \code{mout} object (must contain element
 #'   \code{"Tz"}) or an \code{smod} object (must contain element \code{"Tc"}).
@@ -636,6 +887,13 @@ trim_tile_buffer <- function(data, dem_proc, dem_core) {
 #'   \code{"h5"}.
 #' @param compression Integer 0–9. Gzip compression level applied to each data
 #'   variable. 0 = no compression; 9 = maximum compression. Default 4.
+#' @param depth_label Character or \code{NULL}. When non-\code{NULL} (e.g.
+#'   \code{"BlwGrd_0000"}), activates below-ground mode: only the \code{Tz}
+#'   array is written. In HDF5, each depth becomes a group
+#'   (\code{/BlwGrd_XXXX/Tz}); in NetCDF, each depth becomes a variable
+#'   (\code{Tz_BlwGrd_XXXX}). If \code{out_path} already exists, the new depth
+#'   is appended; otherwise, the file is created with spatial and time metadata.
+#'   Default \code{NULL} (standard above-ground / smod behaviour).
 #'
 #' @return Invisibly, a one-row \code{data.frame} with columns \code{file_path}
 #'   and \code{data_type}.
@@ -647,12 +905,21 @@ trim_tile_buffer <- function(data, dem_proc, dem_core) {
 #' as HDF5 attributes on the root group \code{"/"}. Per-variable \code{units}
 #' and \code{long_name} attributes are written on each dataset.
 #'
+#' **Below-ground HDF5 layout** (when \code{depth_label} is set):
+#' One HDF5 group per depth label, each containing a single \code{Tz} dataset.
+#' Root attributes carry spatial metadata, time, and
+#' \code{data_type = "mout_blw"}.
+#'
 #' **NetCDF layout** (\code{file_fmt = "nc"}, requires \code{ncdf4}):
 #' CF-1.8 compliant. Dimensions \code{x}, \code{y}, \code{time} with
 #' cell-centre coordinate variables. A scalar \code{crs} variable carries
 #' the WKT string. All data variables carry \code{grid_mapping = "crs"}.
 #' Array dimensions are permuted from R's \code{[nrow, ncol, ntime]} to
 #' NetCDF's \code{(x, y, time)} storage order before writing.
+#'
+#' **Below-ground NetCDF layout** (when \code{depth_label} is set):
+#' Each depth is a separate 3D variable named \code{Tz_<depth_label>} sharing
+#' the same \code{x}, \code{y}, \code{time} dimensions.
 #'
 #' Both formats apply gzip compression at the level set by \code{compression}.
 #' HDF5 uses chunk dimensions \code{[nrow, ncol, min(ntime, 24)]} (time slabs).
@@ -662,12 +929,52 @@ trim_tile_buffer <- function(data, dem_proc, dem_core) {
 #'
 #' @export
 write_tile <- function(data, out_path, dtm = NULL, tme = NULL,
-                       file_fmt = "h5", compression = 4L) {
+                       file_fmt = "h5", compression = 4L,
+                       depth_label = NULL) {
   file_fmt    <- match.arg(file_fmt, c("h5", "nc"))
   compression <- as.integer(compression)
   if (compression < 0L || compression > 9L)
     stop("compression must be an integer between 0 and 9")
 
+  pkg <- if (file_fmt == "h5") "rhdf5" else "ncdf4"
+  if (!requireNamespace(pkg, quietly = TRUE))
+    stop(sprintf("Package '%s' is required. Install with: %s", pkg,
+                 if (pkg == "rhdf5") 'BiocManager::install("rhdf5")'
+                 else sprintf('install.packages("%s")', pkg)))
+
+  # --- Below-ground mode (depth_label set) ------------------------------------
+  if (!is.null(depth_label)) {
+    if (!"Tz" %in% names(data))
+      stop("Below-ground mode requires data to contain 'Tz'")
+
+    var_meta  <- .mout_blw_meta
+    data_list <- list(Tz = data[["Tz"]])
+
+    if (is.null(tme) && !is.null(data$tme)) tme <- data$tme
+
+    if (file.exists(out_path)) {
+      if (file_fmt == "h5") {
+        .append_h5_blw(data_list, var_meta, out_path, depth_label, compression)
+      } else {
+        .append_nc_blw(data_list, var_meta, out_path, depth_label, compression)
+      }
+    } else {
+      if (is.null(tme))
+        warning("tme is NULL. Time metadata will be omitted from newly created below-ground file.")
+      if (file_fmt == "h5") {
+        .write_h5_blw(data_list, var_meta, tme, out_path, dtm,
+                      depth_label, compression)
+      } else {
+        .write_nc_blw(data_list, var_meta, tme, out_path, dtm,
+                      depth_label, compression)
+      }
+    }
+
+    return(invisible(data.frame(file_path = out_path, data_type = "mout_blw",
+                                stringsAsFactors = FALSE)))
+  }
+
+  # --- Standard above-ground / smod mode (unchanged) -------------------------
   data_type <- .detect_data_type(data)
   var_meta  <- if (data_type == "mout") .mout_meta else .smod_meta
 
@@ -680,12 +987,6 @@ write_tile <- function(data, out_path, dtm = NULL, tme = NULL,
   }
 
   data_list <- data[names(var_meta)]
-
-  pkg <- if (file_fmt == "h5") "rhdf5" else "ncdf4"
-  if (!requireNamespace(pkg, quietly = TRUE))
-    stop(sprintf("Package '%s' is required. Install with: %s", pkg,
-                 if (pkg == "rhdf5") 'BiocManager::install("rhdf5")'
-                 else sprintf('install.packages("%s")', pkg)))
 
   if (file_fmt == "h5") {
     .write_h5(data_list, var_meta, tme, out_path, dtm, data_type, compression)
@@ -810,7 +1111,8 @@ write_tile <- function(data, out_path, dtm = NULL, tme = NULL,
   }
 }
 
-.stitch_nc_vrt <- function(tile_files, out_file, var_names) {
+.stitch_nc_vrt <- function(tile_files, out_file, var_names,
+                           data_type = NULL, var_meta = NULL) {
   if (!requireNamespace("sf",    quietly = TRUE))
     stop('Package \'sf\' is required for VRT stitching. Install with: install.packages("sf")')
   if (!requireNamespace("ncdf4", quietly = TRUE))
@@ -820,8 +1122,11 @@ write_tile <- function(data, out_path, dtm = NULL, tme = NULL,
   abs_tiles <- normalizePath(tile_files, mustWork = TRUE)
   vrt_paths <- setNames(character(length(var_names)), var_names)
 
-  data_type <- if ("Tz" %in% var_names) "mout" else "smod"
-  var_meta  <- if (data_type == "mout") .mout_meta else .smod_meta
+  if (is.null(data_type))
+    data_type <- if ("Tz" %in% var_names) "mout" else "smod"
+  if (is.null(var_meta)) {
+    var_meta <- if (data_type == "mout") .mout_meta else .smod_meta
+  }
 
   # Read time axis from first tile
   nc0        <- ncdf4::nc_open(tile_files[1])
@@ -848,7 +1153,13 @@ write_tile <- function(data, out_path, dtm = NULL, tme = NULL,
                    quiet       = TRUE)
 
     # --- Post-process VRT: relative paths + metadata -------------------------
-    vm       <- var_meta[[vn]]
+    vm <- if (!is.null(var_meta[[vn]])) {
+      var_meta[[vn]]
+    } else if (grepl("^Tz_BlwGrd_", vn) && !is.null(var_meta$Tz)) {
+      var_meta$Tz
+    } else {
+      list(units = "", long_name = vn)
+    }
     vrt_text <- paste(readLines(vrt_path, warn = FALSE), collapse = "\n")
 
     # 1. Swap absolute source paths → paths relative to the VRT file.
@@ -919,8 +1230,13 @@ write_tile <- function(data, out_path, dtm = NULL, tme = NULL,
 #' @param out_file Character. Output path (including stem) for the assembled
 #'   file(s). For \code{file_fmt = "vrt"}, the extension is stripped and each
 #'   variable is written as \code{<stem>_<varname>.vrt}.
-#' @param data_type Character. \code{"mout"} or \code{"smod"}. Used to filter
-#'   which files in \code{tile_dir} are included.
+#' @param data_type Character. \code{"mout"}, \code{"smod"}, or
+#'   \code{"mout_blw"}. Controls which files in \code{tile_dir} are selected
+#'   and which variables are stitched. \code{"mout"} matches above-ground
+#'   microclimate files (containing \code{"MicroclimModel"} but not
+#'   \code{"BlwGrd"}). \code{"mout_blw"} matches below-ground files
+#'   (containing \code{"BlwGrd"}). \code{"smod"} matches snow model files
+#'   (containing \code{"SnowModel"}).
 #' @param file_fmt Character. \code{"h5"} builds an HDF5 Virtual Dataset
 #'   (requires h5py in the active Python environment, or falls back to external
 #'   links); \code{"vrt"} creates one GDAL VRT per variable referencing the
@@ -952,15 +1268,21 @@ write_tile <- function(data, out_path, dtm = NULL, tme = NULL,
 #' falls back to a master file with HDF5 external links.
 #'
 #' **VRT path** (\code{file_fmt = "vrt"}): For each variable, writes a
-#' \code{.vrt} file using \code{terra::vrt()} with GDAL
+#' \code{.vrt} file using \code{sf::gdal_utils("buildvrt", ...)} with GDAL
 #' \code{NETCDF:filepath:varname} subdataset references. The VRT mosaics all
-#' tile extents spatially; each hourly time step is one band. Absolute paths
-#' are embedded so VRTs work regardless of working directory. Tile NC files
+#' tile extents spatially; each hourly time step is one band. Tile NC files
 #' must stay in place.
 #'
-#' Tile files are discovered by listing all files in \code{tile_dir} whose
-#' names contain \code{data_type} (case-insensitive) and end in \code{.h5} or
-#' \code{.nc} according to \code{file_fmt}.
+#' **Below-ground stitching** (\code{data_type = "mout_blw"}): Depth variable
+#' names are enumerated from the first tile file (HDF5 groups matching
+#' \code{BlwGrd_*} or NetCDF variables matching \code{Tz_BlwGrd_*}). Each
+#' depth is stitched independently.
+#'
+#' Tile files are discovered by token-based filename matching:
+#' \code{"mout"} matches files containing \code{"MicroclimModel"} but not
+#' \code{"BlwGrd"}; \code{"mout_blw"} matches files containing
+#' \code{"BlwGrd"}; \code{"smod"} matches files containing
+#' \code{"SnowModel"}.
 #'
 #' @seealso \code{\link{write_tile}} for writing individual tile files.
 #'   \code{\link{create_tiles}} for generating tile extents.
@@ -969,18 +1291,61 @@ write_tile <- function(data, out_path, dtm = NULL, tme = NULL,
 stitch_tiles <- function(tile_dir, out_file, data_type = "mout", file_fmt = "h5",
                          dtm = NULL, python_path = NULL, fill_value = NA_real_,
                          compression = 4L) {
-  data_type   <- match.arg(data_type, c("mout", "smod"))
+  data_type   <- match.arg(data_type, c("mout", "smod", "mout_blw"))
   file_fmt    <- match.arg(file_fmt, c("h5", "vrt"))
   compression <- as.integer(compression)
-  var_meta    <- if (data_type == "mout") .mout_meta else .smod_meta
-  var_names   <- names(var_meta)
 
-  ext_pat   <- if (file_fmt == "h5") "\\.h5$" else "\\.nc$"
+  # --- Discover tile files using token-based matching -------------------------
+  ext_pat    <- if (file_fmt == "h5") "\\.h5$" else "\\.nc$"
   all_files  <- list.files(tile_dir, full.names = TRUE)
-  tile_files <- all_files[grepl(data_type, basename(all_files), ignore.case = TRUE) &
-                           grepl(ext_pat, all_files)]
+  all_files  <- all_files[grepl(ext_pat, all_files)]
+
+  if (data_type == "mout") {
+    tile_files <- all_files[
+      grepl("MicroclimModel", basename(all_files), ignore.case = TRUE) &
+      !grepl("BlwGrd", basename(all_files), ignore.case = TRUE)
+    ]
+  } else if (data_type == "mout_blw") {
+    tile_files <- all_files[
+      grepl("BlwGrd", basename(all_files), ignore.case = TRUE)
+    ]
+  } else {
+    tile_files <- all_files[
+      grepl("SnowModel", basename(all_files), ignore.case = TRUE)
+    ]
+  }
+
   if (length(tile_files) == 0)
-    stop(sprintf("No %s files matching '%s' found in: %s", file_fmt, data_type, tile_dir))
+    stop(sprintf("No %s files matching data_type '%s' found in: %s",
+                 if (file_fmt == "h5") "HDF5" else "NetCDF", data_type, tile_dir))
+
+  # --- Resolve var_names and var_meta -----------------------------------------
+  if (data_type == "mout_blw") {
+    if (file_fmt == "h5") {
+      if (!requireNamespace("rhdf5", quietly = TRUE))
+        stop('Package \'rhdf5\' is required. Install with: BiocManager::install("rhdf5")')
+      h5_contents <- rhdf5::h5ls(tile_files[1], recursive = FALSE)
+      rhdf5::H5close()
+      depth_groups <- h5_contents$name[h5_contents$otype == "H5I_GROUP" &
+                                       grepl("^BlwGrd_", h5_contents$name)]
+      if (length(depth_groups) == 0)
+        stop("No BlwGrd_* groups found in: ", tile_files[1])
+      var_names <- sprintf("%s/Tz", sort(depth_groups))
+    } else {
+      if (!requireNamespace("ncdf4", quietly = TRUE))
+        stop('Package \'ncdf4\' is required. Install with: install.packages("ncdf4")')
+      nc0 <- ncdf4::nc_open(tile_files[1])
+      nc_vars <- names(nc0$var)
+      ncdf4::nc_close(nc0)
+      var_names <- sort(nc_vars[grepl("^Tz_BlwGrd_", nc_vars)])
+      if (length(var_names) == 0)
+        stop("No Tz_BlwGrd_* variables found in: ", tile_files[1])
+    }
+    var_meta <- .mout_blw_meta
+  } else {
+    var_meta  <- if (data_type == "mout") .mout_meta else .smod_meta
+    var_names <- names(var_meta)
+  }
 
   # --- Resolve full domain ---------------------------------------------------
   if (!is.null(dtm)) {
@@ -1033,7 +1398,8 @@ stitch_tiles <- function(tile_dir, out_file, data_type = "mout", file_fmt = "h5"
                    full_xmin, full_ymax, res_x, res_y,
                    fill_value, python_path)
   } else {
-    .stitch_nc_vrt(tile_files, out_file, var_names)
+    .stitch_nc_vrt(tile_files, out_file, var_names,
+                   data_type = data_type, var_meta = var_meta)
   }
 
   invisible(data.frame(tile_file = tile_files, status = "stitched",
@@ -1192,9 +1558,15 @@ stitch_tiles <- function(tile_dir, out_file, data_type = "mout", file_fmt = "h5"
 #'       Tile_NNN_{prefix}_MicropointModel_{period}.RDS
 #'     Snow_Models/{period}/
 #'       Tile_NNN_{prefix}_SnowModel_{period}.{ext}
-#'     Microclim_Models/{period}/{hgt}/
-#'       Tile_NNN_{prefix}_MicroclimModel_{period}.{ext}
+#'     Microclim_Models/{period}/AbvGrd/
+#'       Tile_NNN_{prefix}_AbvGrd_MicroclimModel_{period}.{ext}
+#'     Microclim_Models/{period}/BlwGrd/
+#'       Tile_NNN_{prefix}_BlwGrd_MicroclimModel_{period}.{ext}
 #' }
+#' Below-ground microclimate outputs are combined into a single file per tile,
+#' with each soil depth stored as an HDF5 group (\code{/BlwGrd_XXXX/Tz}) or a
+#' NetCDF variable (\code{Tz_BlwGrd_XXXX}).  Only the \code{Tz} variable is
+#' retained for below-ground depths.
 #'
 #' **Processing order per (tile, period) task.**
 #' \enumerate{
@@ -1567,9 +1939,9 @@ run_micro_big_nichemap <- function(tiles,        # tile object from create_tiles
       })
     }
 
-    # --- microclimate models for all heights -----------------------------------
-    for (h in allheights) {
-
+    # --- above-ground microclimate model ----------------------------------------
+    {
+      h       <- reqhgt
       hgt_lbl <- .hgt_label(h)
       prefix  <- if (!is.null(study_area)) sprintf("%s_%s", study_area, hgt_lbl) else hgt_lbl
 
@@ -1645,6 +2017,94 @@ run_micro_big_nichemap <- function(tiles,        # tile object from create_tiles
                                           paste0("error: ", conditionMessage(e)),
                                           mc_file))
       })
+    }
+
+    # --- below-ground microclimate models (combined file per tile) -------------
+    {
+      blw_prefix <- if (!is.null(study_area)) sprintf("%s_BlwGrd", study_area) else "BlwGrd"
+
+      blw_parts <- c(output_dir)
+      if (!is.null(study_area)) blw_parts <- c(blw_parts, study_area)
+      blw_parts <- c(blw_parts, "Microclim_Models", period_label, "BlwGrd")
+      blw_dir   <- do.call(file.path, as.list(blw_parts))
+      dir.create(blw_dir, recursive = TRUE, showWarnings = FALSE)
+
+      blw_file <- file.path(blw_dir,
+                            sprintf("Tile_%03d_%s_MicroclimModel_%s%s",
+                                    tile_i, blw_prefix, period_label, out_ext))
+
+      # On HPC restarts, a partial file from a previous run would cause
+      # append errors (duplicate groups/variables). Start fresh each time.
+      if (file.exists(blw_file)) unlink(blw_file)
+
+      for (h in sdepth) {
+        hgt_lbl <- .hgt_label(h)
+        prefix  <- if (!is.null(study_area)) sprintf("%s_%s", study_area, hgt_lbl) else hgt_lbl
+
+        mp_parts <- c(output_dir)
+        if (!is.null(study_area)) mp_parts <- c(mp_parts, study_area)
+        mp_parts <- c(mp_parts, "Micropoint_Models", period_label, hgt_lbl)
+        mp_dir   <- do.call(file.path, as.list(mp_parts))
+
+        mp_file <- file.path(mp_dir,
+                             sprintf("Tile_%03d_%s_MicropointModel_%s.RDS",
+                                     tile_i, prefix, period_label))
+
+        cat(sprintf("  [Tile %d | %s | %s] Running microclimate model...",
+                    tile_i, period_label, hgt_lbl))
+
+        tryCatch({
+          pointa <- readr::read_rds(mp_file)
+
+          if (snow && !is.null(smod)) {
+            mout <- .quiet_run(
+              microclimfPara::runmicro(
+                micropoint = pointa,       reqhgt     = h,
+                vegp       = veg.crop,     soilc      = soil.crop,
+                dtm        = dem_fine_tile, dtmc      = dem_coarse_tile,
+                altcorrect = altcorrect,   snow       = snow,
+                snowmod    = smod,         runchecks  = TRUE,
+                slr        = slope_tile,   apr        = aspect_tile,
+                hor        = hor_tile,     twi        = twi_tile,
+                wsa        = wsa_tile,     svf        = svfa_tile,
+                Dynreqhgt  = Dynreqhgt,   parallel   = parallel,
+                ncores     = ncores
+              )
+            )
+          } else {
+            mout <- .quiet_run(
+              microclimfPara::runmicro(
+                micropoint = pointa,       reqhgt     = h,
+                vegp       = veg.crop,     soilc      = soil.crop,
+                dtm        = dem_fine_tile, dtmc      = dem_coarse_tile,
+                altcorrect = altcorrect,   snow       = snow,
+                runchecks  = TRUE,         slr        = slope_tile,
+                apr        = aspect_tile,  hor        = hor_tile,
+                twi        = twi_tile,     wsa        = wsa_tile,
+                svf        = svfa_tile,    Dynreqhgt  = Dynreqhgt,
+                parallel   = parallel,     ncores     = ncores
+              )
+            )
+          }
+
+          mout.trim <- trim_tile_buffer(mout, dem_proc = dem_fine_tile, dem_core = dem_fine_core)
+          write_tile(mout.trim, out_path = blw_file, tme = tme,
+                     compression = compression, file_fmt = file_fmt,
+                     dtm = dem_fine_core, depth_label = hgt_lbl)
+          rm(mout, mout.trim)
+          cat(" done.\n")
+          log_df <<- rbind(log_df, .log_row(tile_i, period_label, hgt_lbl,
+                                            "microclimate", "success", blw_file))
+        }, error = function(e) {
+          cat(sprintf(" FAILED: %s\n", conditionMessage(e)))
+          warning(sprintf("Tile %d | %s | %s | microclimate: %s",
+                          tile_i, period_label, hgt_lbl, conditionMessage(e)))
+          log_df <<- rbind(log_df, .log_row(tile_i, period_label, hgt_lbl,
+                                            "microclimate",
+                                            paste0("error: ", conditionMessage(e)),
+                                            blw_file))
+        })
+      }
     }
 
     if (!is.null(smod)) rm(smod)
