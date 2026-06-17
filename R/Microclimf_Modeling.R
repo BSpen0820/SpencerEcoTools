@@ -1795,7 +1795,7 @@ run_micro_big_nichemap <- function(tiles,        # tile object from create_tiles
 
     tme <- as.POSIXlt(
       seq(as.POSIXct(sprintf("%s 00:00:00", start_date), tz = "UTC"),
-          as.POSIXct(sprintf("%s 23:00:00", end_date),   tz = "UTC"),
+          as.POSIXct(sprintf("%s 23:00:00", (end_date + months(1) - lubridate::days(1))),   tz = "UTC"),
           by = "1 hour")
     )
 
