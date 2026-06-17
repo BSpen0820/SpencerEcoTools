@@ -23,8 +23,13 @@ stitch_tiles(
 file(s). For \code{file_fmt = "vrt"}, the extension is stripped and each
 variable is written as \code{<stem>_<varname>.vrt}.}
 
-\item{data_type}{Character. \code{"mout"} or \code{"smod"}. Used to filter
-which files in \code{tile_dir} are included.}
+\item{data_type}{Character. \code{"mout"}, \code{"smod"}, or
+\code{"mout_blw"}. Controls which files in \code{tile_dir} are selected
+and which variables are stitched. \code{"mout"} matches above-ground
+microclimate files (containing \code{"MicroclimModel"} but not
+\code{"BlwGrd"}). \code{"mout_blw"} matches below-ground files
+(containing \code{"BlwGrd"}). \code{"smod"} matches snow model files
+(containing \code{"SnowModel"}).}
 
 \item{file_fmt}{Character. \code{"h5"} builds an HDF5 Virtual Dataset
 (requires h5py in the active Python environment, or falls back to external
@@ -69,15 +74,21 @@ their original paths for the VDS to remain readable. If h5py is unavailable,
 falls back to a master file with HDF5 external links.
 
 \strong{VRT path} (\code{file_fmt = "vrt"}): For each variable, writes a
-\code{.vrt} file using \code{terra::vrt()} with GDAL
+\code{.vrt} file using \code{sf::gdal_utils("buildvrt", ...)} with GDAL
 \code{NETCDF:filepath:varname} subdataset references. The VRT mosaics all
-tile extents spatially; each hourly time step is one band. Absolute paths
-are embedded so VRTs work regardless of working directory. Tile NC files
+tile extents spatially; each hourly time step is one band. Tile NC files
 must stay in place.
 
-Tile files are discovered by listing all files in \code{tile_dir} whose
-names contain \code{data_type} (case-insensitive) and end in \code{.h5} or
-\code{.nc} according to \code{file_fmt}.
+\strong{Below-ground stitching} (\code{data_type = "mout_blw"}): Depth variable
+names are enumerated from the first tile file (HDF5 groups matching
+\code{BlwGrd_*} or NetCDF variables matching \code{Tz_BlwGrd_*}). Each
+depth is stitched independently.
+
+Tile files are discovered by token-based filename matching:
+\code{"mout"} matches files containing \code{"MicroclimModel"} but not
+\code{"BlwGrd"}; \code{"mout_blw"} matches files containing
+\code{"BlwGrd"}; \code{"smod"} matches files containing
+\code{"SnowModel"}.
 }
 \seealso{
 \code{\link{write_tile}} for writing individual tile files.

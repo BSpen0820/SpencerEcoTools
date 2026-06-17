@@ -10,7 +10,8 @@ write_tile(
   dtm = NULL,
   tme = NULL,
   file_fmt = "h5",
-  compression = 4L
+  compression = 4L,
+  depth_label = NULL
 )
 }
 \arguments{
@@ -37,6 +38,14 @@ defaults to \code{data$tme} when \code{NULL}.}
 
 \item{compression}{Integer 0–9. Gzip compression level applied to each data
 variable. 0 = no compression; 9 = maximum compression. Default 4.}
+
+\item{depth_label}{Character or \code{NULL}. When non-\code{NULL} (e.g.
+\code{"BlwGrd_0000"}), activates below-ground mode: only the \code{Tz}
+array is written. In HDF5, each depth becomes a group
+(\code{/BlwGrd_XXXX/Tz}); in NetCDF, each depth becomes a variable
+(\code{Tz_BlwGrd_XXXX}). If \code{out_path} already exists, the new depth
+is appended; otherwise, the file is created with spatial and time metadata.
+Default \code{NULL} (standard above-ground / smod behaviour).}
 }
 \value{
 Invisibly, a one-row \code{data.frame} with columns \code{file_path}
@@ -48,11 +57,23 @@ Serializes a single \code{mout} or \code{smod} list returned by
 full variable metadata, spatial coordinates, and CRS information.
 }
 \details{
+When \code{depth_label} is non-\code{NULL}, below-ground mode is activated:
+only the \code{Tz} variable is written, and multiple depths can be
+accumulated into a single file by calling \code{write_tile} repeatedly with
+different \code{depth_label} values and the same \code{out_path}. The first
+call creates the file; subsequent calls append a new depth group (HDF5) or
+variable (NetCDF).
+
 \strong{HDF5 layout} (\code{file_fmt = "h5"}, requires \code{rhdf5}):
 One dataset per variable at \code{[nrow, ncol, ntime]} plus a \code{time}
 dataset (ISO 8601 character strings). Spatial and period metadata are stored
 as HDF5 attributes on the root group \code{"/"}. Per-variable \code{units}
 and \code{long_name} attributes are written on each dataset.
+
+\strong{Below-ground HDF5 layout} (when \code{depth_label} is set):
+One HDF5 group per depth label, each containing a single \code{Tz} dataset.
+Root attributes carry spatial metadata, time, and
+\code{data_type = "mout_blw"}.
 
 \strong{NetCDF layout} (\code{file_fmt = "nc"}, requires \code{ncdf4}):
 CF-1.8 compliant. Dimensions \code{x}, \code{y}, \code{time} with
@@ -60,6 +81,10 @@ cell-centre coordinate variables. A scalar \code{crs} variable carries
 the WKT string. All data variables carry \code{grid_mapping = "crs"}.
 Array dimensions are permuted from R's \code{[nrow, ncol, ntime]} to
 NetCDF's \code{(x, y, time)} storage order before writing.
+
+\strong{Below-ground NetCDF layout} (when \code{depth_label} is set):
+Each depth is a separate 3D variable named \code{Tz_<depth_label>} sharing
+the same \code{x}, \code{y}, \code{time} dimensions.
 
 Both formats apply gzip compression at the level set by \code{compression}.
 HDF5 uses chunk dimensions \code{[nrow, ncol, min(ntime, 24)]} (time slabs).

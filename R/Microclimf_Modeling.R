@@ -1602,7 +1602,7 @@ stitch_tiles <- function(tile_dir, out_file, data_type = "mout", file_fmt = "h5"
 #'   \code{\link{trim_tile_buffer}} for buffer removal.
 #'   \code{\link{write_tile}} for output file format details.
 #'   \code{\link{stitch_tiles}} to assemble tile outputs into a single file.
-#'   \code{\link{package_climate}} and \code{\link{Pkg_Veg_Soil_data}} to
+#'   \code{\link{package_climate}} and \code{\link{package_veg_soil}} to
 #'   produce the \code{clim}, \code{vegp}, and \code{soilc} inputs.
 #'
 #' @export
@@ -1687,14 +1687,14 @@ run_micro_big_nichemap <- function(tiles,        # tile object from create_tiles
 
   slope <- terra::terrain(dtm_fine, v = "slope")
   aspect <- terra::terrain(dtm_fine, v = "aspect")
-  twi   <- microclimf:::.topidx(dtm_fine)
+  twi   <- microclimfPara:::.topidx(dtm_fine)
 
   hor <- array(NA, dim = c(dim(dtm_fine)[1:2], 24))
-  for (i in 1:24) hor[,,i] <- microclimf:::.horizon(dtm_fine, (i - 1) * 15)
+  for (i in 1:24) hor[,,i] <- microclimfPara:::.horizon(dtm_fine, (i - 1) * 15)
 
   msl  <- tan(apply(atan(hor), c(1, 2), mean))
   svfa <- 0.5 * cos(2 * msl) + 0.5
-  wsa  <- microclimf:::.windsheltera(dtm_fine, 2, 1)
+  wsa  <- microclimfPara:::.windsheltera(dtm_fine, 2, 1)
   rm(msl); invisible(gc())
 
   # --- flat task table: all (tile, date) combinations --------------------------
