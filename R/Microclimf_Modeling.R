@@ -17,7 +17,7 @@
 #' largest tile size whose peak in-memory footprint stays within \code{mem_fraction}
 #' of total system RAM. Peak usage accounts for \code{mout} (10 arrays),
 #' optionally \code{smod} (6 arrays) when \code{snow_modeling = TRUE}, and
-#' \code{micropointa} (one element per coarse cell) — all sized to the buffered
+#' \code{micropointa} (one element per coarse cell) -- all sized to the buffered
 #' tile extent (\code{tiles_proc}).
 #'
 #' @param coarse_dem A \code{SpatRaster} at the weather-data resolution used as
@@ -69,7 +69,7 @@
 #'   tiles <- create_tiles(coarse_dem, fine_dem,
 #'                         dates = as.Date(c("2020-01-01", "2020-12-31")))
 #'
-#'   # With snow modeling — more conservative tile size
+#'   # With snow modeling -- more conservative tile size
 #'   tiles <- create_tiles(coarse_dem, fine_dem,
 #'                         dates = as.Date(c("2020-10-01", "2021-03-31")),
 #'                         snow_modeling = TRUE)
@@ -213,7 +213,7 @@ create_tiles <- function(coarse_dem,
 }
 
 # --------------------------------------------------------------------------- #
-#  trim_tile_buffer — exported
+#  trim_tile_buffer -- exported
 # --------------------------------------------------------------------------- #
 
 #' Trim buffer rows and columns from microclimf tile output arrays
@@ -253,7 +253,7 @@ trim_tile_buffer <- function(data, dem_proc, dem_core) {
   col_rght <- as.integer(round((as.numeric(e_proc$xmax) - as.numeric(e_core$xmax)) / res_x))
 
   if (any(c(row_top, row_bot, col_left, col_rght) < 0L))
-    stop("dem_core extent exceeds dem_proc on at least one side — check raster inputs")
+    stop("dem_core extent exceeds dem_proc on at least one side -- check raster inputs")
 
   is_3d <- vapply(data, function(x) length(dim(x)) == 3L, logical(1L))
   if (!any(is_3d)) stop("No 3D arrays found in data")
@@ -263,7 +263,7 @@ trim_tile_buffer <- function(data, dem_proc, dem_core) {
   nc    <- dim(first)[2L]
 
   if (nr - row_top - row_bot < 1L || nc - col_left - col_rght < 1L)
-    stop("Computed trim exceeds array dimensions — dem_proc and dem_core may not match the data arrays")
+    stop("Computed trim exceeds array dimensions -- dem_proc and dem_core may not match the data arrays")
 
   row_idx <- seq.int(row_top  + 1L, nr - row_bot)
   col_idx <- seq.int(col_left + 1L, nc - col_rght)
@@ -853,7 +853,7 @@ trim_tile_buffer <- function(data, dem_proc, dem_core) {
 }
 
 # --------------------------------------------------------------------------- #
-#  write_tile — exported
+#  write_tile -- exported
 # --------------------------------------------------------------------------- #
 
 #' Write a microclimf tile output to HDF5 or NetCDF
@@ -885,7 +885,7 @@ trim_tile_buffer <- function(data, dem_proc, dem_core) {
 #' @param file_fmt Character. Output format: \code{"h5"} (HDF5 via
 #'   \code{rhdf5}) or \code{"nc"} (NetCDF-4 via \code{ncdf4}). Default
 #'   \code{"h5"}.
-#' @param compression Integer 0–9. Gzip compression level applied to each data
+#' @param compression Integer 0-9. Gzip compression level applied to each data
 #'   variable. 0 = no compression; 9 = maximum compression. Default 4.
 #' @param depth_label Character or \code{NULL}. When non-\code{NULL} (e.g.
 #'   \code{"BlwGrd_0000"}), activates below-ground mode: only the \code{Tz}
@@ -1080,7 +1080,7 @@ write_tile <- function(data, out_path, dtm = NULL, tme = NULL,
 
   out_dir <- dirname(normalizePath(out_file, mustWork = FALSE))
 
-  # rhdf5 reverses dim order: R array [nrow,ncol,ntime] → HDF5 (ntime,ncol,nrow)
+  # rhdf5 reverses dim order: R array [nrow,ncol,ntime] -> HDF5 (ntime,ncol,nrow)
   # h5py sees (ntime,ncol,nrow), so VDS layout must match that convention.
   for (vn in var_names) {
     layout <- h5py$VirtualLayout(
@@ -1120,7 +1120,7 @@ write_tile <- function(data, out_path, dtm = NULL, tme = NULL,
 
   out_stem  <- tools::file_path_sans_ext(out_file)
   abs_tiles <- normalizePath(tile_files, mustWork = TRUE)
-  vrt_paths <- setNames(character(length(var_names)), var_names)
+  vrt_paths <- stats::setNames(character(length(var_names)), var_names)
 
   if (is.null(data_type))
     data_type <- if ("Tz" %in% var_names) "mout" else "smod"
@@ -1146,7 +1146,7 @@ write_tile <- function(data, out_path, dtm = NULL, tme = NULL,
     vrt_path  <- sprintf("%s_%s.vrt", out_stem, vn)
     gdal_srcs <- sprintf('NETCDF:"%s":%s', abs_tiles, vn)
 
-    # Build VRT — GDAL requires absolute paths to open sources and read metadata
+    # Build VRT -- GDAL requires absolute paths to open sources and read metadata
     sf::gdal_utils(util        = "buildvrt",
                    source      = gdal_srcs,
                    destination = vrt_path,
@@ -1162,7 +1162,7 @@ write_tile <- function(data, out_path, dtm = NULL, tme = NULL,
     }
     vrt_text <- paste(readLines(vrt_path, warn = FALSE), collapse = "\n")
 
-    # 1. Swap absolute source paths → paths relative to the VRT file.
+    # 1. Swap absolute source paths -> paths relative to the VRT file.
     #    GDAL on Windows may embed paths with backslashes or forward slashes;
     #    try both to ensure a match regardless of platform.
     for (k in seq_along(abs_tiles)) {
@@ -1189,7 +1189,7 @@ write_tile <- function(data, out_path, dtm = NULL, tme = NULL,
                     paste0("\\1", meta_block, "\n"),
                     vrt_text, perl = TRUE)
 
-    # 3. Add per-band <Description> (ISO8601 time) — fully vectorized:
+    # 3. Add per-band <Description> (ISO8601 time) -- fully vectorized:
     #    split on "<VRTRasterBand ", insert description after the first newline
     #    in each part (= after the band opening tag), then rejoin
     parts <- strsplit(vrt_text, "<VRTRasterBand ", fixed = TRUE)[[1L]]
@@ -1214,7 +1214,7 @@ write_tile <- function(data, out_path, dtm = NULL, tme = NULL,
 }
 
 # --------------------------------------------------------------------------- #
-#  stitch_tiles — exported
+#  stitch_tiles -- exported
 # --------------------------------------------------------------------------- #
 
 #' Stitch microclimf tile output files into a single domain-wide file
@@ -1240,7 +1240,7 @@ write_tile <- function(data, out_path, dtm = NULL, tme = NULL,
 #' @param file_fmt Character. \code{"h5"} builds an HDF5 Virtual Dataset
 #'   (requires h5py in the active Python environment, or falls back to external
 #'   links); \code{"vrt"} creates one GDAL VRT per variable referencing the
-#'   tile NC files via NETCDF subdatasets — no data is copied and tile files
+#'   tile NC files via NETCDF subdatasets -- no data is copied and tile files
 #'   must remain at their original paths (requires \code{ncdf4} and
 #'   \code{terra}). Default \code{"h5"}.
 #' @param dtm Optional \code{terra::SpatRaster} covering the full domain. When
@@ -1253,7 +1253,7 @@ write_tile <- function(data, out_path, dtm = NULL, tme = NULL,
 #' @param fill_value Numeric. Value used to initialise cells not covered by any
 #'   tile. Only used when \code{file_fmt = "h5"} (becomes the VDS fill value;
 #'   NaN when \code{NA_real_}). Default \code{NA_real_}.
-#' @param compression Integer 0–9. Unused; retained for compatibility.
+#' @param compression Integer 0-9. Unused; retained for compatibility.
 #'   Default \code{4L}.
 #'
 #' @return Invisibly, a \code{data.frame} with columns \code{tile_file} and
@@ -1410,7 +1410,7 @@ stitch_tiles <- function(tile_dir, out_file, data_type = "mout", file_fmt = "h5"
 #  Internal helpers for run_micro_big_nichemap
 # --------------------------------------------------------------------------- #
 
-# Height → label: positive = above ground, zero/negative = soil depth in mm
+# Height -> label: positive = above ground, zero/negative = soil depth in mm
 .hgt_label <- function(h) {
   if (h > 0) "AbvGrd"
   else sprintf("BlwGrd_%04d", as.integer(round(abs(h) * 1000)))
@@ -1447,13 +1447,13 @@ stitch_tiles <- function(tile_dir, out_file, data_type = "mout", file_fmt = "h5"
 }
 
 # --------------------------------------------------------------------------- #
-#  run_micro_big_nichemap — exported
+#  run_micro_big_nichemap -- exported
 # --------------------------------------------------------------------------- #
 
 #' Run Full Microclimate Pipeline for Large Tiled Domains
 #'
-#' Executes the complete NicheMapR–microclimf microclimate pipeline — micropoint
-#' models, an optional snow model, and microclimate models — across all tiles
+#' Executes the complete NicheMapR-microclimf microclimate pipeline -- micropoint
+#' models, an optional snow model, and microclimate models -- across all tiles
 #' and date periods for a large spatial domain.  Terrain features (slope,
 #' aspect, topographic wetness index, horizon angles, sky-view factor, and wind
 #' shelter) are derived from the full fine DEM once before the tile loop and
@@ -1514,7 +1514,7 @@ stitch_tiles <- function(tile_dir, out_file, data_type = "mout", file_fmt = "h5"
 #'   results: \code{"h5"} (HDF5 via \code{rhdf5}) or \code{"nc"} (NetCDF-4 via
 #'   \code{ncdf4}).  Micropoint model outputs are always written as \code{.RDS}.
 #'   Default \code{"h5"}.
-#' @param compression Integer 0–9. Gzip compression level applied to HDF5/NetCDF
+#' @param compression Integer 0-9. Gzip compression level applied to HDF5/NetCDF
 #'   output files.  Default \code{4L}.
 #' @param ... Hidden SLURM array arguments:
 #'   \describe{
@@ -1535,7 +1535,7 @@ stitch_tiles <- function(tile_dir, out_file, data_type = "mout", file_fmt = "h5"
 #'       \code{"20200101_to_20201231"}.}
 #'     \item{height_label}{Character height label: \code{"AbvGrd"} or
 #'       \code{"BlwGrd_XXXX"} where \code{XXXX} is depth in zero-padded
-#'       millimetres (e.g. 1.5 cm → \code{"BlwGrd_0015"}).}
+#'       millimetres (e.g. 1.5 cm -> \code{"BlwGrd_0015"}).}
 #'     \item{step}{One of \code{"micropoint"}, \code{"snow"}, or
 #'       \code{"microclimate"}.}
 #'     \item{status}{\code{"success"} or \code{"error: <message>"}.}
@@ -1545,8 +1545,8 @@ stitch_tiles <- function(tile_dir, out_file, data_type = "mout", file_fmt = "h5"
 #'
 #' @details
 #' **Heights modeled.**  The above-ground height (\code{reqhgt}, labelled
-#' \code{"AbvGrd"}) and ten soil depths — 0, 1.5, 5, 10, 15, 20, 30, 50, 100,
-#' and 200 cm — are always modeled.  Depth labels use the \code{BlwGrd_XXXX}
+#' \code{"AbvGrd"}) and ten soil depths -- 0, 1.5, 5, 10, 15, 20, 30, 50, 100,
+#' and 200 cm -- are always modeled.  Depth labels use the \code{BlwGrd_XXXX}
 #' convention where \code{XXXX} is the depth in zero-padded millimetres
 #' (ground surface = \code{BlwGrd_0000}).
 #'
@@ -1586,12 +1586,12 @@ stitch_tiles <- function(tile_dir, out_file, data_type = "mout", file_fmt = "h5"
 #' **SLURM usage.**  In an SBATCH array script, pass
 #' \code{clust_array_arg = as.integer(Sys.getenv("SLURM_ARRAY_TASK_ID"))} and
 #' \code{clust_array_size = <total tasks>}.  All \code{(tile, period)}
-#' combinations are enumerated 1–N and distributed round-robin so each node
+#' combinations are enumerated 1-N and distributed round-robin so each node
 #' receives an equal share.  Tile index cycles fastest (all tiles for period 1
 #' before period 2, etc.).
 #'
 #' **Terrain pre-computation.**  Slope, aspect, topographic wetness index (TWI),
-#' 24-direction horizon angles (at 15° intervals), sky-view factor, and wind
+#' 24-direction horizon angles (at 15-degree intervals), sky-view factor, and wind
 #' shelter arrays are computed from \code{dtm_fine} once before the tile loop
 #' using internal microclimf helpers (\code{microclimf:::.topidx},
 #' \code{microclimf:::.horizon}, \code{microclimf:::.windsheltera}).  Per-tile
@@ -1821,7 +1821,7 @@ run_micro_big_nichemap <- function(tiles,        # tile object from create_tiles
     soil_chk <- Find(function(el) inherits(el, "PackedSpatRaster"), soil.crop)
     if (!is.null(soil_chk) &&
         terra::global(terra::unwrap(soil_chk), "notNA")[[1]] == 0L) {
-      cat(sprintf("  Tile %d: outside soil/veg data coverage (reprojection edge) — skipping.\n",
+      cat(sprintf("  Tile %d: outside soil/veg data coverage (reprojection edge) -- skipping.\n",
                   tile_i))
       log_df <<- rbind(log_df,
         .log_row(tile_i, period_label, "", "micropoint",

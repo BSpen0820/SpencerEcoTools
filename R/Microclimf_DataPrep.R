@@ -2043,12 +2043,12 @@ estimate_diffuse_rad <- function(dates,
 #' @param landcover Either (a) a directory path containing annual land cover
 #'   files named with a 4-digit year (one file per year, matched via
 #'   \code{.extract_year()}), (b) a path to a single land cover file, or (c) a
-#'   \code{SpatRaster}. Cases (b) and (c) are static mode — the same land cover
+#'   \code{SpatRaster}. Cases (b) and (c) are static mode -- the same land cover
 #'   is reused across all periods without per-year indexing
 #' @param veg_height Either (a) a directory path containing annual vegetation
 #'   height files named with a 4-digit year (one file per year, matched via
 #'   \code{.extract_year()}), (b) a path to a single vegetation height file,
-#'   or (c) a \code{SpatRaster}. Cases (b) and (c) are static mode — the same
+#'   or (c) a \code{SpatRaster}. Cases (b) and (c) are static mode -- the same
 #'   raster is reused across all periods without per-year indexing
 #' @param soil_path File path to the fine resolution soil data raster
 #' @param lai_dir Directory containing fine resolution LAI files
