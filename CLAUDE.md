@@ -20,7 +20,7 @@ devtools::check()
 devtools::load_all()
 
 # Run a single function's examples
-example("run_iter_micropoint", package = "SpencerEcoTools")
+example("run_micro_big_nichemap", package = "SpencerEcoTools")
 ```
 
 GEE must be initialized before calling any GEE functions:
@@ -57,13 +57,13 @@ The full preprocessing pipeline runs in this sequence:
 12. `compute_reflectance()` → leaf and ground reflectance
 13. `summarize_climate_normals()` → multi-year hourly climate normals from AORC
 14. `package_climate()` → packages AORC into microclimf-ready climate arrays
-15. `Pkg_Veg_Soil_data()` → packages vegetation and soil parameter grids
+15. `package_veg_soil()` → packages vegetation and soil parameter grids
 16. `create_tiles()` → tile extents for memory-efficient large-raster processing
-17. `run_micropoint_NicheMapPrep()` / `run_iter_micropoint()` → run microclimf point models
+17. `run_micro_big_nichemap()` → tiled microclimf point models with NicheMapR below-ground
 
 ## Function design conventions
 
-**`dates` argument:** Always a vector of `Date` objects. Day component is ignored; only year and month matter. This allows cross-year ranges like Oct 2019–Mar 2020. Exception: `package_climate()`, `Pkg_Veg_Soil_data()`, and `run_iter_micropoint()` accept either a `data.frame` with `Start_Dates`/`End_Dates` columns OR a length-2 Date vector.
+**`dates` argument:** Always a vector of `Date` objects. Day component is ignored; only year and month matter. This allows cross-year ranges like Oct 2019–Mar 2020. Exception: `package_climate()`, `package_veg_soil()`, and `run_micro_big_nichemap()` accept either a `data.frame` with `Start_Dates`/`End_Dates` columns OR a length-2 Date vector.
 
 **`study_area`:** Always optional (`default NULL`). When provided, filters input files by that string and prefixes output file names.
 
@@ -87,8 +87,7 @@ The full preprocessing pipeline runs in this sequence:
 
 HPC support is passed via hidden `...` args (`clust_array_arg`, `clust_array_size`) — **not** explicit function parameters. This keeps the public API clean.
 
-- **`run_micropoint_NicheMapPrep()`** — single period, up to 10 tasks. `clust_array_arg == 1` runs above-ground; remaining args distribute across 9 soil depths via round-robin.
-- **`run_iter_micropoint()`** — multi-period, `N_periods × 10` tasks. Round-robin: `job = ((task_i - 1) %% array_size) + 1`. Surplus jobs exit cleanly with a message.
+- **`run_micro_big_nichemap()`** — multi-period, tiled. Tasks are `N_tiles × N_periods` combinations distributed via round-robin: `rep(seq_len(clust_array_size), length.out = N_tasks)`. Each task runs all heights (above-ground + 9 soil depths) in an inner loop. Surplus jobs exit cleanly.
 
 Bryan writes SBATCH scripts manually and passes `$SLURM_ARRAY_TASK_ID`. Functions do **not** submit jobs themselves.
 
@@ -100,7 +99,7 @@ Bryan writes SBATCH scripts manually and passes `$SLURM_ARRAY_TASK_ID`. Function
 - Veg: `{study_area}_VegPara_{period_label}.RDS`
 - Soil: `{study_area}_SoilPara_{period_label}.RDS`
 - Period labels: `YYYYMMDD_to_YYYYMMDD`
-- AORC dirs: `base_dir/study_area/year/month/`
+- AORC dirs: `aorc_dir/study_area/year/month/`
 - AORC files: `AORC_{study_area}_{YEAR}_{MM}_{VARNAME}.nc`
 
 ## Critical technical constraints

@@ -159,9 +159,15 @@ output_dir/
       Tile_NNN_{prefix}_MicropointModel_{period}.RDS
     Snow_Models/{period}/
       Tile_NNN_{prefix}_SnowModel_{period}.{ext}
-    Microclim_Models/{period}/{hgt}/
-      Tile_NNN_{prefix}_MicroclimModel_{period}.{ext}
+    Microclim_Models/{period}/AbvGrd/
+      Tile_NNN_{prefix}_AbvGrd_MicroclimModel_{period}.{ext}
+    Microclim_Models/{period}/BlwGrd/
+      Tile_NNN_{prefix}_BlwGrd_MicroclimModel_{period}.{ext}
 }
+Below-ground microclimate outputs are combined into a single file per tile,
+with each soil depth stored as an HDF5 group (\code{/BlwGrd_XXXX/Tz}) or a
+NetCDF variable (\code{Tz_BlwGrd_XXXX}).  Only the \code{Tz} variable is
+retained for below-ground depths.
 
 \strong{Processing order per (tile, period) task.}
 \enumerate{
@@ -198,6 +204,6 @@ computations.
 \code{\link{trim_tile_buffer}} for buffer removal.
 \code{\link{write_tile}} for output file format details.
 \code{\link{stitch_tiles}} to assemble tile outputs into a single file.
-\code{\link{package_climate}} and \code{\link{Pkg_Veg_Soil_data}} to
+\code{\link{package_climate}} and \code{\link{package_veg_soil}} to
 produce the \code{clim}, \code{vegp}, and \code{soilc} inputs.
 }
