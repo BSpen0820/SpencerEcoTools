@@ -202,6 +202,8 @@ create_tiles <- function(coarse_dem,
     tiles_rast[cell_ids] <- i
   }
 
+  terra::names(tiles_rast) <- "tile_id"
+
   cat(sprintf("Created %d tile(s) (%d x %d grid).\n", n_tiles_r * n_tiles_c, n_tiles_r, n_tiles_c))
 
   if (!is.null(output_path)) {
