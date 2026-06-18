@@ -12,6 +12,8 @@ download_hls(
   scale = 30,
   focal_radius = 10,
   max_months = 2,
+  ndsi_thresh = 0.4,
+  green_thresh = 0.3,
   poll = TRUE,
   poll_interval = 30,
   timeout = 300
@@ -38,6 +40,14 @@ Default is 10 (21x21 pixel window)}
 \item{max_months}{Maximum number of months to search either side of target
 month for temporal interpolation. Default is 2}
 
+\item{ndsi_thresh}{NDSI threshold for snow rescue. Pixels with
+NDSI >= this value AND green reflectance > \code{green_thresh} are
+treated as snow and excluded from cloud masking. Default is 0.4}
+
+\item{green_thresh}{Green band reflectance threshold for snow rescue.
+Prevents dark surfaces like water from being misidentified as snow.
+Default is 0.3}
+
 \item{poll}{Logical. Whether to poll Google Drive and download files after
 all tasks are submitted. Default is TRUE}
 
@@ -54,17 +64,18 @@ Invisibly returns a named list with elements:
 }
 \description{
 Iterates over each date provided, applying a two-level cloud/shadow masking
-strategy to HLS S30 Sentinel-2 imagery. If gaps remain after masking,
-temporally adjacent images (up to 2 months either side) are used to fill
-gaps via inverse distance weighted mean, weighted by day distance from the
-center of the target month. A focal median is applied as a final fallback
-for any remaining gaps.
+strategy to HLS S30 Sentinel-2 imagery. Cloud masking uses NDSI (Normalized
+Difference Snow Index) to rescue snow pixels that the Fmask algorithm
+misclassifies as cloud — a known issue with ~45\\% commission rate over
+snow-covered terrain. If gaps remain after masking, temporally adjacent
+images (up to 2 months either side) are used to fill gaps via inverse
+distance weighted mean. A focal median is applied as a final fallback.
 }
 \details{
 The masking strategy applied is:
 \enumerate{
-\item Full mask (cloud, adjacent, shadow, high AOT) median composite
-\item No AOT mask median fills remaining gaps
+\item Full mask (cloud, adjacent, shadow, high AOT) with NDSI snow rescue — median composite
+\item No AOT mask with NDSI snow rescue — median fills remaining gaps
 \item Temporally weighted mean from surrounding months fills remaining gaps
 \item Focal median fills any final remaining gaps
 }
