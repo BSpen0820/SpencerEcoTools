@@ -590,33 +590,47 @@ download_albedo <- function(aoi,
 
 # Internal helpers --------------------------------------------------------
 
-.make_maskHLS_full <- function(ndsi_thresh, green_thresh) {
+.make_maskHLS_full <- function(ndsi_thresh, green_thresh,
+                              cloud_ndsi_thresh, blue_thresh) {
   function(img) {
-    fmask    <- img$select("Fmask")
-    cloud    <- fmask$bitwiseAnd(2^1)$neq(0)
-    adjacent <- fmask$bitwiseAnd(2^2)$neq(0)
-    shadow   <- fmask$bitwiseAnd(2^3)$neq(0)
-    high_aot <- fmask$rightShift(6)$bitwiseAnd(3)$eq(3)
+    fmask       <- img$select("Fmask")
+    fmask_cloud <- fmask$bitwiseAnd(2^1)$neq(0)
+    adjacent    <- fmask$bitwiseAnd(2^2)$neq(0)
+    shadow      <- fmask$bitwiseAnd(2^3)$neq(0)
+    high_aot    <- fmask$rightShift(6)$bitwiseAnd(3)$eq(3)
 
-    ndsi     <- img$normalizedDifference(c("green", "swir"))
-    is_snow  <- ndsi$gte(ndsi_thresh)$And(img$select("green")$gt(green_thresh))
-    cloud    <- cloud$And(is_snow$Not())
+    ndsi <- img$normalizedDifference(c("green", "swir"))
+
+    spectral_cloud <- ndsi$lt(cloud_ndsi_thresh)$
+      And(img$select("blue")$gt(blue_thresh))
+
+    cloud <- fmask_cloud$Or(spectral_cloud)
+
+    is_snow <- ndsi$gte(ndsi_thresh)$And(img$select("green")$gt(green_thresh))
+    cloud   <- cloud$And(is_snow$Not())
 
     mask <- cloud$Or(adjacent)$Or(shadow)$Or(high_aot)$Not()
     img$updateMask(mask)
   }
 }
 
-.make_maskHLS_no_aot <- function(ndsi_thresh, green_thresh) {
+.make_maskHLS_no_aot <- function(ndsi_thresh, green_thresh,
+                                 cloud_ndsi_thresh, blue_thresh) {
   function(img) {
-    fmask    <- img$select("Fmask")
-    cloud    <- fmask$bitwiseAnd(2^1)$neq(0)
-    adjacent <- fmask$bitwiseAnd(2^2)$neq(0)
-    shadow   <- fmask$bitwiseAnd(2^3)$neq(0)
+    fmask       <- img$select("Fmask")
+    fmask_cloud <- fmask$bitwiseAnd(2^1)$neq(0)
+    adjacent    <- fmask$bitwiseAnd(2^2)$neq(0)
+    shadow      <- fmask$bitwiseAnd(2^3)$neq(0)
 
-    ndsi     <- img$normalizedDifference(c("green", "swir"))
-    is_snow  <- ndsi$gte(ndsi_thresh)$And(img$select("green")$gt(green_thresh))
-    cloud    <- cloud$And(is_snow$Not())
+    ndsi <- img$normalizedDifference(c("green", "swir"))
+
+    spectral_cloud <- ndsi$lt(cloud_ndsi_thresh)$
+      And(img$select("blue")$gt(blue_thresh))
+
+    cloud <- fmask_cloud$Or(spectral_cloud)
+
+    is_snow <- ndsi$gte(ndsi_thresh)$And(img$select("green")$gt(green_thresh))
+    cloud   <- cloud$And(is_snow$Not())
 
     mask <- cloud$Or(adjacent)$Or(shadow)$Not()
     img$updateMask(mask)
@@ -639,8 +653,9 @@ download_albedo <- function(aoi,
 }
 
 .temporal_weighted_fill <- function(ee_aoi, target_date, band_names, band_rename,
-                                    max_months = 2,
-                                    ndsi_thresh = 0.4, green_thresh = 0.3) {
+                                    max_months = 3,
+                                    ndsi_thresh = 0.4, green_thresh = 0.3,
+                                    cloud_ndsi_thresh = 0.2, blue_thresh = 0.25) {
 
   target_center       <- ee$Date(target_date)
   target_month_center <- target_center$advance(15, "day")
@@ -662,8 +677,10 @@ download_albedo <- function(aoi,
 
       # Apply masks
       masked_ic <- neighbor_ic$
-        map(.make_maskHLS_full(ndsi_thresh, green_thresh))$
-        map(.make_maskHLS_no_aot(ndsi_thresh, green_thresh))
+        map(.make_maskHLS_full(ndsi_thresh, green_thresh,
+                               cloud_ndsi_thresh, blue_thresh))$
+        map(.make_maskHLS_no_aot(ndsi_thresh, green_thresh,
+                                  cloud_ndsi_thresh, blue_thresh))
 
       # Cast to float32 and compute effective weights
       weighted_ic <- masked_ic$map(function(img) {
@@ -711,17 +728,18 @@ download_albedo <- function(aoi,
 #' Download HLS Sentinel-2 Imagery from Google Earth Engine
 #'
 #' Iterates over each date provided, applying a two-level cloud/shadow masking
-#' strategy to HLS S30 Sentinel-2 imagery. Cloud masking uses NDSI (Normalized
-#' Difference Snow Index) to rescue snow pixels that the Fmask algorithm
-#' misclassifies as cloud — a known issue with ~45\% commission rate over
-#' snow-covered terrain. If gaps remain after masking, temporally adjacent
-#' images (up to 2 months either side) are used to fill gaps via inverse
-#' distance weighted mean. A focal median is applied as a final fallback.
+#' strategy to HLS S30 Sentinel-2 imagery. Cloud masking combines Fmask QA bits
+#' with spectral cloud detection (NDSI + blue brightness) and NDSI-based snow
+#' rescue to handle both cloud omission and snow/cloud confusion. If gaps remain
+#' after masking, temporally adjacent images (up to \code{max_months} months
+#' either side) fill gaps via inverse distance weighted mean. A focal median is
+#' applied as a final fallback.
 #'
 #' The masking strategy applied is:
 #' \enumerate{
-#'   \item Full mask (cloud, adjacent, shadow, high AOT) with NDSI snow rescue — median composite
-#'   \item No AOT mask with NDSI snow rescue — median fills remaining gaps
+#'   \item Full mask (Fmask cloud + spectral cloud, adjacent, shadow, high AOT)
+#'         with NDSI snow rescue — median composite
+#'   \item No AOT mask with same cloud/snow logic — median fills remaining gaps
 #'   \item Temporally weighted mean from surrounding months fills remaining gaps
 #'   \item Focal median fills any final remaining gaps
 #' }
@@ -738,13 +756,19 @@ download_albedo <- function(aoi,
 #' @param focal_radius Kernel radius in pixels for focal median gap filling.
 #'   Default is 10 (21x21 pixel window)
 #' @param max_months Maximum number of months to search either side of target
-#'   month for temporal interpolation. Default is 2
+#'   month for temporal interpolation. Default is 3
 #' @param ndsi_thresh NDSI threshold for snow rescue. Pixels with
 #'   NDSI >= this value AND green reflectance > \code{green_thresh} are
 #'   treated as snow and excluded from cloud masking. Default is 0.4
 #' @param green_thresh Green band reflectance threshold for snow rescue.
 #'   Prevents dark surfaces like water from being misidentified as snow.
 #'   Default is 0.3
+#' @param cloud_ndsi_thresh NDSI threshold for spectral cloud detection. Pixels
+#'   with NDSI below this AND blue reflectance > \code{blue_thresh} are masked
+#'   as cloud (supplements Fmask). Default is 0.2
+#' @param blue_thresh Blue band reflectance threshold for spectral cloud
+#'   detection. Prevents dark surfaces from being misidentified as cloud.
+#'   Default is 0.25
 #' @param poll Logical. Whether to poll Google Drive and download files after
 #'   all tasks are submitted. Default is TRUE
 #' @param poll_interval Polling interval in seconds. Default is 30
@@ -762,9 +786,11 @@ download_hls <- function(aoi,
                         study_area = NULL,
                         scale = 30,
                         focal_radius = 10,
-                        max_months = 2,
+                        max_months = 3,
                         ndsi_thresh = 0.4,
                         green_thresh = 0.3,
+                        cloud_ndsi_thresh = 0.2,
+                        blue_thresh = 0.25,
                         poll = TRUE,
                         poll_interval = 30,
                         timeout = 300) {
@@ -816,7 +842,8 @@ download_hls <- function(aoi,
 
       # Level 1: Full mask median
       median_full <- hls_ic_raw$
-        map(.make_maskHLS_full(ndsi_thresh, green_thresh))$
+        map(.make_maskHLS_full(ndsi_thresh, green_thresh,
+                               cloud_ndsi_thresh, blue_thresh))$
         select("red", "green", "blue", "nir")$
         map(.float32_cast)$
         median()$
@@ -824,7 +851,8 @@ download_hls <- function(aoi,
 
       # Level 2: No AOT mask fills gaps
       median_no_aot <- hls_ic_raw$
-        map(.make_maskHLS_no_aot(ndsi_thresh, green_thresh))$
+        map(.make_maskHLS_no_aot(ndsi_thresh, green_thresh,
+                                  cloud_ndsi_thresh, blue_thresh))$
         select("red", "green", "blue", "nir")$
         map(.float32_cast)$
         median()$
@@ -850,13 +878,15 @@ download_hls <- function(aoi,
         target_date <- sprintf("%d-%02d-15", y, mo)
 
         temporal_fill <- .temporal_weighted_fill(
-          ee_aoi       = ee_aoi,
-          target_date  = target_date,
-          band_names   = band_names,
-          band_rename  = band_rename,
-          max_months   = max_months,
-          ndsi_thresh  = ndsi_thresh,
-          green_thresh = green_thresh
+          ee_aoi            = ee_aoi,
+          target_date       = target_date,
+          band_names        = band_names,
+          band_rename       = band_rename,
+          max_months        = max_months,
+          ndsi_thresh       = ndsi_thresh,
+          green_thresh      = green_thresh,
+          cloud_ndsi_thresh = cloud_ndsi_thresh,
+          blue_thresh       = blue_thresh
         )
 
         if (!is.null(temporal_fill)) {
