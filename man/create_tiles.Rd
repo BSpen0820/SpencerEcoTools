@@ -33,7 +33,10 @@ Used to compute the number of hourly time steps for memory estimation.}
 vector of two numeric values specifying \code{c(nrow, ncol)} of each tile
 in coarse DEM cells. When \code{NULL} the memory-based auto-sizing is used.
 When provided, a warning is issued if the tile exceeds the memory budget but
-processing continues.}
+processing continues. Each dimension must be at least
+\code{2 * buffer_size + 1} to ensure at least one non-buffer cell per
+dimension. Tile dimensions need not divide evenly into the DEM; edge tiles
+will be slightly smaller.}
 
 \item{buffer_size}{Integer. Number of coarse DEM cells added as buffer around
 each tile for \code{tiles_proc}. Default is 1. Memory estimation uses the
