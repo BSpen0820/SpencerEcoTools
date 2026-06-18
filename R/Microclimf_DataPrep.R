@@ -318,7 +318,7 @@ downscale_lai <- function(dates,
     lai <- terra::rast(lai_match)
 
     # Downscale
-    lai_fine <- microclimdata::lai_fromndvi(rgb, cir, lai, maxlai = max(terra::values(lai)) + 1)
+    lai_fine <- microclimdata::lai_fromndvi(rgb, cir, lai)
 
     out_name <- if (!is.null(study_area)) {
       sprintf("LAI_fromNDVI_%s_%s.tif", study_area, ym)
