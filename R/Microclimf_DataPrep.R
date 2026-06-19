@@ -221,14 +221,15 @@ download_dem <- function(aoi,
 
 #' Downscale MODIS LAI to 30m Resolution Using NDVI
 #'
-#' Iterates over each date provided, loading HLS multispectral imagery and
+#' Iterates over each date provided, loading multispectral imagery and
 #' coarse MODIS LAI, and downscales LAI to 30m resolution using the
 #' lai_fromndvi() function from the microclimdata package.
 #'
 #' @param dates Vector of class Date specifying year-month combinations to process.
 #'   The day component is ignored; only year and month are used.
 #'   E.g. as.Date(c("2020-10-01", "2020-11-01"))
-#' @param hls_dir Directory containing HLS imagery files
+#' @param img_dir Directory containing multispectral imagery files (from
+#'   download_hls() or download_s2())
 #' @param lai_dir Directory containing coarse MODIS LAI files
 #' @param out_dir Directory to save downscaled LAI outputs
 #' @param study_area Optional character string identifying the study area e.g. "GMU1".
@@ -238,7 +239,7 @@ download_dem <- function(aoi,
 #'   year/month combination processed
 #' @export
 downscale_lai <- function(dates,
-                          hls_dir,
+                          img_dir,
                           lai_dir,
                           out_dir,
                           study_area = NULL) {
@@ -251,7 +252,7 @@ downscale_lai <- function(dates,
   dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
 
   # List files in both directories
-  img_files <- list.files(hls_dir, pattern = "\\.tif$", full.names = TRUE)
+  img_files <- list.files(img_dir, pattern = "\\.tif$", full.names = TRUE)
   lai_files <- list.files(lai_dir, pattern = "\\.tif$", full.names = TRUE)
 
   # Optionally filter by study area
@@ -284,13 +285,13 @@ downscale_lai <- function(dates,
 
     # Check files exist
     if (length(img_match) == 0) {
-      stop(sprintf("HLS imagery not found for %s in:\n  %s", ym, hls_dir))
+      stop(sprintf("Imagery not found for %s in:\n  %s", ym, img_dir))
     }
     if (length(lai_match) == 0) {
       stop(sprintf("MODIS LAI not found for %s in:\n  %s", ym, lai_dir))
     }
     if (length(img_match) > 1) {
-      stop(sprintf("Multiple HLS imagery files found for %s in:\n  %s", ym, hls_dir))
+      stop(sprintf("Multiple imagery files found for %s in:\n  %s", ym, img_dir))
     }
     if (length(lai_match) > 1) {
       stop(sprintf("Multiple MODIS LAI files found for %s in:\n  %s", ym, lai_dir))
@@ -658,19 +659,68 @@ download_albedo <- function(aoi,
     cs_keep   <- cs$gte(clear_threshold)$unmask(0)     # CS+ decision, 0 where absent
     spec_keep <- .hls_spectral_keep(img, mp)
     keep <- avail$multiply(cs_keep)$add(avail$Not()$multiply(spec_keep))$gt(0)
+
+    # Snow rescue. Cloud Score+ can score bright fresh / early-season snow as
+    # occluded (verified: a Teton peak pixel at NDSI 0.75, SWIR 0.15 - unmistakable
+    # snow - scored cs_cdf 0.12 and was dropped by the 0.60 gate, leaving a hole that
+    # was then backfilled snowless from other years). Where a pixel is unambiguous
+    # snow (high NDSI, low SWIR, bright green) keep it regardless of the CS+ score.
+    # Cloud is excluded by the low-SWIR gate - cloud is bright in SWIR, snow is dark.
+    # Unlike the spectral snow override this is NOT seasonally gated: Cloud Score+
+    # already removes cloud, so the rescue is safe year-round and recovers snow in
+    # shoulder months that fall outside snow_months.
+    swir1 <- img$select("swir1")
+    ndsi  <- img$normalizedDifference(c("green", "swir1"))
+    snow  <- ndsi$gte(mp$ndsi_thresh)$
+      And(swir1$lt(mp$swir_snow_max))$
+      And(img$select("green")$gt(mp$green_thresh))
+    keep <- keep$Or(snow)
+
     img$select(.hls_out_bands)$toFloat()$updateMask(keep)
   }
 }
 
-# Per-sensor selectors: filter + select/rename to red/green/blue/nir/swir1/cirrus/Fmask.
-.s30_select <- function(ee_aoi, ee_filter, s30_bands, band_rename) {
-  ee$ImageCollection("NASA/HLS/HLSS30/v002")$
-    filter(ee_filter)$filterBounds(ee_aoi)$select(s30_bands, band_rename)
+# MGRS tiles overlapping the AOI, from Sentinel-2 L1C (correct footprints). HLS
+# tiles near the antimeridian carry corrupt globe-wrapping footprints that
+# spuriously match filterBounds(AOI): for a Teton AOI, filterBounds returned 84
+# HLSS30 scenes of which only 3 were the real T12TVP/T12TWP tiles - the other 81 were
+# UTM-zone-01/60 junk (verified: 0 valid pixels over the AOI) that inflated every
+# collection ~28x and dominated export time. A fixed mid-archive year is enough
+# since MGRS tile coverage is a fixed geographic grid.
+.hls_aoi_tiles <- function(ee_aoi) {
+  ee$ImageCollection("COPERNICUS/S2_HARMONIZED")$
+    filterBounds(ee_aoi)$
+    filterDate("2021-01-01", "2021-12-31")$
+    aggregate_array("MGRS_TILE")$
+    distinct()
 }
 
-.l30_select <- function(ee_aoi, ee_filter, l30_bands, band_rename) {
-  ee$ImageCollection("NASA/HLS/HLSL30/v002")$
-    filter(ee_filter)$filterBounds(ee_aoi)$select(l30_bands, band_rename)
+# Filter an HLS collection to the AOI tiles, removing antimeridian-footprint junk.
+# The tile is parsed from system:index ("T{TILE}_{DATETIME}", leading "T" dropped)
+# rather than the MGRS_TILE_ID property because HLSL30 leaves that property null -
+# filtering L30 on it would silently drop every Landsat scene (verified). The
+# system:index prefix is populated for both HLSS30 and HLSL30.
+.hls_filter_tiles <- function(ic, tiles) {
+  ic$
+    map(function(img) {
+      img$set("aoi_tile", ee$String(img$get("system:index"))$slice(1L)$split("_")$get(0))
+    })$
+    filter(ee$Filter$inList("aoi_tile", tiles))
+}
+
+# Per-sensor selectors: filter + select/rename to red/green/blue/nir/swir1/cirrus/Fmask.
+.s30_select <- function(ee_aoi, ee_filter, s30_bands, band_rename, tiles) {
+  .hls_filter_tiles(
+    ee$ImageCollection("NASA/HLS/HLSS30/v002")$filter(ee_filter)$filterBounds(ee_aoi),
+    tiles
+  )$select(s30_bands, band_rename)
+}
+
+.l30_select <- function(ee_aoi, ee_filter, l30_bands, band_rename, tiles) {
+  .hls_filter_tiles(
+    ee$ImageCollection("NASA/HLS/HLSL30/v002")$filter(ee_filter)$filterBounds(ee_aoi),
+    tiles
+  )$select(l30_bands, band_rename)
 }
 
 # S30 with the Cloud Score+ `qa_band` linked by an exact tile+sensing-datetime
@@ -679,10 +729,11 @@ download_albedo <- function(aoi,
 # reconstructing the former from the latter gives an exact 1:1 match (no time
 # tolerance). Unmatched S30 scenes still receive a fully-masked qa_band (verified),
 # which the masker resolves via spectral fallback.
-.s30_link_cs <- function(ee_aoi, ee_filter, s30_bands, band_rename, qa_band) {
-  s30 <- ee$ImageCollection("NASA/HLS/HLSS30/v002")$
-    filter(ee_filter)$filterBounds(ee_aoi)$
-    map(function(img) img$set("match_key", img$get("system:index")))
+.s30_link_cs <- function(ee_aoi, ee_filter, s30_bands, band_rename, qa_band, tiles) {
+  s30 <- .hls_filter_tiles(
+    ee$ImageCollection("NASA/HLS/HLSS30/v002")$filter(ee_filter)$filterBounds(ee_aoi),
+    tiles
+  )$map(function(img) img$set("match_key", img$get("system:index")))
 
   cs <- ee$ImageCollection("GOOGLE/CLOUD_SCORE_PLUS/V1/S2_HARMONIZED")$
     filter(ee_filter)$filterBounds(ee_aoi)$
@@ -701,14 +752,14 @@ download_albedo <- function(aoi,
 # score is absent); otherwise it too uses the spectral masker. Masking is per
 # image, so masking each half then merging equals merging then masking.
 .hls_build_masked <- function(ee_aoi, ee_filter, s30_bands, l30_bands, band_rename,
-                              mp, use_cloud_score, qa_band, clear_threshold) {
-  l30 <- .l30_select(ee_aoi, ee_filter, l30_bands, band_rename)$map(.make_hls_masker(mp))
+                              mp, use_cloud_score, qa_band, clear_threshold, tiles) {
+  l30 <- .l30_select(ee_aoi, ee_filter, l30_bands, band_rename, tiles)$map(.make_hls_masker(mp))
 
   if (isTRUE(use_cloud_score)) {
-    s30 <- .s30_link_cs(ee_aoi, ee_filter, s30_bands, band_rename, qa_band)$
+    s30 <- .s30_link_cs(ee_aoi, ee_filter, s30_bands, band_rename, qa_band, tiles)$
       map(.make_hls_masker_cs(mp, qa_band, clear_threshold))
   } else {
-    s30 <- .s30_select(ee_aoi, ee_filter, s30_bands, band_rename)$map(.make_hls_masker(mp))
+    s30 <- .s30_select(ee_aoi, ee_filter, s30_bands, band_rename, tiles)$map(.make_hls_masker(mp))
   }
 
   s30$merge(l30)
@@ -757,14 +808,14 @@ download_albedo <- function(aoi,
 # imagery exists in that window.
 .hls_fill_near <- function(ee_aoi, target_year, month, near_span,
                            s30_bands, l30_bands, band_rename,
-                           mp, use_cloud_score, qa_band, clear_threshold) {
+                           mp, use_cloud_score, qa_band, clear_threshold, tiles) {
   near_filter <- ee$Filter$And(
     ee$Filter$calendarRange(target_year - near_span, target_year + near_span, "year"),
     ee$Filter$calendarRange(month, month, "month")
   )
   .hls_medoid(
     .hls_build_masked(ee_aoi, near_filter, s30_bands, l30_bands, band_rename,
-                      mp, use_cloud_score, qa_band, clear_threshold),
+                      mp, use_cloud_score, qa_band, clear_threshold, tiles),
     min_obs = 1L
   )
 }
@@ -774,11 +825,11 @@ download_albedo <- function(aoi,
 # the full archive can be thousands of scenes - so the caller only builds it when
 # gaps remain after the near fill. Returns NULL if no imagery exists.
 .hls_fill_clim <- function(ee_aoi, month, s30_bands, l30_bands, band_rename,
-                           mp, use_cloud_score, qa_band, clear_threshold) {
+                           mp, use_cloud_score, qa_band, clear_threshold, tiles) {
   month_filter <- ee$Filter$calendarRange(month, month, "month")
   .hls_medoid(
     .hls_build_masked(ee_aoi, month_filter, s30_bands, l30_bands, band_rename,
-                      mp, use_cloud_score, qa_band, clear_threshold),
+                      mp, use_cloud_score, qa_band, clear_threshold, tiles),
     min_obs = 1L
   )
 }
@@ -1112,6 +1163,26 @@ download_s2 <- function(aoi,
 #' start of 2015-06-27) falls back per-pixel to the spectral mask, so coverage is
 #' never reduced. See \code{\link{download_s2}} for a Sentinel-2-only equivalent.
 #'
+#' \strong{Snow rescue on the Cloud Score+ path.} Cloud Score+ can score bright
+#' fresh or early-season snow as occluded and drop it (verified: a Teton peak at
+#' NDSI 0.75 / SWIR 0.15 scored \code{cs_cdf} 0.12). To prevent this, a pixel that
+#' is unambiguous snow (NDSI \eqn{\ge} \code{ndsi_thresh}, SWIR1 \eqn{<}
+#' \code{swir_snow_max}, green \eqn{>} \code{green_thresh}) is kept regardless of
+#' its Cloud Score+ value. Cloud is excluded by the low-SWIR gate (cloud is bright
+#' in SWIR, snow is dark), and unlike the spectral snow override this rescue is not
+#' seasonally gated - Cloud Score+ already removes cloud, so it is safe year-round
+#' and recovers snow in shoulder months outside \code{snow_months}.
+#'
+#' \strong{Antimeridian tile filter.} HLS tiles near 180 deg longitude carry
+#' corrupt globe-wrapping footprints that spuriously match \code{filterBounds(aoi)}
+#' (for a Teton AOI, 81 of 84 HLSS30 scenes were UTM-zone-01/60 junk with zero
+#' pixels over the AOI). Each HLS collection is therefore additionally filtered to
+#' the MGRS tiles that actually overlap the AOI - derived from Sentinel-2 L1C, whose
+#' footprints are correct - which removes the junk and greatly speeds up exports.
+#' The tile is parsed from each scene's \code{system:index} (\code{"T\{TILE\}_..."})
+#' rather than the \code{MGRS_TILE_ID} property, because HLSL30 leaves that property
+#' null and a property filter would silently drop every Landsat scene.
+#'
 #' \strong{Seasonal snow handling.} Snow and cloud cannot be separated
 #' spectrally: any bright surface (snow or cloud) shows low SWIR and an elevated
 #' cirrus band, so an identical signature means cloud in summer but snow in
@@ -1158,13 +1229,16 @@ download_s2 <- function(aoi,
 #'   backfilled from other years. Tune to the study area's elevation and climate.
 #'   Default is c(11, 12, 1, 2, 3, 4)
 #' @param ndsi_thresh Minimum NDSI = (green - SWIR1)/(green + SWIR1) for the snow
-#'   override. Pixels above this (and meeting the SWIR and green gates) are
-#'   treated as snow and protected from all cloud rules. Only used in
-#'   \code{snow_months}. Default is 0.4
+#'   override. Pixels above this (and meeting the SWIR and green gates) are treated
+#'   as snow. Governs both the seasonal spectral override (only in
+#'   \code{snow_months}) and the year-round Cloud Score+ snow rescue. Default is 0.4
 #' @param green_thresh Minimum green reflectance for the snow override. Prevents
 #'   dark surfaces from being mistaken for snow. Default is 0.3
 #' @param swir_snow_max Maximum SWIR1 reflectance for the snow override. Snow
-#'   absorbs SWIR (low values); cloud reflects it. Default is 0.12
+#'   absorbs SWIR (low values); cloud reflects it. Also the SWIR ceiling for the
+#'   Cloud Score+ snow rescue. Raised from 0.12 to capture early-season / slightly
+#'   aged mountain snow (SWIR up to ~0.17) while staying well below cloud SWIR
+#'   (~0.3+). Default is 0.18
 #' @param swir_cloud_thresh SWIR1 reflectance above which a bright-in-visible
 #'   pixel is treated as cloud. Default is 0.2
 #' @param vis_thresh Green reflectance above which a pixel is "bright in the
@@ -1205,7 +1279,7 @@ download_hls <- function(aoi,
                         snow_months = c(11, 12, 1, 2, 3, 4),
                         ndsi_thresh = 0.4,
                         green_thresh = 0.3,
-                        swir_snow_max = 0.12,
+                        swir_snow_max = 0.18,
                         swir_cloud_thresh = 0.2,
                         vis_thresh = 0.25,
                         cirrus_thresh = 0.01,
@@ -1226,6 +1300,10 @@ download_hls <- function(aoi,
 
   ee_aoi <- aoi$geometry
   crs    <- aoi$crs
+
+  # MGRS tiles overlapping the AOI, computed once. Used to strip antimeridian-
+  # footprint junk from every HLS collection (see .hls_aoi_tiles / .hls_filter_tiles).
+  tiles <- .hls_aoi_tiles(ee_aoi)
 
   # HLS band mappings (S30=Sentinel-2, L30=Landsat 8/9). swir1 and cirrus are
   # used only for masking and dropped before export.
@@ -1253,12 +1331,13 @@ download_hls <- function(aoi,
     y  <- years[i]
     mo <- months[i]
 
-    # Snow protection (keep snow, allow some residual cloud) only in snow-season
-    # months; snow-free months mask cloud aggressively and backfill from other
-    # years. Snow and cloud share a spectral signature, so the split is seasonal.
-    # With use_cloud_score the S30 half instead relies on Cloud Score+ (which
-    # separates snow from cloud); this snow toggle then governs only the L30 half
-    # and any S30 pixels that fall back to the spectral mask.
+    # Seasonal spectral snow protection (keep snow, allow some residual cloud) only
+    # in snow-season months; snow-free months mask cloud aggressively and backfill
+    # from other years. Snow and cloud share a spectral signature, so this seasonal
+    # split governs the L30 half and any S30 pixels that fall back to the spectral
+    # mask. The Cloud Score+ S30 path has its OWN snow rescue (in .make_hls_masker_cs)
+    # that runs year-round - it can afford to, since Cloud Score+ has already removed
+    # cloud - so it does not depend on this toggle.
     mp$protect_snow <- mo %in% snow_months
 
     month_filter <- ee$Filter$calendarRange(mo, mo, "month")
@@ -1267,7 +1346,7 @@ download_hls <- function(aoi,
     target_masked <- .hls_build_masked(
       ee_aoi, ee$Filter$And(year_filter, month_filter),
       s30_bands, l30_bands, band_rename,
-      mp, use_cloud_score, qa_band, clear_threshold
+      mp, use_cloud_score, qa_band, clear_threshold, tiles
     )
     n <- target_masked$size()$getInfo()
     mode_lbl <- if (use_cloud_score) {
@@ -1289,7 +1368,7 @@ download_hls <- function(aoi,
       near <- .hls_fill_near(
         ee_aoi, y, mo, near_span,
         s30_bands, l30_bands, band_rename,
-        mp, use_cloud_score, qa_band, clear_threshold
+        mp, use_cloud_score, qa_band, clear_threshold, tiles
       )
       if (!is.null(near)) {
         combined <- if (is.null(combined)) near else combined$unmask(near)
@@ -1324,7 +1403,7 @@ download_hls <- function(aoi,
         clim <- .hls_fill_clim(
           ee_aoi, mo,
           s30_bands, l30_bands, band_rename,
-          mp, use_cloud_score, qa_band, clear_threshold
+          mp, use_cloud_score, qa_band, clear_threshold, tiles
         )
         if (!is.null(clim)) {
           combined <- if (is.null(combined)) clim else combined$unmask(clim)
@@ -1594,32 +1673,33 @@ download_modis_lai <- function(aoi,
   )))
 }
 
-#' Compute and Adjust Albedo from HLS Sentinel-2 Imagery
+#' Compute and Adjust Albedo from Sentinel-2 Imagery
 #'
-#' Iterates over each date provided, computing photographic albedo from HLS
+#' Iterates over each date provided, computing photographic albedo from
 #' Sentinel-2 imagery using \code{microclimdata::albedo_fromaerial()} and
 #' adjusting it to MODIS broadband albedo using \code{microclimdata::albedo_adjust()}.
-#' Default band wavelength parameters are specific to the HLS Sentinel-2 (HLSS30)
-#' product. If using a different sensor, adjust the band wavelength arguments
-#' accordingly. For HLS band specifications see:
+#' Default band wavelength parameters are specific to the Sentinel-2 (HLSS30 /
+#' download_s2()) product. If using a different sensor, adjust the band wavelength
+#' arguments accordingly. For HLS band specifications see:
 #' \url{https://lpdaac.usgs.gov/documents/1698/HLS_User_Guide_V2.pdf}
 #'
 #' @param dates Vector of class Date specifying year-month combinations to process.
 #'   The day component is ignored; only year and month are used.
 #'   E.g. as.Date(c("2020-10-01", "2020-11-01"))
 #' @param modis_dir Directory containing MODIS albedo files
-#' @param hls_dir Directory containing HLS Sentinel-2 imagery files
+#' @param img_dir Directory containing multispectral imagery files (from
+#'   download_hls() or download_s2())
 #' @param out_dir Directory to save output albedo files
 #' @param study_area Optional character string identifying the study area e.g. "GMU1".
 #'   If provided, used to filter input files and as a prefix in output file names
 #' @param rgb_band_mins Numeric vector of RGB band minimum wavelengths in nm.
-#'   Default is c(640, 530, 450) for HLS Sentinel-2
+#'   Default is c(640, 530, 450) for Sentinel-2
 #' @param rgb_band_maxs Numeric vector of RGB band maximum wavelengths in nm.
-#'   Default is c(670, 590, 510) for HLS Sentinel-2
+#'   Default is c(670, 590, 510) for Sentinel-2
 #' @param cir_band_mins Numeric vector of CIR band minimum wavelengths in nm.
-#'   Default is c(780, 640, 530) for HLS Sentinel-2
+#'   Default is c(780, 640, 530) for Sentinel-2
 #' @param cir_band_maxs Numeric vector of CIR band maximum wavelengths in nm.
-#'   Default is c(880, 670, 590) for HLS Sentinel-2
+#'   Default is c(880, 670, 590) for Sentinel-2
 #' @param max_albedo Hard ceiling for albedo values before MODIS adjustment.
 #'   Pixels above this value are clamped down to it. Default is 0.6, common for fresh snow
 #'
@@ -1628,7 +1708,7 @@ download_modis_lai <- function(aoi,
 #' @export
 compute_albedo <- function(dates,
                           modis_dir,
-                          hls_dir,
+                          img_dir,
                           out_dir,
                           study_area = NULL,
                           rgb_band_mins = c(640, 530, 450),
@@ -1646,16 +1726,16 @@ compute_albedo <- function(dates,
 
   # List files in both directories
   modis_files <- list.files(modis_dir, pattern = "\\.tif$", full.names = TRUE)
-  hls_files   <- list.files(hls_dir,   pattern = "\\.tif$", full.names = TRUE)
+  img_files   <- list.files(img_dir,   pattern = "\\.tif$", full.names = TRUE)
 
   # Optionally filter by study area
   if (!is.null(study_area)) {
     modis_files <- modis_files[grepl(study_area, modis_files)]
-    hls_files   <- hls_files[grepl(study_area, hls_files)]
+    img_files   <- img_files[grepl(study_area, img_files)]
   }
 
   modis_df <- .extract_ym(modis_files)
-  hls_df   <- .extract_ym(hls_files)
+  img_df   <- .extract_ym(img_files)
 
   # Build log from requested year/month combos
   log <- data.frame(year = years, month = months, stringsAsFactors = FALSE)
@@ -1674,24 +1754,24 @@ compute_albedo <- function(dates,
 
     # Match files by YYYY_MM
     modis_match <- modis_df$file[modis_df$ym == ym]
-    hls_match   <- hls_df$file[hls_df$ym == ym]
+    img_match   <- img_df$file[img_df$ym == ym]
 
     # Check files exist and are unambiguous
     if (length(modis_match) == 0) {
       stop(sprintf("MODIS albedo file not found for %s in:\n  %s", ym, modis_dir))
     }
-    if (length(hls_match) == 0) {
-      stop(sprintf("HLS imagery file not found for %s in:\n  %s", ym, hls_dir))
+    if (length(img_match) == 0) {
+      stop(sprintf("Imagery file not found for %s in:\n  %s", ym, img_dir))
     }
     if (length(modis_match) > 1) {
       stop(sprintf("Multiple MODIS albedo files found for %s in:\n  %s", ym, modis_dir))
     }
-    if (length(hls_match) > 1) {
-      stop(sprintf("Multiple HLS imagery files found for %s in:\n  %s", ym, hls_dir))
+    if (length(img_match) > 1) {
+      stop(sprintf("Multiple imagery files found for %s in:\n  %s", ym, img_dir))
     }
 
     # Load imagery
-    s_rast <- terra::rast(hls_match)
+    s_rast <- terra::rast(img_match)
     m_rast <- terra::rast(modis_match)
 
     # Rescale each band to 0-1
@@ -1733,11 +1813,16 @@ compute_albedo <- function(dates,
     # Adjust to MODIS broadband albedo
     albadjusted <- microclimdata::albedo_adjust(albphoto, m_rast)
 
-    # Build output file name
+    # Build output file name, carrying the imagery source prefix (the token
+    # before "_RGBNIR", e.g. "HLS" or "S2"). Falls back to "Img" if the input
+    # filename does not follow the *_RGBNIR_* convention.
+    src <- sub("_RGBNIR.*", "", basename(img_match))
+    if (identical(src, basename(img_match))) src <- "Img"
+
     out_name <- if (!is.null(study_area)) {
-      sprintf("HLS_Albedo_%s_%s.tif", study_area, ym)
+      sprintf("%s_Albedo_%s_%s.tif", src, study_area, ym)
     } else {
-      sprintf("HLS_Albedo_%s.tif", ym)
+      sprintf("%s_Albedo_%s.tif", src, ym)
     }
 
     terra::writeRaster(

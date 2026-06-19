@@ -2,12 +2,12 @@
 % Please edit documentation in R/Microclimf_DataPrep.R
 \name{compute_albedo}
 \alias{compute_albedo}
-\title{Compute and Adjust Albedo from HLS Sentinel-2 Imagery}
+\title{Compute and Adjust Albedo from Sentinel-2 Imagery}
 \usage{
 compute_albedo(
   dates,
   modis_dir,
-  hls_dir,
+  img_dir,
   out_dir,
   study_area = NULL,
   rgb_band_mins = c(640, 530, 450),
@@ -24,7 +24,8 @@ E.g. as.Date(c("2020-10-01", "2020-11-01"))}
 
 \item{modis_dir}{Directory containing MODIS albedo files}
 
-\item{hls_dir}{Directory containing HLS Sentinel-2 imagery files}
+\item{img_dir}{Directory containing multispectral imagery files (from
+download_hls() or download_s2())}
 
 \item{out_dir}{Directory to save output albedo files}
 
@@ -32,16 +33,16 @@ E.g. as.Date(c("2020-10-01", "2020-11-01"))}
 If provided, used to filter input files and as a prefix in output file names}
 
 \item{rgb_band_mins}{Numeric vector of RGB band minimum wavelengths in nm.
-Default is c(640, 530, 450) for HLS Sentinel-2}
+Default is c(640, 530, 450) for Sentinel-2}
 
 \item{rgb_band_maxs}{Numeric vector of RGB band maximum wavelengths in nm.
-Default is c(670, 590, 510) for HLS Sentinel-2}
+Default is c(670, 590, 510) for Sentinel-2}
 
 \item{cir_band_mins}{Numeric vector of CIR band minimum wavelengths in nm.
-Default is c(780, 640, 530) for HLS Sentinel-2}
+Default is c(780, 640, 530) for Sentinel-2}
 
 \item{cir_band_maxs}{Numeric vector of CIR band maximum wavelengths in nm.
-Default is c(880, 670, 590) for HLS Sentinel-2}
+Default is c(880, 670, 590) for Sentinel-2}
 
 \item{max_albedo}{Hard ceiling for albedo values before MODIS adjustment.
 Pixels above this value are clamped down to it. Default is 0.6, common for fresh snow}
@@ -51,11 +52,11 @@ Invisibly returns a data frame logging the status of each
 year/month combination processed
 }
 \description{
-Iterates over each date provided, computing photographic albedo from HLS
+Iterates over each date provided, computing photographic albedo from
 Sentinel-2 imagery using \code{microclimdata::albedo_fromaerial()} and
 adjusting it to MODIS broadband albedo using \code{microclimdata::albedo_adjust()}.
-Default band wavelength parameters are specific to the HLS Sentinel-2 (HLSS30)
-product. If using a different sensor, adjust the band wavelength arguments
-accordingly. For HLS band specifications see:
+Default band wavelength parameters are specific to the Sentinel-2 (HLSS30 /
+download_s2()) product. If using a different sensor, adjust the band wavelength
+arguments accordingly. For HLS band specifications see:
 \url{https://lpdaac.usgs.gov/documents/1698/HLS_User_Guide_V2.pdf}
 }

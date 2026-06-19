@@ -18,7 +18,7 @@ download_hls(
   snow_months = c(11, 12, 1, 2, 3, 4),
   ndsi_thresh = 0.4,
   green_thresh = 0.3,
-  swir_snow_max = 0.12,
+  swir_snow_max = 0.18,
   swir_cloud_thresh = 0.2,
   vis_thresh = 0.25,
   cirrus_thresh = 0.01,
@@ -74,15 +74,18 @@ backfilled from other years. Tune to the study area's elevation and climate.
 Default is c(11, 12, 1, 2, 3, 4)}
 
 \item{ndsi_thresh}{Minimum NDSI = (green - SWIR1)/(green + SWIR1) for the snow
-override. Pixels above this (and meeting the SWIR and green gates) are
-treated as snow and protected from all cloud rules. Only used in
-\code{snow_months}. Default is 0.4}
+override. Pixels above this (and meeting the SWIR and green gates) are treated
+as snow. Governs both the seasonal spectral override (only in
+\code{snow_months}) and the year-round Cloud Score+ snow rescue. Default is 0.4}
 
 \item{green_thresh}{Minimum green reflectance for the snow override. Prevents
 dark surfaces from being mistaken for snow. Default is 0.3}
 
 \item{swir_snow_max}{Maximum SWIR1 reflectance for the snow override. Snow
-absorbs SWIR (low values); cloud reflects it. Default is 0.12}
+absorbs SWIR (low values); cloud reflects it. Also the SWIR ceiling for the
+Cloud Score+ snow rescue. Raised from 0.12 to capture early-season / slightly
+aged mountain snow (SWIR up to ~0.17) while staying well below cloud SWIR
+(~0.3+). Default is 0.18}
 
 \item{swir_cloud_thresh}{SWIR1 reflectance above which a bright-in-visible
 pixel is treated as cloud. Default is 0.2}
@@ -157,6 +160,26 @@ Score+ is Sentinel-2-only, so the L30 (Landsat) half keeps the spectral mask.
 Any S30 scene with no Cloud Score+ partner (e.g. before the Cloud Score+ archive
 start of 2015-06-27) falls back per-pixel to the spectral mask, so coverage is
 never reduced. See \code{\link{download_s2}} for a Sentinel-2-only equivalent.
+
+\strong{Snow rescue on the Cloud Score+ path.} Cloud Score+ can score bright
+fresh or early-season snow as occluded and drop it (verified: a Teton peak at
+NDSI 0.75 / SWIR 0.15 scored \code{cs_cdf} 0.12). To prevent this, a pixel that
+is unambiguous snow (NDSI \eqn{\ge} \code{ndsi_thresh}, SWIR1 \eqn{<}
+\code{swir_snow_max}, green \eqn{>} \code{green_thresh}) is kept regardless of
+its Cloud Score+ value. Cloud is excluded by the low-SWIR gate (cloud is bright
+in SWIR, snow is dark), and unlike the spectral snow override this rescue is not
+seasonally gated - Cloud Score+ already removes cloud, so it is safe year-round
+and recovers snow in shoulder months outside \code{snow_months}.
+
+\strong{Antimeridian tile filter.} HLS tiles near 180 deg longitude carry
+corrupt globe-wrapping footprints that spuriously match \code{filterBounds(aoi)}
+(for a Teton AOI, 81 of 84 HLSS30 scenes were UTM-zone-01/60 junk with zero
+pixels over the AOI). Each HLS collection is therefore additionally filtered to
+the MGRS tiles that actually overlap the AOI - derived from Sentinel-2 L1C, whose
+footprints are correct - which removes the junk and greatly speeds up exports.
+The tile is parsed from each scene's \code{system:index} (\code{"T\{TILE\}_..."})
+rather than the \code{MGRS_TILE_ID} property, because HLSL30 leaves that property
+null and a property filter would silently drop every Landsat scene.
 
 \strong{Seasonal snow handling.} Snow and cloud cannot be separated
 spectrally: any bright surface (snow or cloud) shows low SWIR and an elevated
