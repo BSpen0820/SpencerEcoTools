@@ -80,7 +80,9 @@ Invisibly returns a named list with elements:
 }
 \description{
 Iterates over each date provided, applying a two-level cloud/shadow masking
-strategy to HLS S30 Sentinel-2 imagery. Cloud masking combines Fmask QA bits
+strategy to merged HLS S30 (Sentinel-2) and L30 (Landsat 8/9) imagery.
+Merging both collections nearly doubles observation frequency (~2-3 day
+revisit vs ~5 day Sentinel-only). Cloud masking combines Fmask QA bits
 with spectral cloud detection (NDSI + blue brightness) and NDSI-based snow
 rescue to handle both cloud omission and snow/cloud confusion. If gaps remain
 after masking, temporally adjacent images (up to \code{max_months} months
