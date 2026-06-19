@@ -590,39 +590,82 @@ download_albedo <- function(aoi,
 
 # Internal helpers --------------------------------------------------------
 
-.make_quality_scored <- function(ndsi_thresh, green_thresh,
-                                cloud_ndsi_thresh, blue_thresh,
-                                swir_max_thresh, cloud_buffer) {
+# Output bands carried through compositing and export
+.hls_out_bands <- c("red", "green", "blue", "nir")
+
+# Per-scene cloud/shadow mask with snow protection. Returns a closure (over the
+# threshold list `mp`) that masks one HLS image, keeping only red/green/blue/nir.
+# Cloud detection combines Fmask QA bits with a cirrus-band test (snow-safe: the
+# surface is dark at 1.38 um while high/thin cloud is bright), a visible+SWIR
+# brightness gate (snow is dark in SWIR, cloud is bright), and a physical
+# reflectance ceiling. A snow override (high NDSI, low SWIR, bright green)
+# rescues genuine snow from every cloud rule so snowy scenes are never removed.
+.make_hls_masker <- function(mp) {
   function(img) {
     fmask       <- img$select("Fmask")
-    fmask_cloud <- fmask$bitwiseAnd(2^1)$neq(0)
-    adjacent    <- fmask$bitwiseAnd(2^2)$neq(0)
-    shadow      <- fmask$bitwiseAnd(2^3)$neq(0)
-    high_aot    <- fmask$rightShift(6)$bitwiseAnd(3)$eq(3)
+    fmask_cloud <- fmask$bitwiseAnd(2L)$neq(0)   # bit 1: cloud
+    adjacent    <- fmask$bitwiseAnd(4L)$neq(0)   # bit 2: adjacent to cloud/shadow
+    shadow      <- fmask$bitwiseAnd(8L)$neq(0)   # bit 3: cloud shadow
 
-    ndsi <- img$normalizedDifference(c("green", "swir"))
+    swir1  <- img$select("swir1")
+    green  <- img$select("green")
+    cirrus <- img$select("cirrus")
 
-    spectral_cloud <- ndsi$lt(cloud_ndsi_thresh)$
-      And(img$select("blue")$gt(blue_thresh))
+    # Thin-cloud cirrus test (Fmask bit 0 is reserved/unused in HLS v2.0).
+    cirrus_cloud <- cirrus$gt(mp$cirrus_thresh)
 
-    cloud <- fmask_cloud$Or(spectral_cloud)
+    # Bright in the visible AND bright in SWIR = cloud (snow stays dark in SWIR).
+    swir_cloud <- green$gt(mp$vis_thresh)$And(swir1$gt(mp$swir_cloud_thresh))
 
-    is_snow <- ndsi$gte(ndsi_thresh)$
-      And(img$select("green")$gt(green_thresh))$
-      And(img$select("swir")$lt(swir_max_thresh))
-    cloud <- cloud$And(is_snow$Not())
+    # Physically impossible reflectance (> ~1) is residual cloud.
+    over_bright <- img$select(.hls_out_bands)$reduce(ee$Reducer$max())$gt(mp$refl_max)
 
-    bad <- cloud$Or(adjacent)$Or(shadow)$Or(high_aot)
+    # Snow signature: high NDSI, low SWIR, bright green.
+    ndsi <- img$normalizedDifference(c("green", "swir1"))
+    snow <- ndsi$gte(mp$ndsi_thresh)$
+      And(swir1$lt(mp$swir_snow_max))$
+      And(green$gt(mp$green_thresh))
 
-    dist <- bad$fastDistanceTransform(as.integer(cloud_buffer * 2L + 1L))$sqrt()
-    quality <- dist$min(cloud_buffer)$divide(cloud_buffer)$
-      toFloat()$rename("quality")
+    bad <- fmask_cloud$Or(adjacent)$Or(shadow)$
+      Or(cirrus_cloud)$Or(swir_cloud)$Or(over_bright)$
+      And(snow$Not())
 
-    img$select("red", "green", "blue", "nir")$
-      toFloat()$
-      addBands(quality)$
-      updateMask(bad$Not())
+    img$select(.hls_out_bands)$toFloat()$updateMask(bad$Not())
   }
+}
+
+# Filter, select+rename, and merge the HLS S30 (Sentinel-2) and L30 (Landsat)
+# collections for a given EE filter. Returns a single merged ImageCollection
+# carrying red/green/blue/nir/swir1/cirrus/Fmask.
+.hls_select_merge <- function(ee_aoi, ee_filter, s30_bands, l30_bands, band_rename) {
+  s30 <- ee$ImageCollection("NASA/HLS/HLSS30/v002")$
+    filter(ee_filter)$filterBounds(ee_aoi)$select(s30_bands, band_rename)
+  l30 <- ee$ImageCollection("NASA/HLS/HLSL30/v002")$
+    filter(ee_filter)$filterBounds(ee_aoi)$select(l30_bands, band_rename)
+  s30$merge(l30)
+}
+
+# Medoid composite: for each pixel select the actual observation whose spectrum
+# is closest (least squared distance) to the per-pixel median. Preserves real
+# spectra (no band-mixing, no cloud-edge bright pixels). `ic` must already be
+# masked. Pixels with fewer than `min_obs` clear observations are left masked
+# (treated as gaps for downstream filling). Returns NULL for an empty collection.
+.hls_medoid <- function(ic, min_obs = 1L) {
+  if (ic$size()$getInfo() == 0) return(NULL)
+
+  med <- ic$select(.hls_out_bands)$median()
+  scored <- ic$map(function(img) {
+    dist <- img$select(.hls_out_bands)$subtract(med)$pow(2)$
+      reduce(ee$Reducer$sum())$multiply(-1)$rename("medoid_score")
+    img$addBands(dist)
+  })
+  mosaic <- scored$qualityMosaic("medoid_score")$select(.hls_out_bands)
+
+  if (min_obs > 1L) {
+    cnt <- ic$select("red")$count()
+    mosaic <- mosaic$updateMask(cnt$gte(min_obs))
+  }
+  mosaic
 }
 
 .focalFillMasked <- function(img, radius = 10) {
@@ -640,73 +683,73 @@ download_albedo <- function(aoi,
   )))
 }
 
-.temporal_quality_fill <- function(ee_aoi, target_date,
-                                    s30_bands, l30_bands, band_rename,
-                                    max_months = 3,
-                                    ndsi_thresh = 0.4, green_thresh = 0.3,
-                                    cloud_ndsi_thresh = 0.2, blue_thresh = 0.25,
-                                    swir_max_thresh = 0.15, cloud_buffer = 150) {
+# Multi-year, same-calendar-month gap fill. Returns a medoid composite of every
+# clear observation in the same month across the `near` year window (target year
+# +/- near_span) and, separately, across all available years (climatology).
+# Filling target-month gaps with these in order (near first) preserves the snow
+# season while guaranteeing completeness. Returns a list(near, clim); either may
+# be NULL if no imagery exists for that window.
+.hls_multiyear_fill <- function(ee_aoi, target_year, month, near_span,
+                                 s30_bands, l30_bands, band_rename, masker) {
 
-  target_center <- ee$Date(target_date)
-  filled        <- NULL
+  month_filter <- ee$Filter$calendarRange(month, month, "month")
 
-  for (offset in 1:max_months) {
-    for (direction in c(-1, 1)) {
+  near_filter <- ee$Filter$And(
+    ee$Filter$calendarRange(target_year - near_span, target_year + near_span, "year"),
+    month_filter
+  )
+  near_ic <- .hls_select_merge(ee_aoi, near_filter, s30_bands, l30_bands, band_rename)
+  clim_ic <- .hls_select_merge(ee_aoi, month_filter, s30_bands, l30_bands, band_rename)
 
-      neighbor_start <- target_center$advance(direction * offset, "month")
-      neighbor_end   <- neighbor_start$advance(1, "month")
+  list(
+    near = .hls_medoid(near_ic$map(masker), min_obs = 1L),
+    clim = .hls_medoid(clim_ic$map(masker), min_obs = 1L)
+  )
+}
 
-      s30_nb <- ee$ImageCollection("NASA/HLS/HLSS30/v002")$
-        filterDate(neighbor_start, neighbor_end)$
-        filterBounds(ee_aoi)$
-        select(s30_bands, band_rename)
-
-      l30_nb <- ee$ImageCollection("NASA/HLS/HLSL30/v002")$
-        filterDate(neighbor_start, neighbor_end)$
-        filterBounds(ee_aoi)$
-        select(l30_bands, band_rename)
-
-      neighbor_ic <- s30_nb$merge(l30_nb)
-
-      n <- neighbor_ic$size()$getInfo()
-      if (n == 0) next
-
-      neighbor_best <- neighbor_ic$
-        map(.make_quality_scored(ndsi_thresh, green_thresh,
-                                 cloud_ndsi_thresh, blue_thresh,
-                                 swir_max_thresh, cloud_buffer))$
-        qualityMosaic("quality")$
-        select("red", "green", "blue", "nir")
-
-      filled <- if (is.null(filled)) neighbor_best else filled$unmask(neighbor_best)
-    }
-  }
-
-  return(filled)
+# TRUE if `img` has any masked pixel inside `ee_aoi` (i.e. unfilled gaps remain).
+.hls_has_gaps <- function(img, ee_aoi, scale) {
+  res <- img$select("red")$mask()$Not()$reduceRegion(
+    reducer   = ee$Reducer$anyNonZero(),
+    geometry  = ee_aoi,
+    scale     = scale,
+    maxPixels = 1e13
+  )$getInfo()
+  isTRUE(as.logical(unlist(res)[1]))
 }
 
 # Main function -----------------------------------------------------------
 
-#' Download HLS Sentinel-2 Imagery from Google Earth Engine
+#' Download Cloud-Free HLS Imagery from Google Earth Engine
 #'
-#' Iterates over each date provided, using a best-available-pixel strategy
-#' on merged HLS S30 (Sentinel-2) and L30 (Landsat 8/9) imagery. Merging both
-#' collections nearly doubles observation frequency (~2-3 day revisit). Each
-#' pixel is scored by its distance to the nearest cloud/shadow, and
-#' \code{qualityMosaic} selects the best observation per pixel location. Cloud
-#' masking combines Fmask QA bits with spectral cloud detection and NDSI-based
-#' snow rescue with a SWIR gate.
+#' Iterates over each year-month provided, building a cloud-free, snow-preserving
+#' surface-reflectance composite from merged HLS S30 (Sentinel-2) and L30
+#' (Landsat 8/9) imagery. Merging both collections nearly doubles observation
+#' frequency (~2-3 day revisit). Each composite is a per-pixel \emph{medoid} -
+#' the real observation whose spectrum is closest to the per-pixel median -
+#' which preserves physically valid spectra and avoids the band-mixing and
+#' cloud-edge artefacts of distance-weighted mosaics.
 #'
 #' The compositing strategy is:
 #' \enumerate{
-#'   \item Per-pixel quality scoring: distance to nearest cloud/shadow/bad pixel,
-#'         normalized to 0-1 over \code{cloud_buffer} pixels
-#'   \item Best-pixel selection via \code{qualityMosaic} — selects the observation
-#'         with the highest quality score at each pixel location
-#'   \item Gap filling from neighboring months (up to \code{max_months}) using
-#'         the same best-pixel approach, closest months first
-#'   \item Focal median fills any final remaining gaps
+#'   \item Per-scene masking (\code{.make_hls_masker}): Fmask QA bits
+#'         (cloud / adjacent / shadow), a 1.38 um cirrus-band test for thin
+#'         cloud, a visible + SWIR brightness gate, and a physical reflectance
+#'         ceiling, with a snow override (high NDSI, low SWIR, bright green) so
+#'         genuine snow is never removed.
+#'   \item Per-pixel medoid composite of the target month's clear observations.
+#'   \item Gap filling from the \strong{same calendar month in other years}
+#'         (\code{.hls_multiyear_fill}) - nearest years first
+#'         (\code{near_span}), then all available years - so completeness is
+#'         guaranteed without blending across seasons.
+#'   \item Focal median as an absolute last resort for any pixel never clear in
+#'         any year.
 #' }
+#'
+#' Cloud detection deliberately errs aggressive: residual cloud is converted to
+#' gaps and filled from clear same-month observations in other years, rather than
+#' selecting a "least-bad but still cloudy" pixel. Output reflectance is scaled
+#' 0-1 (already provided that way by GEE for HLS v2.0).
 #'
 #' @param aoi A named list returned by define_aoi() containing elements
 #'   \code{geometry} (ee$Geometry) and \code{crs} (CRS string)
@@ -717,29 +760,30 @@ download_albedo <- function(aoi,
 #' @param study_area Optional character string identifying the study area e.g. "GMU1".
 #'   If provided, used as a prefix in output file names
 #' @param scale Spatial resolution in meters. Default is 30
-#' @param focal_radius Kernel radius in pixels for focal median gap filling.
-#'   Default is 10 (21x21 pixel window)
-#' @param max_months Maximum number of months to search either side of target
-#'   month for temporal interpolation. Default is 3
-#' @param ndsi_thresh NDSI threshold for snow rescue. Pixels with
-#'   NDSI >= this value AND green reflectance > \code{green_thresh} are
-#'   treated as snow and excluded from cloud masking. Default is 0.4
-#' @param green_thresh Green band reflectance threshold for snow rescue.
-#'   Prevents dark surfaces like water from being misidentified as snow.
-#'   Default is 0.3
-#' @param cloud_ndsi_thresh NDSI threshold for spectral cloud detection. Pixels
-#'   with NDSI below this AND blue reflectance > \code{blue_thresh} are masked
-#'   as cloud (supplements Fmask). Default is 0.2
-#' @param blue_thresh Blue band reflectance threshold for spectral cloud
-#'   detection. Prevents dark surfaces from being misidentified as cloud.
-#'   Default is 0.25
-#' @param swir_max_thresh Maximum SWIR reflectance for snow rescue. Pure snow
-#'   absorbs SWIR (< 0.1); thin cloud over snow reflects SWIR (> 0.15).
-#'   Pixels with SWIR above this are not rescued even if NDSI indicates snow.
-#'   Default is 0.15
-#' @param cloud_buffer Distance in pixels over which the quality score
-#'   transitions from 0 (at cloud edge) to 1 (far from cloud). Controls how
-#'   aggressively near-cloud pixels are deprioritized. Default is 150
+#' @param near_span Number of years either side of the target year searched first
+#'   (same calendar month) when filling gaps, before falling back to the full
+#'   archive. Default is 2
+#' @param focal_radius Kernel radius in pixels for the last-resort focal median
+#'   that fills any pixel left masked after multi-year filling. Default is 10
+#' @param ndsi_thresh Minimum NDSI = (green - SWIR1)/(green + SWIR1) for the snow
+#'   override. Pixels above this (and meeting the SWIR and green gates) are
+#'   treated as snow and protected from all cloud rules. Default is 0.4
+#' @param green_thresh Minimum green reflectance for the snow override. Prevents
+#'   dark surfaces from being mistaken for snow. Default is 0.3
+#' @param swir_snow_max Maximum SWIR1 reflectance for the snow override. Snow
+#'   absorbs SWIR (low values); cloud reflects it. Default is 0.12
+#' @param swir_cloud_thresh SWIR1 reflectance above which a bright-in-visible
+#'   pixel is treated as cloud. Default is 0.2
+#' @param vis_thresh Green reflectance above which a pixel is "bright in the
+#'   visible" for the SWIR cloud gate. Default is 0.25
+#' @param cirrus_thresh Cirrus-band (1.38 um) reflectance above which a pixel is
+#'   treated as thin cloud. Snow-safe because the surface is dark at 1.38 um.
+#'   Default is 0.01
+#' @param refl_max Maximum physically plausible reflectance; pixels with any band
+#'   above this are masked as residual cloud. Default is 1.05
+#' @param min_obs Minimum number of clear observations required for a target-month
+#'   pixel to be kept; pixels with fewer are treated as gaps and filled from other
+#'   years. Default is 1
 #' @param poll Logical. Whether to poll Google Drive and download files after
 #'   all tasks are submitted. Default is TRUE
 #' @param poll_interval Polling interval in seconds. Default is 30
@@ -747,30 +791,34 @@ download_albedo <- function(aoi,
 #'
 #' @return Invisibly returns a named list with elements:
 #'   \item{submitted}{Number of GEE tasks successfully submitted}
-#'   \item{skipped}{A data frame of skipped year/month combos}
-#'   \item{interpolated}{A data frame of year/month combos where temporal interpolation was applied}
+#'   \item{skipped}{A data frame of year/month combos with no imagery in any year}
+#'   \item{filled}{A data frame of year/month combos that required multi-year gap filling}
 #'   \item{poll_result}{Result of poll_drive() if poll = TRUE, otherwise NULL}
+#' @seealso \code{\link{define_aoi}}, \code{\link{poll_drive}},
+#'   \code{\link{compute_albedo}}, \code{\link{compute_reflectance}}
 #' @export
 download_hls <- function(aoi,
                         dates,
                         out_dir,
                         study_area = NULL,
                         scale = 30,
+                        near_span = 2,
                         focal_radius = 10,
-                        max_months = 3,
                         ndsi_thresh = 0.4,
                         green_thresh = 0.3,
-                        cloud_ndsi_thresh = 0.2,
-                        blue_thresh = 0.25,
-                        swir_max_thresh = 0.15,
-                        cloud_buffer = 150,
+                        swir_snow_max = 0.12,
+                        swir_cloud_thresh = 0.2,
+                        vis_thresh = 0.25,
+                        cirrus_thresh = 0.01,
+                        refl_max = 1.05,
+                        min_obs = 1,
                         poll = TRUE,
                         poll_interval = 30,
                         timeout = 300) {
 
   # Extract year and month from dates
-  dates <- as.Date(dates)
-  years <- lubridate::year(dates)
+  dates  <- as.Date(dates)
+  years  <- lubridate::year(dates)
   months <- lubridate::month(dates)
 
   if (!all(c("geometry", "crs") %in% names(aoi))) {
@@ -780,124 +828,100 @@ download_hls <- function(aoi,
   ee_aoi <- aoi$geometry
   crs    <- aoi$crs
 
-  # HLS band mappings (S30=Sentinel-2, L30=Landsat 8/9)
-  s30_bands   <- c("B4", "B3", "B2", "B8", "B11", "Fmask")
-  l30_bands   <- c("B4", "B3", "B2", "B5", "B6",  "Fmask")
-  band_rename <- c("red", "green", "blue", "nir", "swir", "Fmask")
+  # HLS band mappings (S30=Sentinel-2, L30=Landsat 8/9). swir1 and cirrus are
+  # used only for masking and dropped before export.
+  s30_bands   <- c("B4", "B3", "B2", "B8", "B11", "B10", "Fmask")
+  l30_bands   <- c("B4", "B3", "B2", "B5", "B6",  "B9",  "Fmask")
+  band_rename <- c("red", "green", "blue", "nir", "swir1", "cirrus", "Fmask")
 
-  n_submitted  <- 0
-  skipped      <- data.frame(year = integer(), month = integer())
-  interpolated <- data.frame(year = integer(), month = integer())
+  mp <- list(
+    ndsi_thresh       = ndsi_thresh,
+    green_thresh      = green_thresh,
+    swir_snow_max     = swir_snow_max,
+    swir_cloud_thresh = swir_cloud_thresh,
+    vis_thresh        = vis_thresh,
+    cirrus_thresh     = cirrus_thresh,
+    refl_max          = refl_max
+  )
+  masker <- .make_hls_masker(mp)
+
+  n_submitted <- 0
+  skipped     <- data.frame(year = integer(), month = integer())
+  filled      <- data.frame(year = integer(), month = integer())
 
   cat(sprintf("\n--- HLS Imagery Export: %d date combinations ---\n\n", length(dates)))
 
   for (i in seq_along(dates)) {
-    y <- years[i]
+    y  <- years[i]
     mo <- months[i]
 
-    start_date <- sprintf("%d-%02d-01", y, mo)
-    end_date   <- as.character(lubridate::ceiling_date(as.Date(start_date), unit = "month"))
+    month_filter <- ee$Filter$calendarRange(mo, mo, "month")
+    year_filter  <- ee$Filter$calendarRange(y, y, "year")
 
-    # Merge S30 (Sentinel-2) and L30 (Landsat 8/9) for maximum observations
-      s30_ic <- ee$ImageCollection("NASA/HLS/HLSS30/v002")$
-        filterDate(start_date, end_date)$
-        filterBounds(ee_aoi)$
-        select(s30_bands, band_rename)
+    target_raw <- .hls_select_merge(
+      ee_aoi, ee$Filter$And(year_filter, month_filter),
+      s30_bands, l30_bands, band_rename
+    )
+    n <- target_raw$size()$getInfo()
+    cat(sprintf("Year %d, Month %02d: %d images found (S30+L30)\n", y, mo, n))
 
-      l30_ic <- ee$ImageCollection("NASA/HLS/HLSL30/v002")$
-        filterDate(start_date, end_date)$
-        filterBounds(ee_aoi)$
-        select(l30_bands, band_rename)
+    # Target-month medoid (may be NULL or contain gaps).
+    combined <- if (n > 0) .hls_medoid(target_raw$map(masker), min_obs = min_obs) else NULL
 
-      hls_ic_raw <- s30_ic$merge(l30_ic)
+    has_gaps <- is.null(combined) || .hls_has_gaps(combined, ee_aoi, scale)
 
-      n <- hls_ic_raw$size()$getInfo()
+    if (has_gaps) {
+      cat("  Gaps detected, filling from the same month in other years...\n")
+      fills <- .hls_multiyear_fill(
+        ee_aoi, y, mo, near_span,
+        s30_bands, l30_bands, band_rename, masker
+      )
 
-      if (n == 0) {
-        warning(sprintf("No images found for year %d month %02d - skipping.", y, mo))
+      for (lvl in c("near", "clim")) {
+        f <- fills[[lvl]]
+        if (is.null(f)) next
+        combined <- if (is.null(combined)) f else combined$unmask(f)
+      }
+
+      if (is.null(combined)) {
+        warning(sprintf("No HLS imagery found for month %02d in any year - skipping %d-%02d.",
+                        mo, y, mo))
         skipped <- rbind(skipped, data.frame(year = y, month = mo))
         next
       }
 
-      cat(sprintf("Year %d, Month %02d: %d images found (S30+L30)\n", y, mo, n))
+      filled <- rbind(filled, data.frame(year = y, month = mo))
 
-      # Best-pixel composite: each pixel selected from the observation
-      # with the highest quality score (furthest from clouds)
-      combined <- hls_ic_raw$
-        map(.make_quality_scored(ndsi_thresh, green_thresh,
-                                 cloud_ndsi_thresh, blue_thresh,
-                                 swir_max_thresh, cloud_buffer))$
-        qualityMosaic("quality")$
-        select("red", "green", "blue", "nir")$
-        clip(ee_aoi)
-
-      # Check for remaining gaps
-      any_masked_result <- combined$select("red")$mask()$Not()$
-        reduceRegion(
-          reducer   = ee$Reducer$anyNonZero(),
-          geometry  = ee_aoi,
-          scale     = scale,
-          maxPixels = 1e13
-        )$getInfo()
-
-      needs_interp <- isTRUE(as.logical(unlist(any_masked_result)[1]))
-
-      if (needs_interp) {
-        cat(sprintf("  Gaps detected, applying temporal interpolation (up to %d months either side)...\n",
-                    max_months))
-
-        target_date <- sprintf("%d-%02d-15", y, mo)
-
-        temporal_fill <- .temporal_quality_fill(
-          ee_aoi            = ee_aoi,
-          target_date       = target_date,
-          s30_bands         = s30_bands,
-          l30_bands         = l30_bands,
-          band_rename       = band_rename,
-          max_months        = max_months,
-          ndsi_thresh       = ndsi_thresh,
-          green_thresh      = green_thresh,
-          cloud_ndsi_thresh = cloud_ndsi_thresh,
-          blue_thresh       = blue_thresh,
-          swir_max_thresh   = swir_max_thresh,
-          cloud_buffer      = cloud_buffer
-        )
-
-        if (!is.null(temporal_fill)) {
-          combined <- combined$unmask(temporal_fill$clip(ee_aoi))
-        }
-
-        interpolated <- rbind(interpolated, data.frame(year = y, month = mo))
-      }
-
-      # Final fallback: focal median
+      # Absolute last resort: focal median over any pixel never clear in any year.
       combined <- .focalFillMasked(combined, radius = focal_radius)
-
-      # Build file name
-      fname <- if (!is.null(study_area)) {
-        sprintf("HLS_RGBNIR_%s_%d_%02d", study_area, y, mo)
-      } else {
-        sprintf("HLS_RGBNIR_%d_%02d", y, mo)
-      }
-
-      task <- ee$batch$Export$image$toDrive(
-        image          = combined,
-        description    = fname,
-        folder         = "GEE_Exports",
-        fileNamePrefix = fname,
-        region         = ee_aoi,
-        scale          = scale,
-        crs            = crs,
-        maxPixels      = 1e13
-      )
-
-      task$start()
-      n_submitted <- n_submitted + 1
-      cat(sprintf("  Task submitted: %s\n", fname))
     }
 
-  cat(sprintf("\n%d task(s) submitted. %d combo(s) skipped. %d combo(s) used temporal interpolation.\n",
-              n_submitted, nrow(skipped), nrow(interpolated)))
+    combined <- combined$select(.hls_out_bands)$toFloat()$clip(ee_aoi)
+
+    fname <- if (!is.null(study_area)) {
+      sprintf("HLS_RGBNIR_%s_%d_%02d", study_area, y, mo)
+    } else {
+      sprintf("HLS_RGBNIR_%d_%02d", y, mo)
+    }
+
+    task <- ee$batch$Export$image$toDrive(
+      image          = combined,
+      description    = fname,
+      folder         = "GEE_Exports",
+      fileNamePrefix = fname,
+      region         = ee_aoi,
+      scale          = scale,
+      crs            = crs,
+      maxPixels      = 1e13
+    )
+
+    task$start()
+    n_submitted <- n_submitted + 1
+    cat(sprintf("  Task submitted: %s\n", fname))
+  }
+
+  cat(sprintf("\n%d task(s) submitted. %d combo(s) skipped. %d combo(s) used multi-year gap filling.\n",
+              n_submitted, nrow(skipped), nrow(filled)))
 
   # Poll and download
   poll_result <- NULL
@@ -917,10 +941,10 @@ download_hls <- function(aoi,
   }
 
   return(invisible(list(
-    submitted    = n_submitted,
-    skipped      = skipped,
-    interpolated = interpolated,
-    poll_result  = poll_result
+    submitted   = n_submitted,
+    skipped     = skipped,
+    filled      = filled,
+    poll_result = poll_result
   )))
 }
 
