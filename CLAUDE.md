@@ -45,7 +45,7 @@ The full preprocessing pipeline runs in this sequence:
 
 1. `define_aoi()` → GEE geometry + CRS
 2. `download_dem()` → Copernicus GLO-30 DEM via GEE
-3. `download_hls()` → HLS Sentinel-2 imagery (4-band: red/green/blue/nir) via GEE
+3. `download_hls()` → HLS Sentinel-2 imagery (4-band: red/green/blue/nir) via GEE. Alternative: `download_s2()` builds the same 4-band 0-1 composites from `COPERNICUS/S2_SR_HARMONIZED` masked with `GOOGLE/CLOUD_SCORE_PLUS/V1/S2_HARMONIZED` (`cs_cdf`); preferred for clean snow-vs-cloud separation, but only reliable from ~2019 onward (use `download_hls()` for earlier windows).
 4. `download_modis_lai()` → MODIS MCD15A3H LAI via GEE
 5. `download_albedo()` → MODIS MCD43A3 albedo via GEE
 6. `download_soil()` → soil data via `microclimdata::soildata_download/downscale`

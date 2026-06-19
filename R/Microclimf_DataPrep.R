@@ -727,6 +727,276 @@ download_albedo <- function(aoi,
   isTRUE(as.logical(unlist(res)[1]))
 }
 
+# Sentinel-2 + Cloud Score+ helpers ---------------------------------------
+
+# Sentinel-2 SR source bands and their output names (shared with the HLS path).
+.s2_src_bands <- c("B4", "B3", "B2", "B8")  # red, green, blue, nir
+.s2_out_bands <- .hls_out_bands             # c("red", "green", "blue", "nir")
+
+# Filter the S2 surface-reflectance collection for `ee_filter` and attach the
+# Cloud Score+ QA band via linkCollection (matched by system:index), so every
+# image carries `qa_band` alongside B4/B3/B2/B8 for downstream masking.
+.s2_select_link <- function(ee_aoi, ee_filter, qa_band) {
+  cs_plus <- ee$ImageCollection("GOOGLE/CLOUD_SCORE_PLUS/V1/S2_HARMONIZED")
+  ee$ImageCollection("COPERNICUS/S2_SR_HARMONIZED")$
+    filter(ee_filter)$filterBounds(ee_aoi)$
+    linkCollection(cs_plus, list(qa_band))
+}
+
+# Per-scene Cloud Score+ mask. Returns a closure (over `qa_band` and
+# `clear_threshold`) that keeps only pixels whose CS+ score is >= the threshold,
+# selects+renames red/green/blue/nir, and scales SR DN to 0-1. Cloud Score+
+# (cs_cdf) scores persistent bright surfaces (snow) as clear and transient cloud
+# as occluded, so no spectral snow override is needed. The HARMONIZED collection
+# already applies the post-2022 -1000 offset, so only divide by 10000 here.
+.make_s2_masker <- function(qa_band, clear_threshold) {
+  function(img) {
+    clear <- img$select(qa_band)$gte(clear_threshold)
+    img$select(.s2_src_bands, .s2_out_bands)$
+      divide(10000)$
+      clamp(0, 1)$
+      updateMask(clear)$
+      toFloat()
+  }
+}
+
+# Multi-year, same-calendar-month gap fill for the S2 path. Analogous to
+# .hls_multiyear_fill: medoid composites of every clear observation in the same
+# month across the `near` year window (target year +/- near_span) and across all
+# available years (climatology). Returns list(near, clim); either may be NULL.
+.s2_multiyear_fill <- function(ee_aoi, target_year, month, near_span, qa_band, masker) {
+  month_filter <- ee$Filter$calendarRange(month, month, "month")
+
+  near_filter <- ee$Filter$And(
+    ee$Filter$calendarRange(target_year - near_span, target_year + near_span, "year"),
+    month_filter
+  )
+  near_ic <- .s2_select_link(ee_aoi, near_filter, qa_band)
+  clim_ic <- .s2_select_link(ee_aoi, month_filter, qa_band)
+
+  list(
+    near = .hls_medoid(near_ic$map(masker), min_obs = 1L),
+    clim = .hls_medoid(clim_ic$map(masker), min_obs = 1L)
+  )
+}
+
+# Main function -----------------------------------------------------------
+
+#' Download Cloud-Free Sentinel-2 Imagery via Cloud Score+ from Google Earth Engine
+#'
+#' Iterates over each year-month provided, building a cloud-free, snow-preserving
+#' surface-reflectance composite from \code{COPERNICUS/S2_SR_HARMONIZED}
+#' (Sentinel-2 L2A) imagery masked with Google's \code{GOOGLE/CLOUD_SCORE_PLUS/V1/S2_HARMONIZED}
+#' product. This is an alternative to \code{\link{download_hls}} with identical
+#' inputs and outputs (4-band red/green/blue/nir, 0-1 reflectance, monthly
+#' composites); only the masking and tuning parameters differ.
+#'
+#' \strong{Why Cloud Score+ instead of a spectral mask.} Snow and cloud cannot be
+#' separated spectrally - any bright surface shows low SWIR and an elevated cirrus
+#' band - so the spectral cloud rules in \code{download_hls} either leak cloud or
+#' misclassify snow as cloud. Cloud Score+ instead grades each pixel's clarity on
+#' a continuous 0-1 scale. The \code{cs_cdf} band ranks an observation against the
+#' temporal distribution of scores at that location, so a \emph{persistent} bright
+#' surface (snow) is scored clear while \emph{transient} bright pixels (cloud) are
+#' scored occluded. This dissolves the snow-vs-cloud tie, so \strong{no seasonal
+#' snow override is needed} and snow is preserved without leaking cloud.
+#'
+#' The compositing strategy is:
+#' \enumerate{
+#'   \item Per-scene masking (\code{.make_s2_masker}): keep pixels whose Cloud
+#'         Score+ \code{qa_band} value is >= \code{clear_threshold}; scale SR to
+#'         0-1 and clamp to \code{[0, 1]}.
+#'   \item Per-pixel \emph{medoid} composite (\code{.hls_medoid}) of the target
+#'         month's clear observations - the real observation closest to the
+#'         per-pixel median, preserving physically valid spectra.
+#'   \item Gap filling from the \strong{same calendar month in other years}
+#'         (\code{.s2_multiyear_fill}) - nearest years first (\code{near_span}),
+#'         then all available years.
+#'   \item Focal median as an absolute last resort for any pixel never clear in
+#'         any year.
+#' }
+#'
+#' \strong{Temporal coverage.} Global Sentinel-2 L2A and Cloud Score+ are only
+#' reliably available from roughly 2019 onward (L2A global coverage begins late
+#' 2018; earlier scenes are sparse or absent). For study windows that predate this,
+#' prefer \code{\link{download_hls}}; \code{download_s2} emits a warning for any
+#' requested year before 2019.
+#'
+#' Output reflectance is scaled 0-1, matching \code{download_hls} so the same
+#' downstream functions (\code{downscale_lai}, \code{compute_albedo}) consume it
+#' unchanged.
+#'
+#' @param aoi A named list returned by define_aoi() containing elements
+#'   \code{geometry} (ee$Geometry) and \code{crs} (CRS string)
+#' @param dates Vector of class Date specifying year-month combinations to process.
+#'   The day component is ignored; only year and month are used.
+#'   E.g. as.Date(c("2020-10-01", "2020-11-01"))
+#' @param out_dir Local directory path to save downloaded imagery files
+#' @param study_area Optional character string identifying the study area e.g. "GMU1".
+#'   If provided, used as a prefix in output file names
+#' @param scale Spatial resolution in meters. Default is 30
+#' @param qa_band Cloud Score+ QA band used for masking. \code{"cs_cdf"} (a
+#'   temporal-CDF ranking, less sensitive to terrain shading) or \code{"cs"} (an
+#'   instantaneous spectral-distance score). Default is \code{"cs_cdf"}
+#' @param clear_threshold Minimum Cloud Score+ value for a pixel to be kept;
+#'   pixels below are masked as cloud/shadow. Values between 0.50 and 0.65
+#'   generally work well, with higher values removing more thin cloud, haze and
+#'   cirrus shadow. Default is 0.60
+#' @param near_span Number of years either side of the target year searched first
+#'   (same calendar month) when filling gaps, before falling back to the full
+#'   archive. Default is 2
+#' @param focal_radius Kernel radius in pixels for the last-resort focal median
+#'   that fills any pixel left masked after multi-year filling. Default is 10
+#' @param min_obs Minimum number of clear observations required for a target-month
+#'   pixel to be kept; pixels with fewer are treated as gaps and filled from other
+#'   years. Default is 1
+#' @param poll Logical. Whether to poll Google Drive and download files after
+#'   all tasks are submitted. Default is TRUE
+#' @param poll_interval Polling interval in seconds. Default is 30
+#' @param timeout Polling timeout in seconds. Default is 300 (5 minutes)
+#'
+#' @return Invisibly returns a named list with elements:
+#'   \item{submitted}{Number of GEE tasks successfully submitted}
+#'   \item{skipped}{A data frame of year/month combos with no imagery in any year}
+#'   \item{filled}{A data frame of year/month combos that required multi-year gap filling}
+#'   \item{poll_result}{Result of poll_drive() if poll = TRUE, otherwise NULL}
+#' @seealso \code{\link{download_hls}}, \code{\link{define_aoi}},
+#'   \code{\link{poll_drive}}, \code{\link{compute_albedo}},
+#'   \code{\link{compute_reflectance}}
+#' @export
+download_s2 <- function(aoi,
+                        dates,
+                        out_dir,
+                        study_area = NULL,
+                        scale = 30,
+                        qa_band = "cs_cdf",
+                        clear_threshold = 0.60,
+                        near_span = 2,
+                        focal_radius = 10,
+                        min_obs = 1,
+                        poll = TRUE,
+                        poll_interval = 30,
+                        timeout = 300) {
+
+  # Extract year and month from dates
+  dates  <- as.Date(dates)
+  years  <- lubridate::year(dates)
+  months <- lubridate::month(dates)
+
+  if (!all(c("geometry", "crs") %in% names(aoi))) {
+    stop("aoi must be a named list with 'geometry' and 'crs' elements, as returned by define_aoi()")
+  }
+
+  ee_aoi <- aoi$geometry
+  crs    <- aoi$crs
+
+  # Cloud Score+ handles cloud vs. snow on its own, so the masker is built once
+  # and reused for every month (no seasonal snow toggle).
+  masker <- .make_s2_masker(qa_band, clear_threshold)
+
+  n_submitted <- 0
+  skipped     <- data.frame(year = integer(), month = integer())
+  filled      <- data.frame(year = integer(), month = integer())
+
+  cat(sprintf("\n--- Sentinel-2 Imagery Export: %d date combinations ---\n\n", length(dates)))
+
+  for (i in seq_along(dates)) {
+    y  <- years[i]
+    mo <- months[i]
+
+    if (y < 2019) {
+      warning(sprintf(paste0("Year %d predates reliable global Sentinel-2 L2A / Cloud Score+ ",
+                             "coverage (~2019); results may be sparse. Consider download_hls() ",
+                             "for this window."), y))
+    }
+
+    month_filter <- ee$Filter$calendarRange(mo, mo, "month")
+    year_filter  <- ee$Filter$calendarRange(y, y, "year")
+
+    target_raw <- .s2_select_link(ee_aoi, ee$Filter$And(year_filter, month_filter), qa_band)
+    n <- target_raw$size()$getInfo()
+    cat(sprintf("Year %d, Month %02d: %d images found (S2_SR_HARMONIZED)\n", y, mo, n))
+
+    # Target-month medoid (may be NULL or contain gaps).
+    combined <- if (n > 0) .hls_medoid(target_raw$map(masker), min_obs = min_obs) else NULL
+
+    has_gaps <- is.null(combined) || .hls_has_gaps(combined, ee_aoi, scale)
+
+    if (has_gaps) {
+      cat("  Gaps detected, filling from the same month in other years...\n")
+      fills <- .s2_multiyear_fill(ee_aoi, y, mo, near_span, qa_band, masker)
+
+      for (lvl in c("near", "clim")) {
+        f <- fills[[lvl]]
+        if (is.null(f)) next
+        combined <- if (is.null(combined)) f else combined$unmask(f)
+      }
+
+      if (is.null(combined)) {
+        warning(sprintf("No Sentinel-2 imagery found for month %02d in any year - skipping %d-%02d.",
+                        mo, y, mo))
+        skipped <- rbind(skipped, data.frame(year = y, month = mo))
+        next
+      }
+
+      filled <- rbind(filled, data.frame(year = y, month = mo))
+
+      # Absolute last resort: focal median over any pixel never clear in any year.
+      combined <- .focalFillMasked(combined, radius = focal_radius)
+    }
+
+    combined <- combined$select(.s2_out_bands)$toFloat()$clip(ee_aoi)
+
+    fname <- if (!is.null(study_area)) {
+      sprintf("S2_RGBNIR_%s_%d_%02d", study_area, y, mo)
+    } else {
+      sprintf("S2_RGBNIR_%d_%02d", y, mo)
+    }
+
+    task <- ee$batch$Export$image$toDrive(
+      image          = combined,
+      description    = fname,
+      folder         = "GEE_Exports",
+      fileNamePrefix = fname,
+      region         = ee_aoi,
+      scale          = scale,
+      crs            = crs,
+      maxPixels      = 1e13
+    )
+
+    task$start()
+    n_submitted <- n_submitted + 1
+    cat(sprintf("  Task submitted: %s\n", fname))
+  }
+
+  cat(sprintf("\n%d task(s) submitted. %d combo(s) skipped. %d combo(s) used multi-year gap filling.\n",
+              n_submitted, nrow(skipped), nrow(filled)))
+
+  # Poll and download
+  poll_result <- NULL
+  if (poll && n_submitted > 0) {
+    cat(sprintf(
+      "\nPolling Google Drive for %d file(s). This may take a while depending on the number of images.\n",
+      n_submitted
+    ))
+    poll_result <- poll_drive(
+      out_dir       = out_dir,
+      n_expected    = n_submitted,
+      poll_interval = poll_interval,
+      timeout       = timeout
+    )
+  } else if (poll && n_submitted == 0) {
+    cat("No tasks were submitted, skipping Drive polling.\n")
+  }
+
+  return(invisible(list(
+    submitted   = n_submitted,
+    skipped     = skipped,
+    filled      = filled,
+    poll_result = poll_result
+  )))
+}
+
 # Main function -----------------------------------------------------------
 
 #' Download Cloud-Free HLS Imagery from Google Earth Engine
