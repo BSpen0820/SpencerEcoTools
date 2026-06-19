@@ -136,10 +136,12 @@ QA bits (cloud / adjacent / shadow), a 1.38 um cirrus-band test for thin
 cloud, a visible + SWIR brightness gate, and a physical reflectance
 ceiling.
 \item Per-pixel medoid composite of the target month's clear observations.
-\item Gap filling from the \strong{same calendar month in other years}
-(\code{.hls_multiyear_fill}) - nearest years first
-(\code{near_span}), then all available years - so completeness is
-guaranteed without blending across seasons.
+\item Gap filling from the \strong{same calendar month in other years} -
+nearest years first (\code{near_span}); only if gaps still remain is the
+heavier full same-month climatology (all available years) built and
+applied - so completeness is guaranteed without blending across seasons,
+and the expensive full-archive pass is skipped when the nearby-years
+fill already completes the image.
 \item Focal median as an absolute last resort for any pixel never clear in
 any year.
 }

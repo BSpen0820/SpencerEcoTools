@@ -752,40 +752,48 @@ download_albedo <- function(aoi,
   )))
 }
 
-# Multi-year, same-calendar-month gap fill. Returns a medoid composite of every
-# clear observation in the same month across the `near` year window (target year
-# +/- near_span) and, separately, across all available years (climatology).
-# Filling target-month gaps with these in order (near first) preserves the snow
-# season while guaranteeing completeness. Returns a list(near, clim); either may
-# be NULL if no imagery exists for that window.
-.hls_multiyear_fill <- function(ee_aoi, target_year, month, near_span,
-                                 s30_bands, l30_bands, band_rename,
-                                 mp, use_cloud_score, qa_band, clear_threshold) {
-
-  month_filter <- ee$Filter$calendarRange(month, month, "month")
-
+# First multi-year gap-fill level: medoid of clear observations in the same month
+# across the `near` year window (target year +/- near_span). Returns NULL if no
+# imagery exists in that window.
+.hls_fill_near <- function(ee_aoi, target_year, month, near_span,
+                           s30_bands, l30_bands, band_rename,
+                           mp, use_cloud_score, qa_band, clear_threshold) {
   near_filter <- ee$Filter$And(
     ee$Filter$calendarRange(target_year - near_span, target_year + near_span, "year"),
-    month_filter
+    ee$Filter$calendarRange(month, month, "month")
   )
-  near_ic <- .hls_build_masked(ee_aoi, near_filter, s30_bands, l30_bands, band_rename,
-                               mp, use_cloud_score, qa_band, clear_threshold)
-  clim_ic <- .hls_build_masked(ee_aoi, month_filter, s30_bands, l30_bands, band_rename,
-                               mp, use_cloud_score, qa_band, clear_threshold)
+  .hls_medoid(
+    .hls_build_masked(ee_aoi, near_filter, s30_bands, l30_bands, band_rename,
+                      mp, use_cloud_score, qa_band, clear_threshold),
+    min_obs = 1L
+  )
+}
 
-  list(
-    near = .hls_medoid(near_ic, min_obs = 1L),
-    clim = .hls_medoid(clim_ic, min_obs = 1L)
+# Second (last-resort) gap-fill level: medoid of clear observations in the same
+# month across ALL available years (climatology). This is the heaviest graph -
+# the full archive can be thousands of scenes - so the caller only builds it when
+# gaps remain after the near fill. Returns NULL if no imagery exists.
+.hls_fill_clim <- function(ee_aoi, month, s30_bands, l30_bands, band_rename,
+                           mp, use_cloud_score, qa_band, clear_threshold) {
+  month_filter <- ee$Filter$calendarRange(month, month, "month")
+  .hls_medoid(
+    .hls_build_masked(ee_aoi, month_filter, s30_bands, l30_bands, band_rename,
+                      mp, use_cloud_score, qa_band, clear_threshold),
+    min_obs = 1L
   )
 }
 
 # TRUE if `img` has any masked pixel inside `ee_aoi` (i.e. unfilled gaps remain).
-.hls_has_gaps <- function(img, ee_aoi, scale) {
+# `tile_scale` (1-16) splits the reduceRegion into smaller tiles so the check
+# survives heavy graphs (e.g. a multi-year medoid) without exceeding the
+# interactive getInfo memory limit.
+.hls_has_gaps <- function(img, ee_aoi, scale, tile_scale = 4) {
   res <- img$select("red")$mask()$Not()$reduceRegion(
     reducer   = ee$Reducer$anyNonZero(),
     geometry  = ee_aoi,
     scale     = scale,
-    maxPixels = 1e13
+    maxPixels = 1e13,
+    tileScale = tile_scale
   )$getInfo()
   isTRUE(as.logical(unlist(res)[1]))
 }
@@ -1082,10 +1090,12 @@ download_s2 <- function(aoi,
 #'         cloud, a visible + SWIR brightness gate, and a physical reflectance
 #'         ceiling.
 #'   \item Per-pixel medoid composite of the target month's clear observations.
-#'   \item Gap filling from the \strong{same calendar month in other years}
-#'         (\code{.hls_multiyear_fill}) - nearest years first
-#'         (\code{near_span}), then all available years - so completeness is
-#'         guaranteed without blending across seasons.
+#'   \item Gap filling from the \strong{same calendar month in other years} -
+#'         nearest years first (\code{near_span}); only if gaps still remain is the
+#'         heavier full same-month climatology (all available years) built and
+#'         applied - so completeness is guaranteed without blending across seasons,
+#'         and the expensive full-archive pass is skipped when the nearby-years
+#'         fill already completes the image.
 #'   \item Focal median as an absolute last resort for any pixel never clear in
 #'         any year.
 #' }
@@ -1275,17 +1285,50 @@ download_hls <- function(aoi,
     has_gaps <- is.null(combined) || .hls_has_gaps(combined, ee_aoi, scale)
 
     if (has_gaps) {
-      cat("  Gaps detected, filling from the same month in other years...\n")
-      fills <- .hls_multiyear_fill(
+      cat("  Gaps detected, filling from nearby years (same month)...\n")
+      near <- .hls_fill_near(
         ee_aoi, y, mo, near_span,
         s30_bands, l30_bands, band_rename,
         mp, use_cloud_score, qa_band, clear_threshold
       )
+      if (!is.null(near)) {
+        combined <- if (is.null(combined)) near else combined$unmask(near)
+      }
 
-      for (lvl in c("near", "clim")) {
-        f <- fills[[lvl]]
-        if (is.null(f)) next
-        combined <- if (is.null(combined)) f else combined$unmask(f)
+      # Only build the full same-month climatology medoid - by far the heaviest
+      # graph (the whole archive can be thousands of scenes) - if gaps remain
+      # after the nearby-years fill, short-circuiting the expensive path for months
+      # the near fill already completes. The probe runs at a coarse scale (~10x the
+      # working scale) with a high tileScale purely to survive the interactive
+      # getInfo memory limit on the heavy near medoid - a 30 m probe exceeds it.
+      # anyNonZero aggregates sub-pixels, so even a single 30 m gap is still
+      # detected (verified): clim is built whenever ANY gap remains, so fill
+      # behavior is identical to the original - only clim-when-already-complete is
+      # skipped. If even the coarse probe is too heavy to evaluate, fall back to
+      # building the climatology (the original always-on behavior).
+      gap_scale <- max(focal_radius * scale, scale)
+      still_gaps <- if (is.null(combined)) {
+        TRUE
+      } else {
+        tryCatch(
+          .hls_has_gaps(combined, ee_aoi, gap_scale, tile_scale = 16),
+          error = function(e) {
+            cat("  (gap probe too heavy to evaluate; building climatology fill)\n")
+            TRUE
+          }
+        )
+      }
+
+      if (still_gaps) {
+        cat("  Gaps remain, filling from the full same-month climatology...\n")
+        clim <- .hls_fill_clim(
+          ee_aoi, mo,
+          s30_bands, l30_bands, band_rename,
+          mp, use_cloud_score, qa_band, clear_threshold
+        )
+        if (!is.null(clim)) {
+          combined <- if (is.null(combined)) clim else combined$unmask(clim)
+        }
       }
 
       if (is.null(combined)) {
