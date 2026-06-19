@@ -12,6 +12,7 @@ download_hls(
   scale = 30,
   near_span = 2,
   focal_radius = 10,
+  snow_months = c(11, 12, 1, 2, 3, 4),
   ndsi_thresh = 0.4,
   green_thresh = 0.3,
   swir_snow_max = 0.12,
@@ -47,9 +48,17 @@ archive. Default is 2}
 \item{focal_radius}{Kernel radius in pixels for the last-resort focal median
 that fills any pixel left masked after multi-year filling. Default is 10}
 
+\item{snow_months}{Integer vector of calendar months (1-12) in which the snow
+override is active, i.e. the snow season for the study area. In these months
+snow is protected from cloud masking (preserving snow at the cost of some
+residual cloud); in all other months cloud is masked aggressively and
+backfilled from other years. Tune to the study area's elevation and climate.
+Default is c(11, 12, 1, 2, 3, 4)}
+
 \item{ndsi_thresh}{Minimum NDSI = (green - SWIR1)/(green + SWIR1) for the snow
 override. Pixels above this (and meeting the SWIR and green gates) are
-treated as snow and protected from all cloud rules. Default is 0.4}
+treated as snow and protected from all cloud rules. Only used in
+\code{snow_months}. Default is 0.4}
 
 \item{green_thresh}{Minimum green reflectance for the snow override. Prevents
 dark surfaces from being mistaken for snow. Default is 0.3}
@@ -68,7 +77,8 @@ treated as thin cloud. Snow-safe because the surface is dark at 1.38 um.
 Default is 0.01}
 
 \item{refl_max}{Maximum physically plausible reflectance; pixels with any band
-above this are masked as residual cloud. Default is 1.05}
+above this are masked as residual cloud (except snow in \code{snow_months},
+which can exceed 1 on lit slopes at low winter sun). Default is 1.05}
 
 \item{min_obs}{Minimum number of clear observations required for a target-month
 pixel to be kept; pixels with fewer are treated as gaps and filled from other
@@ -103,8 +113,7 @@ The compositing strategy is:
 \item Per-scene masking (\code{.make_hls_masker}): Fmask QA bits
 (cloud / adjacent / shadow), a 1.38 um cirrus-band test for thin
 cloud, a visible + SWIR brightness gate, and a physical reflectance
-ceiling, with a snow override (high NDSI, low SWIR, bright green) so
-genuine snow is never removed.
+ceiling.
 \item Per-pixel medoid composite of the target month's clear observations.
 \item Gap filling from the \strong{same calendar month in other years}
 (\code{.hls_multiyear_fill}) - nearest years first
@@ -114,10 +123,18 @@ guaranteed without blending across seasons.
 any year.
 }
 
-Cloud detection deliberately errs aggressive: residual cloud is converted to
-gaps and filled from clear same-month observations in other years, rather than
-selecting a "least-bad but still cloudy" pixel. Output reflectance is scaled
-0-1 (already provided that way by GEE for HLS v2.0).
+\strong{Seasonal snow handling.} Snow and cloud cannot be separated
+spectrally: any bright surface (snow or cloud) shows low SWIR and an elevated
+cirrus band, so an identical signature means cloud in summer but snow in
+winter. The split is therefore made by month. In \code{snow_months} a snow
+override (high NDSI, low SWIR, bright green) protects snow from every cloud
+rule, so snowy scenes are preserved at the cost of some residual cloud. In all
+other months the cloud rules apply in full and residual cloud is converted to
+gaps and backfilled from clear same-month observations in other years, rather
+than selecting a "least-bad but still cloudy" pixel.
+
+Output reflectance is scaled 0-1 (already provided that way by GEE for HLS
+v2.0).
 }
 \seealso{
 \code{\link{define_aoi}}, \code{\link{poll_drive}},
