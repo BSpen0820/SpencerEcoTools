@@ -658,7 +658,8 @@ download_albedo <- function(aoi,
   )))
 }
 
-.temporal_weighted_fill <- function(ee_aoi, target_date, band_names, band_rename,
+.temporal_weighted_fill <- function(ee_aoi, target_date,
+                                    s30_bands, l30_bands, band_rename,
                                     max_months = 3,
                                     ndsi_thresh = 0.4, green_thresh = 0.3,
                                     cloud_ndsi_thresh = 0.2, blue_thresh = 0.25,
@@ -674,10 +675,17 @@ download_albedo <- function(aoi,
       neighbor_start <- target_center$advance(direction * offset, "month")
       neighbor_end   <- neighbor_start$advance(1, "month")
 
-      neighbor_ic <- ee$ImageCollection("NASA/HLS/HLSS30/v002")$
+      s30_nb <- ee$ImageCollection("NASA/HLS/HLSS30/v002")$
         filterDate(neighbor_start, neighbor_end)$
         filterBounds(ee_aoi)$
-        select(band_names, band_rename)
+        select(s30_bands, band_rename)
+
+      l30_nb <- ee$ImageCollection("NASA/HLS/HLSL30/v002")$
+        filterDate(neighbor_start, neighbor_end)$
+        filterBounds(ee_aoi)$
+        select(l30_bands, band_rename)
+
+      neighbor_ic <- s30_nb$merge(l30_nb)
 
       n <- neighbor_ic$size()$getInfo()
       if (n == 0) next
@@ -737,7 +745,9 @@ download_albedo <- function(aoi,
 #' Download HLS Sentinel-2 Imagery from Google Earth Engine
 #'
 #' Iterates over each date provided, applying a two-level cloud/shadow masking
-#' strategy to HLS S30 Sentinel-2 imagery. Cloud masking combines Fmask QA bits
+#' strategy to merged HLS S30 (Sentinel-2) and L30 (Landsat 8/9) imagery.
+#' Merging both collections nearly doubles observation frequency (~2-3 day
+#' revisit vs ~5 day Sentinel-only). Cloud masking combines Fmask QA bits
 #' with spectral cloud detection (NDSI + blue brightness) and NDSI-based snow
 #' rescue to handle both cloud omission and snow/cloud confusion. If gaps remain
 #' after masking, temporally adjacent images (up to \code{max_months} months
@@ -821,8 +831,9 @@ download_hls <- function(aoi,
   ee_aoi <- aoi$geometry
   crs    <- aoi$crs
 
-  # Hardcoded HLS S30 band names and rename (B11/swir needed for NDSI snow rescue)
-  band_names  <- c("B4", "B3", "B2", "B8", "B11", "Fmask")
+  # HLS band mappings (S30=Sentinel-2, L30=Landsat 8/9)
+  s30_bands   <- c("B4", "B3", "B2", "B8", "B11", "Fmask")
+  l30_bands   <- c("B4", "B3", "B2", "B5", "B6",  "Fmask")
   band_rename <- c("red", "green", "blue", "nir", "swir", "Fmask")
 
   n_submitted  <- 0
@@ -838,11 +849,18 @@ download_hls <- function(aoi,
     start_date <- sprintf("%d-%02d-01", y, mo)
     end_date   <- as.character(lubridate::ceiling_date(as.Date(start_date), unit = "month"))
 
-    # Raw collection
-      hls_ic_raw <- ee$ImageCollection("NASA/HLS/HLSS30/v002")$
+    # Merge S30 (Sentinel-2) and L30 (Landsat 8/9) for maximum observations
+      s30_ic <- ee$ImageCollection("NASA/HLS/HLSS30/v002")$
         filterDate(start_date, end_date)$
         filterBounds(ee_aoi)$
-        select(band_names, band_rename)
+        select(s30_bands, band_rename)
+
+      l30_ic <- ee$ImageCollection("NASA/HLS/HLSL30/v002")$
+        filterDate(start_date, end_date)$
+        filterBounds(ee_aoi)$
+        select(l30_bands, band_rename)
+
+      hls_ic_raw <- s30_ic$merge(l30_ic)
 
       n <- hls_ic_raw$size()$getInfo()
 
@@ -852,7 +870,7 @@ download_hls <- function(aoi,
         next
       }
 
-      cat(sprintf("Year %d, Month %02d: %d images found\n", y, mo, n))
+      cat(sprintf("Year %d, Month %02d: %d images found (S30+L30)\n", y, mo, n))
 
       # Level 1: Full mask median
       median_full <- hls_ic_raw$
@@ -896,7 +914,8 @@ download_hls <- function(aoi,
         temporal_fill <- .temporal_weighted_fill(
           ee_aoi            = ee_aoi,
           target_date       = target_date,
-          band_names        = band_names,
+          s30_bands         = s30_bands,
+          l30_bands         = l30_bands,
           band_rename       = band_rename,
           max_months        = max_months,
           ndsi_thresh       = ndsi_thresh,
