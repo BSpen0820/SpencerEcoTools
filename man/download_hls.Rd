@@ -10,6 +10,9 @@ download_hls(
   out_dir,
   study_area = NULL,
   scale = 30,
+  use_cloud_score = TRUE,
+  qa_band = "cs_cdf",
+  clear_threshold = 0.6,
   near_span = 2,
   focal_radius = 10,
   snow_months = c(11, 12, 1, 2, 3, 4),
@@ -40,6 +43,21 @@ E.g. as.Date(c("2020-10-01", "2020-11-01"))}
 If provided, used as a prefix in output file names}
 
 \item{scale}{Spatial resolution in meters. Default is 30}
+
+\item{use_cloud_score}{Logical. If TRUE (default), mask the S30 (Sentinel-2)
+half with Cloud Score+ and the L30 (Landsat) half with the spectral mask;
+S30 scenes lacking a Cloud Score+ partner fall back to the spectral mask. If
+FALSE, both halves use the spectral mask (the original behavior).}
+
+\item{qa_band}{Cloud Score+ QA band used to mask S30 scenes. \code{"cs_cdf"} (a
+temporal-CDF ranking, robust to terrain shading) or \code{"cs"} (an
+instantaneous spectral-distance score). Only used when
+\code{use_cloud_score = TRUE}. Default is \code{"cs_cdf"}}
+
+\item{clear_threshold}{Minimum Cloud Score+ value for an S30 pixel to be kept;
+pixels below are masked as cloud/shadow. Values between 0.50 and 0.65
+generally work well, with higher values removing more thin cloud, haze and
+cirrus shadow. Only used when \code{use_cloud_score = TRUE}. Default is 0.60}
 
 \item{near_span}{Number of years either side of the target year searched first
 (same calendar month) when filling gaps, before falling back to the full
@@ -110,8 +128,11 @@ cloud-edge artefacts of distance-weighted mosaics.
 \details{
 The compositing strategy is:
 \enumerate{
-\item Per-scene masking (\code{.make_hls_masker}): Fmask QA bits
-(cloud / adjacent / shadow), a 1.38 um cirrus-band test for thin
+\item Per-scene masking: by default (\code{use_cloud_score = TRUE}) the S30
+(Sentinel-2) half is masked with Cloud Score+ (see below) and the L30
+(Landsat) half with the spectral mask (\code{.make_hls_masker}); when
+\code{use_cloud_score = FALSE} both halves use the spectral mask: Fmask
+QA bits (cloud / adjacent / shadow), a 1.38 um cirrus-band test for thin
 cloud, a visible + SWIR brightness gate, and a physical reflectance
 ceiling.
 \item Per-pixel medoid composite of the target month's clear observations.
@@ -122,6 +143,18 @@ guaranteed without blending across seasons.
 \item Focal median as an absolute last resort for any pixel never clear in
 any year.
 }
+
+\strong{Cloud Score+ masking (S30).} When \code{use_cloud_score = TRUE}, each
+HLSS30 scene is linked by exact tile + sensing-time to its
+\code{GOOGLE/CLOUD_SCORE_PLUS/V1/S2_HARMONIZED} partner and masked where the
+\code{qa_band} (default \code{cs_cdf}) is below \code{clear_threshold}. Cloud
+Score+ ranks each pixel against the temporal distribution of clarity scores, so
+persistent bright surfaces (snow) score clear while transient cloud scores
+occluded - dissolving the snow-vs-cloud tie that the spectral mask cannot. Cloud
+Score+ is Sentinel-2-only, so the L30 (Landsat) half keeps the spectral mask.
+Any S30 scene with no Cloud Score+ partner (e.g. before the Cloud Score+ archive
+start of 2015-06-27) falls back per-pixel to the spectral mask, so coverage is
+never reduced. See \code{\link{download_s2}} for a Sentinel-2-only equivalent.
 
 \strong{Seasonal snow handling.} Snow and cloud cannot be separated
 spectrally: any bright surface (snow or cloud) shows low SWIR and an elevated
@@ -137,6 +170,7 @@ Output reflectance is scaled 0-1 (already provided that way by GEE for HLS
 v2.0).
 }
 \seealso{
-\code{\link{define_aoi}}, \code{\link{poll_drive}},
-\code{\link{compute_albedo}}, \code{\link{compute_reflectance}}
+\code{\link{download_s2}}, \code{\link{define_aoi}},
+\code{\link{poll_drive}}, \code{\link{compute_albedo}},
+\code{\link{compute_reflectance}}
 }
