@@ -593,13 +593,18 @@ download_albedo <- function(aoi,
 # Output bands carried through compositing and export
 .hls_out_bands <- c("red", "green", "blue", "nir")
 
-# Per-scene cloud/shadow mask with snow protection. Returns a closure (over the
-# threshold list `mp`) that masks one HLS image, keeping only red/green/blue/nir.
-# Cloud detection combines Fmask QA bits with a cirrus-band test (snow-safe: the
-# surface is dark at 1.38 um while high/thin cloud is bright), a visible+SWIR
-# brightness gate (snow is dark in SWIR, cloud is bright), and a physical
-# reflectance ceiling. A snow override (high NDSI, low SWIR, bright green)
-# rescues genuine snow from every cloud rule so snowy scenes are never removed.
+# Per-scene cloud/shadow mask. Returns a closure (over the threshold list `mp`)
+# that masks one HLS image, keeping only red/green/blue/nir. Cloud detection
+# combines Fmask QA bits with a cirrus-band test (high/thin cloud is bright at
+# 1.38 um), a visible+SWIR brightness gate, and a physical reflectance ceiling.
+#
+# Snow vs. cloud cannot be separated spectrally: any bright surface (snow OR
+# cloud) shows low SWIR and an elevated cirrus band, so the same signature means
+# cloud in summer but snow in winter. The discriminator is therefore seasonal.
+# When `mp$protect_snow` is TRUE (snow-season months) a snow override (high NDSI,
+# low SWIR, bright green) rescues genuine snow from every cloud rule, so snowy
+# scenes are never removed. When FALSE (snow-free months) the cloud rules apply
+# in full and residual cloud is removed, to be backfilled from other years.
 .make_hls_masker <- function(mp) {
   function(img) {
     fmask       <- img$select("Fmask")
@@ -620,15 +625,19 @@ download_albedo <- function(aoi,
     # Physically impossible reflectance (> ~1) is residual cloud.
     over_bright <- img$select(.hls_out_bands)$reduce(ee$Reducer$max())$gt(mp$refl_max)
 
-    # Snow signature: high NDSI, low SWIR, bright green.
-    ndsi <- img$normalizedDifference(c("green", "swir1"))
-    snow <- ndsi$gte(mp$ndsi_thresh)$
-      And(swir1$lt(mp$swir_snow_max))$
-      And(green$gt(mp$green_thresh))
-
     bad <- fmask_cloud$Or(adjacent)$Or(shadow)$
-      Or(cirrus_cloud)$Or(swir_cloud)$Or(over_bright)$
-      And(snow$Not())
+      Or(cirrus_cloud)$Or(swir_cloud)$Or(over_bright)
+
+    if (isTRUE(mp$protect_snow)) {
+      # Snow signature: high NDSI, low SWIR, bright green. Protected from all
+      # cloud rules (including the >1 ceiling, since snow on lit slopes can
+      # legitimately exceed 1 at low winter sun angles).
+      ndsi <- img$normalizedDifference(c("green", "swir1"))
+      snow <- ndsi$gte(mp$ndsi_thresh)$
+        And(swir1$lt(mp$swir_snow_max))$
+        And(green$gt(mp$green_thresh))
+      bad <- bad$And(snow$Not())
+    }
 
     img$select(.hls_out_bands)$toFloat()$updateMask(bad$Not())
   }
@@ -735,8 +744,7 @@ download_albedo <- function(aoi,
 #'   \item Per-scene masking (\code{.make_hls_masker}): Fmask QA bits
 #'         (cloud / adjacent / shadow), a 1.38 um cirrus-band test for thin
 #'         cloud, a visible + SWIR brightness gate, and a physical reflectance
-#'         ceiling, with a snow override (high NDSI, low SWIR, bright green) so
-#'         genuine snow is never removed.
+#'         ceiling.
 #'   \item Per-pixel medoid composite of the target month's clear observations.
 #'   \item Gap filling from the \strong{same calendar month in other years}
 #'         (\code{.hls_multiyear_fill}) - nearest years first
@@ -746,10 +754,18 @@ download_albedo <- function(aoi,
 #'         any year.
 #' }
 #'
-#' Cloud detection deliberately errs aggressive: residual cloud is converted to
-#' gaps and filled from clear same-month observations in other years, rather than
-#' selecting a "least-bad but still cloudy" pixel. Output reflectance is scaled
-#' 0-1 (already provided that way by GEE for HLS v2.0).
+#' \strong{Seasonal snow handling.} Snow and cloud cannot be separated
+#' spectrally: any bright surface (snow or cloud) shows low SWIR and an elevated
+#' cirrus band, so an identical signature means cloud in summer but snow in
+#' winter. The split is therefore made by month. In \code{snow_months} a snow
+#' override (high NDSI, low SWIR, bright green) protects snow from every cloud
+#' rule, so snowy scenes are preserved at the cost of some residual cloud. In all
+#' other months the cloud rules apply in full and residual cloud is converted to
+#' gaps and backfilled from clear same-month observations in other years, rather
+#' than selecting a "least-bad but still cloudy" pixel.
+#'
+#' Output reflectance is scaled 0-1 (already provided that way by GEE for HLS
+#' v2.0).
 #'
 #' @param aoi A named list returned by define_aoi() containing elements
 #'   \code{geometry} (ee$Geometry) and \code{crs} (CRS string)
@@ -765,9 +781,16 @@ download_albedo <- function(aoi,
 #'   archive. Default is 2
 #' @param focal_radius Kernel radius in pixels for the last-resort focal median
 #'   that fills any pixel left masked after multi-year filling. Default is 10
+#' @param snow_months Integer vector of calendar months (1-12) in which the snow
+#'   override is active, i.e. the snow season for the study area. In these months
+#'   snow is protected from cloud masking (preserving snow at the cost of some
+#'   residual cloud); in all other months cloud is masked aggressively and
+#'   backfilled from other years. Tune to the study area's elevation and climate.
+#'   Default is c(11, 12, 1, 2, 3, 4)
 #' @param ndsi_thresh Minimum NDSI = (green - SWIR1)/(green + SWIR1) for the snow
 #'   override. Pixels above this (and meeting the SWIR and green gates) are
-#'   treated as snow and protected from all cloud rules. Default is 0.4
+#'   treated as snow and protected from all cloud rules. Only used in
+#'   \code{snow_months}. Default is 0.4
 #' @param green_thresh Minimum green reflectance for the snow override. Prevents
 #'   dark surfaces from being mistaken for snow. Default is 0.3
 #' @param swir_snow_max Maximum SWIR1 reflectance for the snow override. Snow
@@ -780,7 +803,8 @@ download_albedo <- function(aoi,
 #'   treated as thin cloud. Snow-safe because the surface is dark at 1.38 um.
 #'   Default is 0.01
 #' @param refl_max Maximum physically plausible reflectance; pixels with any band
-#'   above this are masked as residual cloud. Default is 1.05
+#'   above this are masked as residual cloud (except snow in \code{snow_months},
+#'   which can exceed 1 on lit slopes at low winter sun). Default is 1.05
 #' @param min_obs Minimum number of clear observations required for a target-month
 #'   pixel to be kept; pixels with fewer are treated as gaps and filled from other
 #'   years. Default is 1
@@ -804,6 +828,7 @@ download_hls <- function(aoi,
                         scale = 30,
                         near_span = 2,
                         focal_radius = 10,
+                        snow_months = c(11, 12, 1, 2, 3, 4),
                         ndsi_thresh = 0.4,
                         green_thresh = 0.3,
                         swir_snow_max = 0.12,
@@ -843,7 +868,6 @@ download_hls <- function(aoi,
     cirrus_thresh     = cirrus_thresh,
     refl_max          = refl_max
   )
-  masker <- .make_hls_masker(mp)
 
   n_submitted <- 0
   skipped     <- data.frame(year = integer(), month = integer())
@@ -855,6 +879,12 @@ download_hls <- function(aoi,
     y  <- years[i]
     mo <- months[i]
 
+    # Snow protection (keep snow, allow some residual cloud) only in snow-season
+    # months; snow-free months mask cloud aggressively and backfill from other
+    # years. Snow and cloud share a spectral signature, so the split is seasonal.
+    mp$protect_snow <- mo %in% snow_months
+    masker <- .make_hls_masker(mp)
+
     month_filter <- ee$Filter$calendarRange(mo, mo, "month")
     year_filter  <- ee$Filter$calendarRange(y, y, "year")
 
@@ -863,7 +893,8 @@ download_hls <- function(aoi,
       s30_bands, l30_bands, band_rename
     )
     n <- target_raw$size()$getInfo()
-    cat(sprintf("Year %d, Month %02d: %d images found (S30+L30)\n", y, mo, n))
+    cat(sprintf("Year %d, Month %02d: %d images found (S30+L30)%s\n", y, mo, n,
+                if (mp$protect_snow) " [snow-protected]" else " [aggressive cloud removal]"))
 
     # Target-month medoid (may be NULL or contain gaps).
     combined <- if (n > 0) .hls_medoid(target_raw$map(masker), min_obs = min_obs) else NULL
