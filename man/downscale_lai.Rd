@@ -4,14 +4,15 @@
 \alias{downscale_lai}
 \title{Downscale MODIS LAI to 30m Resolution Using NDVI}
 \usage{
-downscale_lai(dates, hls_dir, lai_dir, out_dir, study_area = NULL)
+downscale_lai(dates, img_dir, lai_dir, out_dir, study_area = NULL)
 }
 \arguments{
 \item{dates}{Vector of class Date specifying year-month combinations to process.
 The day component is ignored; only year and month are used.
 E.g. as.Date(c("2020-10-01", "2020-11-01"))}
 
-\item{hls_dir}{Directory containing HLS imagery files}
+\item{img_dir}{Directory containing multispectral imagery files (from
+download_hls() or download_s2())}
 
 \item{lai_dir}{Directory containing coarse MODIS LAI files}
 
@@ -25,7 +26,7 @@ Invisibly returns a data frame logging the status of each
 year/month combination processed
 }
 \description{
-Iterates over each date provided, loading HLS multispectral imagery and
+Iterates over each date provided, loading multispectral imagery and
 coarse MODIS LAI, and downscales LAI to 30m resolution using the
 lai_fromndvi() function from the microclimdata package.
 }
