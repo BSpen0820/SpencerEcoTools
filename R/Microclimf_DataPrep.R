@@ -607,50 +607,110 @@ download_albedo <- function(aoi,
 # in full and residual cloud is removed, to be backfilled from other years.
 .make_hls_masker <- function(mp) {
   function(img) {
-    fmask       <- img$select("Fmask")
-    fmask_cloud <- fmask$bitwiseAnd(2L)$neq(0)   # bit 1: cloud
-    adjacent    <- fmask$bitwiseAnd(4L)$neq(0)   # bit 2: adjacent to cloud/shadow
-    shadow      <- fmask$bitwiseAnd(8L)$neq(0)   # bit 3: cloud shadow
-
-    swir1  <- img$select("swir1")
-    green  <- img$select("green")
-    cirrus <- img$select("cirrus")
-
-    # Thin-cloud cirrus test (Fmask bit 0 is reserved/unused in HLS v2.0).
-    cirrus_cloud <- cirrus$gt(mp$cirrus_thresh)
-
-    # Bright in the visible AND bright in SWIR = cloud (snow stays dark in SWIR).
-    swir_cloud <- green$gt(mp$vis_thresh)$And(swir1$gt(mp$swir_cloud_thresh))
-
-    # Physically impossible reflectance (> ~1) is residual cloud.
-    over_bright <- img$select(.hls_out_bands)$reduce(ee$Reducer$max())$gt(mp$refl_max)
-
-    bad <- fmask_cloud$Or(adjacent)$Or(shadow)$
-      Or(cirrus_cloud)$Or(swir_cloud)$Or(over_bright)
-
-    if (isTRUE(mp$protect_snow)) {
-      # Snow signature: high NDSI, low SWIR, bright green. Protected from all
-      # cloud rules (including the >1 ceiling, since snow on lit slopes can
-      # legitimately exceed 1 at low winter sun angles).
-      ndsi <- img$normalizedDifference(c("green", "swir1"))
-      snow <- ndsi$gte(mp$ndsi_thresh)$
-        And(swir1$lt(mp$swir_snow_max))$
-        And(green$gt(mp$green_thresh))
-      bad <- bad$And(snow$Not())
-    }
-
-    img$select(.hls_out_bands)$toFloat()$updateMask(bad$Not())
+    img$select(.hls_out_bands)$toFloat()$updateMask(.hls_spectral_keep(img, mp))
   }
 }
 
-# Filter, select+rename, and merge the HLS S30 (Sentinel-2) and L30 (Landsat)
-# collections for a given EE filter. Returns a single merged ImageCollection
-# carrying red/green/blue/nir/swir1/cirrus/Fmask.
-.hls_select_merge <- function(ee_aoi, ee_filter, s30_bands, l30_bands, band_rename) {
-  s30 <- ee$ImageCollection("NASA/HLS/HLSS30/v002")$
+# Spectral keep-mask (1 = keep, 0 = drop) shared by the spectral and Cloud Score+
+# maskers. Combines Fmask QA bits (cloud / adjacent / shadow), a 1.38 um cirrus
+# test, a visible+SWIR brightness gate, and a physical reflectance ceiling. When
+# mp$protect_snow is TRUE a snow override (high NDSI, low SWIR, bright green)
+# rescues genuine snow from every cloud rule (including the >1 ceiling, since snow
+# on lit slopes can legitimately exceed 1 at low winter sun angles).
+.hls_spectral_keep <- function(img, mp) {
+  fmask       <- img$select("Fmask")
+  fmask_cloud <- fmask$bitwiseAnd(2L)$neq(0)   # bit 1: cloud
+  adjacent    <- fmask$bitwiseAnd(4L)$neq(0)   # bit 2: adjacent to cloud/shadow
+  shadow      <- fmask$bitwiseAnd(8L)$neq(0)   # bit 3: cloud shadow
+
+  swir1  <- img$select("swir1")
+  green  <- img$select("green")
+  cirrus <- img$select("cirrus")
+
+  cirrus_cloud <- cirrus$gt(mp$cirrus_thresh)
+  swir_cloud   <- green$gt(mp$vis_thresh)$And(swir1$gt(mp$swir_cloud_thresh))
+  over_bright  <- img$select(.hls_out_bands)$reduce(ee$Reducer$max())$gt(mp$refl_max)
+
+  bad <- fmask_cloud$Or(adjacent)$Or(shadow)$
+    Or(cirrus_cloud)$Or(swir_cloud)$Or(over_bright)
+
+  if (isTRUE(mp$protect_snow)) {
+    ndsi <- img$normalizedDifference(c("green", "swir1"))
+    snow <- ndsi$gte(mp$ndsi_thresh)$
+      And(swir1$lt(mp$swir_snow_max))$
+      And(green$gt(mp$green_thresh))
+    bad <- bad$And(snow$Not())
+  }
+
+  bad$Not()
+}
+
+# Cloud Score+ masker for S30 images carrying a linked `qa_band` (cs_cdf). Per
+# pixel: where the CS+ score is present, keep pixels with cs >= clear_threshold;
+# where it is masked (an S30 scene with no CS+ partner - e.g. before 2015-06-27 -
+# or a per-pixel sensor gap) fall back to the spectral keep-mask. Cloud Score+
+# separates snow from cloud, so matched snow is preserved without the spectral
+# snow override.
+.make_hls_masker_cs <- function(mp, qa_band, clear_threshold) {
+  function(img) {
+    cs        <- img$select(qa_band)
+    avail     <- cs$mask()$gt(0)                       # 1 where CS+ score present
+    cs_keep   <- cs$gte(clear_threshold)$unmask(0)     # CS+ decision, 0 where absent
+    spec_keep <- .hls_spectral_keep(img, mp)
+    keep <- avail$multiply(cs_keep)$add(avail$Not()$multiply(spec_keep))$gt(0)
+    img$select(.hls_out_bands)$toFloat()$updateMask(keep)
+  }
+}
+
+# Per-sensor selectors: filter + select/rename to red/green/blue/nir/swir1/cirrus/Fmask.
+.s30_select <- function(ee_aoi, ee_filter, s30_bands, band_rename) {
+  ee$ImageCollection("NASA/HLS/HLSS30/v002")$
     filter(ee_filter)$filterBounds(ee_aoi)$select(s30_bands, band_rename)
-  l30 <- ee$ImageCollection("NASA/HLS/HLSL30/v002")$
+}
+
+.l30_select <- function(ee_aoi, ee_filter, l30_bands, band_rename) {
+  ee$ImageCollection("NASA/HLS/HLSL30/v002")$
     filter(ee_filter)$filterBounds(ee_aoi)$select(l30_bands, band_rename)
+}
+
+# S30 with the Cloud Score+ `qa_band` linked by an exact tile+sensing-datetime
+# key, then selected+renamed (keeping qa_band). HLSS30 system:index is
+# "{TILE}_{SENSINGDT}"; CS+ system:index is "{SENSINGDT}_{PROCDT}_{TILE}", so
+# reconstructing the former from the latter gives an exact 1:1 match (no time
+# tolerance). Unmatched S30 scenes still receive a fully-masked qa_band (verified),
+# which the masker resolves via spectral fallback.
+.s30_link_cs <- function(ee_aoi, ee_filter, s30_bands, band_rename, qa_band) {
+  s30 <- ee$ImageCollection("NASA/HLS/HLSS30/v002")$
+    filter(ee_filter)$filterBounds(ee_aoi)$
+    map(function(img) img$set("match_key", img$get("system:index")))
+
+  cs <- ee$ImageCollection("GOOGLE/CLOUD_SCORE_PLUS/V1/S2_HARMONIZED")$
+    filter(ee_filter)$filterBounds(ee_aoi)$
+    map(function(img) {
+      parts <- ee$String(img$get("system:index"))$split("_")
+      img$set("match_key", ee$String(parts$get(2))$cat("_")$cat(ee$String(parts$get(0))))
+    })
+
+  s30$linkCollection(cs, ee$List(list(qa_band)), ee$List(list()), "match_key")$
+    select(c(s30_bands, qa_band), c(band_rename, qa_band))
+}
+
+# Build the masked, merged S30+L30 collection for one EE filter. The L30 half
+# always uses the spectral masker (Cloud Score+ is Sentinel-2 only). With
+# use_cloud_score the S30 half is Cloud Score+ masked (spectral fallback where the
+# score is absent); otherwise it too uses the spectral masker. Masking is per
+# image, so masking each half then merging equals merging then masking.
+.hls_build_masked <- function(ee_aoi, ee_filter, s30_bands, l30_bands, band_rename,
+                              mp, use_cloud_score, qa_band, clear_threshold) {
+  l30 <- .l30_select(ee_aoi, ee_filter, l30_bands, band_rename)$map(.make_hls_masker(mp))
+
+  if (isTRUE(use_cloud_score)) {
+    s30 <- .s30_link_cs(ee_aoi, ee_filter, s30_bands, band_rename, qa_band)$
+      map(.make_hls_masker_cs(mp, qa_band, clear_threshold))
+  } else {
+    s30 <- .s30_select(ee_aoi, ee_filter, s30_bands, band_rename)$map(.make_hls_masker(mp))
+  }
+
   s30$merge(l30)
 }
 
@@ -699,7 +759,8 @@ download_albedo <- function(aoi,
 # season while guaranteeing completeness. Returns a list(near, clim); either may
 # be NULL if no imagery exists for that window.
 .hls_multiyear_fill <- function(ee_aoi, target_year, month, near_span,
-                                 s30_bands, l30_bands, band_rename, masker) {
+                                 s30_bands, l30_bands, band_rename,
+                                 mp, use_cloud_score, qa_band, clear_threshold) {
 
   month_filter <- ee$Filter$calendarRange(month, month, "month")
 
@@ -707,12 +768,14 @@ download_albedo <- function(aoi,
     ee$Filter$calendarRange(target_year - near_span, target_year + near_span, "year"),
     month_filter
   )
-  near_ic <- .hls_select_merge(ee_aoi, near_filter, s30_bands, l30_bands, band_rename)
-  clim_ic <- .hls_select_merge(ee_aoi, month_filter, s30_bands, l30_bands, band_rename)
+  near_ic <- .hls_build_masked(ee_aoi, near_filter, s30_bands, l30_bands, band_rename,
+                               mp, use_cloud_score, qa_band, clear_threshold)
+  clim_ic <- .hls_build_masked(ee_aoi, month_filter, s30_bands, l30_bands, band_rename,
+                               mp, use_cloud_score, qa_band, clear_threshold)
 
   list(
-    near = .hls_medoid(near_ic$map(masker), min_obs = 1L),
-    clim = .hls_medoid(clim_ic$map(masker), min_obs = 1L)
+    near = .hls_medoid(near_ic, min_obs = 1L),
+    clim = .hls_medoid(clim_ic, min_obs = 1L)
   )
 }
 
@@ -1011,8 +1074,11 @@ download_s2 <- function(aoi,
 #'
 #' The compositing strategy is:
 #' \enumerate{
-#'   \item Per-scene masking (\code{.make_hls_masker}): Fmask QA bits
-#'         (cloud / adjacent / shadow), a 1.38 um cirrus-band test for thin
+#'   \item Per-scene masking: by default (\code{use_cloud_score = TRUE}) the S30
+#'         (Sentinel-2) half is masked with Cloud Score+ (see below) and the L30
+#'         (Landsat) half with the spectral mask (\code{.make_hls_masker}); when
+#'         \code{use_cloud_score = FALSE} both halves use the spectral mask: Fmask
+#'         QA bits (cloud / adjacent / shadow), a 1.38 um cirrus-band test for thin
 #'         cloud, a visible + SWIR brightness gate, and a physical reflectance
 #'         ceiling.
 #'   \item Per-pixel medoid composite of the target month's clear observations.
@@ -1023,6 +1089,18 @@ download_s2 <- function(aoi,
 #'   \item Focal median as an absolute last resort for any pixel never clear in
 #'         any year.
 #' }
+#'
+#' \strong{Cloud Score+ masking (S30).} When \code{use_cloud_score = TRUE}, each
+#' HLSS30 scene is linked by exact tile + sensing-time to its
+#' \code{GOOGLE/CLOUD_SCORE_PLUS/V1/S2_HARMONIZED} partner and masked where the
+#' \code{qa_band} (default \code{cs_cdf}) is below \code{clear_threshold}. Cloud
+#' Score+ ranks each pixel against the temporal distribution of clarity scores, so
+#' persistent bright surfaces (snow) score clear while transient cloud scores
+#' occluded - dissolving the snow-vs-cloud tie that the spectral mask cannot. Cloud
+#' Score+ is Sentinel-2-only, so the L30 (Landsat) half keeps the spectral mask.
+#' Any S30 scene with no Cloud Score+ partner (e.g. before the Cloud Score+ archive
+#' start of 2015-06-27) falls back per-pixel to the spectral mask, so coverage is
+#' never reduced. See \code{\link{download_s2}} for a Sentinel-2-only equivalent.
 #'
 #' \strong{Seasonal snow handling.} Snow and cloud cannot be separated
 #' spectrally: any bright surface (snow or cloud) shows low SWIR and an elevated
@@ -1046,6 +1124,18 @@ download_s2 <- function(aoi,
 #' @param study_area Optional character string identifying the study area e.g. "GMU1".
 #'   If provided, used as a prefix in output file names
 #' @param scale Spatial resolution in meters. Default is 30
+#' @param use_cloud_score Logical. If TRUE (default), mask the S30 (Sentinel-2)
+#'   half with Cloud Score+ and the L30 (Landsat) half with the spectral mask;
+#'   S30 scenes lacking a Cloud Score+ partner fall back to the spectral mask. If
+#'   FALSE, both halves use the spectral mask (the original behavior).
+#' @param qa_band Cloud Score+ QA band used to mask S30 scenes. \code{"cs_cdf"} (a
+#'   temporal-CDF ranking, robust to terrain shading) or \code{"cs"} (an
+#'   instantaneous spectral-distance score). Only used when
+#'   \code{use_cloud_score = TRUE}. Default is \code{"cs_cdf"}
+#' @param clear_threshold Minimum Cloud Score+ value for an S30 pixel to be kept;
+#'   pixels below are masked as cloud/shadow. Values between 0.50 and 0.65
+#'   generally work well, with higher values removing more thin cloud, haze and
+#'   cirrus shadow. Only used when \code{use_cloud_score = TRUE}. Default is 0.60
 #' @param near_span Number of years either side of the target year searched first
 #'   (same calendar month) when filling gaps, before falling back to the full
 #'   archive. Default is 2
@@ -1088,14 +1178,18 @@ download_s2 <- function(aoi,
 #'   \item{skipped}{A data frame of year/month combos with no imagery in any year}
 #'   \item{filled}{A data frame of year/month combos that required multi-year gap filling}
 #'   \item{poll_result}{Result of poll_drive() if poll = TRUE, otherwise NULL}
-#' @seealso \code{\link{define_aoi}}, \code{\link{poll_drive}},
-#'   \code{\link{compute_albedo}}, \code{\link{compute_reflectance}}
+#' @seealso \code{\link{download_s2}}, \code{\link{define_aoi}},
+#'   \code{\link{poll_drive}}, \code{\link{compute_albedo}},
+#'   \code{\link{compute_reflectance}}
 #' @export
 download_hls <- function(aoi,
                         dates,
                         out_dir,
                         study_area = NULL,
                         scale = 30,
+                        use_cloud_score = TRUE,
+                        qa_band = "cs_cdf",
+                        clear_threshold = 0.60,
                         near_span = 2,
                         focal_radius = 10,
                         snow_months = c(11, 12, 1, 2, 3, 4),
@@ -1152,22 +1246,31 @@ download_hls <- function(aoi,
     # Snow protection (keep snow, allow some residual cloud) only in snow-season
     # months; snow-free months mask cloud aggressively and backfill from other
     # years. Snow and cloud share a spectral signature, so the split is seasonal.
+    # With use_cloud_score the S30 half instead relies on Cloud Score+ (which
+    # separates snow from cloud); this snow toggle then governs only the L30 half
+    # and any S30 pixels that fall back to the spectral mask.
     mp$protect_snow <- mo %in% snow_months
-    masker <- .make_hls_masker(mp)
 
     month_filter <- ee$Filter$calendarRange(mo, mo, "month")
     year_filter  <- ee$Filter$calendarRange(y, y, "year")
 
-    target_raw <- .hls_select_merge(
+    target_masked <- .hls_build_masked(
       ee_aoi, ee$Filter$And(year_filter, month_filter),
-      s30_bands, l30_bands, band_rename
+      s30_bands, l30_bands, band_rename,
+      mp, use_cloud_score, qa_band, clear_threshold
     )
-    n <- target_raw$size()$getInfo()
-    cat(sprintf("Year %d, Month %02d: %d images found (S30+L30)%s\n", y, mo, n,
-                if (mp$protect_snow) " [snow-protected]" else " [aggressive cloud removal]"))
+    n <- target_masked$size()$getInfo()
+    mode_lbl <- if (use_cloud_score) {
+      " [S30 CloudScore+ / L30 spectral]"
+    } else if (mp$protect_snow) {
+      " [snow-protected]"
+    } else {
+      " [aggressive cloud removal]"
+    }
+    cat(sprintf("Year %d, Month %02d: %d images found (S30+L30)%s\n", y, mo, n, mode_lbl))
 
     # Target-month medoid (may be NULL or contain gaps).
-    combined <- if (n > 0) .hls_medoid(target_raw$map(masker), min_obs = min_obs) else NULL
+    combined <- if (n > 0) .hls_medoid(target_masked, min_obs = min_obs) else NULL
 
     has_gaps <- is.null(combined) || .hls_has_gaps(combined, ee_aoi, scale)
 
@@ -1175,7 +1278,8 @@ download_hls <- function(aoi,
       cat("  Gaps detected, filling from the same month in other years...\n")
       fills <- .hls_multiyear_fill(
         ee_aoi, y, mo, near_span,
-        s30_bands, l30_bands, band_rename, masker
+        s30_bands, l30_bands, band_rename,
+        mp, use_cloud_score, qa_band, clear_threshold
       )
 
       for (lvl in c("near", "clim")) {
