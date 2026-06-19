@@ -16,6 +16,7 @@ download_hls(
   green_thresh = 0.3,
   cloud_ndsi_thresh = 0.2,
   blue_thresh = 0.25,
+  swir_max_thresh = 0.15,
   poll = TRUE,
   poll_interval = 30,
   timeout = 300
@@ -57,6 +58,11 @@ as cloud (supplements Fmask). Default is 0.2}
 \item{blue_thresh}{Blue band reflectance threshold for spectral cloud
 detection. Prevents dark surfaces from being misidentified as cloud.
 Default is 0.25}
+
+\item{swir_max_thresh}{Maximum SWIR reflectance for snow rescue. Pure snow
+absorbs SWIR (< 0.1); thin cloud over snow reflects SWIR (> 0.15).
+Pixels with SWIR above this are not rescued even if NDSI indicates snow.
+Default is 0.15}
 
 \item{poll}{Logical. Whether to poll Google Drive and download files after
 all tasks are submitted. Default is TRUE}
