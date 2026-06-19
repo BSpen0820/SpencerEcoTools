@@ -2,7 +2,7 @@
 % Please edit documentation in R/Microclimf_DataPrep.R
 \name{download_hls}
 \alias{download_hls}
-\title{Download HLS Sentinel-2 Imagery from Google Earth Engine}
+\title{Download Cloud-Free HLS Imagery from Google Earth Engine}
 \usage{
 download_hls(
   aoi,
@@ -10,14 +10,16 @@ download_hls(
   out_dir,
   study_area = NULL,
   scale = 30,
+  near_span = 2,
   focal_radius = 10,
-  max_months = 3,
   ndsi_thresh = 0.4,
   green_thresh = 0.3,
-  cloud_ndsi_thresh = 0.2,
-  blue_thresh = 0.25,
-  swir_max_thresh = 0.15,
-  cloud_buffer = 150,
+  swir_snow_max = 0.12,
+  swir_cloud_thresh = 0.2,
+  vis_thresh = 0.25,
+  cirrus_thresh = 0.01,
+  refl_max = 1.05,
+  min_obs = 1,
   poll = TRUE,
   poll_interval = 30,
   timeout = 300
@@ -38,36 +40,39 @@ If provided, used as a prefix in output file names}
 
 \item{scale}{Spatial resolution in meters. Default is 30}
 
-\item{focal_radius}{Kernel radius in pixels for focal median gap filling.
-Default is 10 (21x21 pixel window)}
+\item{near_span}{Number of years either side of the target year searched first
+(same calendar month) when filling gaps, before falling back to the full
+archive. Default is 2}
 
-\item{max_months}{Maximum number of months to search either side of target
-month for temporal interpolation. Default is 3}
+\item{focal_radius}{Kernel radius in pixels for the last-resort focal median
+that fills any pixel left masked after multi-year filling. Default is 10}
 
-\item{ndsi_thresh}{NDSI threshold for snow rescue. Pixels with
-NDSI >= this value AND green reflectance > \code{green_thresh} are
-treated as snow and excluded from cloud masking. Default is 0.4}
+\item{ndsi_thresh}{Minimum NDSI = (green - SWIR1)/(green + SWIR1) for the snow
+override. Pixels above this (and meeting the SWIR and green gates) are
+treated as snow and protected from all cloud rules. Default is 0.4}
 
-\item{green_thresh}{Green band reflectance threshold for snow rescue.
-Prevents dark surfaces like water from being misidentified as snow.
-Default is 0.3}
+\item{green_thresh}{Minimum green reflectance for the snow override. Prevents
+dark surfaces from being mistaken for snow. Default is 0.3}
 
-\item{cloud_ndsi_thresh}{NDSI threshold for spectral cloud detection. Pixels
-with NDSI below this AND blue reflectance > \code{blue_thresh} are masked
-as cloud (supplements Fmask). Default is 0.2}
+\item{swir_snow_max}{Maximum SWIR1 reflectance for the snow override. Snow
+absorbs SWIR (low values); cloud reflects it. Default is 0.12}
 
-\item{blue_thresh}{Blue band reflectance threshold for spectral cloud
-detection. Prevents dark surfaces from being misidentified as cloud.
-Default is 0.25}
+\item{swir_cloud_thresh}{SWIR1 reflectance above which a bright-in-visible
+pixel is treated as cloud. Default is 0.2}
 
-\item{swir_max_thresh}{Maximum SWIR reflectance for snow rescue. Pure snow
-absorbs SWIR (< 0.1); thin cloud over snow reflects SWIR (> 0.15).
-Pixels with SWIR above this are not rescued even if NDSI indicates snow.
-Default is 0.15}
+\item{vis_thresh}{Green reflectance above which a pixel is "bright in the
+visible" for the SWIR cloud gate. Default is 0.25}
 
-\item{cloud_buffer}{Distance in pixels over which the quality score
-transitions from 0 (at cloud edge) to 1 (far from cloud). Controls how
-aggressively near-cloud pixels are deprioritized. Default is 150}
+\item{cirrus_thresh}{Cirrus-band (1.38 um) reflectance above which a pixel is
+treated as thin cloud. Snow-safe because the surface is dark at 1.38 um.
+Default is 0.01}
+
+\item{refl_max}{Maximum physically plausible reflectance; pixels with any band
+above this are masked as residual cloud. Default is 1.05}
+
+\item{min_obs}{Minimum number of clear observations required for a target-month
+pixel to be kept; pixels with fewer are treated as gaps and filled from other
+years. Default is 1}
 
 \item{poll}{Logical. Whether to poll Google Drive and download files after
 all tasks are submitted. Default is TRUE}
@@ -79,28 +84,42 @@ all tasks are submitted. Default is TRUE}
 \value{
 Invisibly returns a named list with elements:
 \item{submitted}{Number of GEE tasks successfully submitted}
-\item{skipped}{A data frame of skipped year/month combos}
-\item{interpolated}{A data frame of year/month combos where temporal interpolation was applied}
+\item{skipped}{A data frame of year/month combos with no imagery in any year}
+\item{filled}{A data frame of year/month combos that required multi-year gap filling}
 \item{poll_result}{Result of poll_drive() if poll = TRUE, otherwise NULL}
 }
 \description{
-Iterates over each date provided, using a best-available-pixel strategy
-on merged HLS S30 (Sentinel-2) and L30 (Landsat 8/9) imagery. Merging both
-collections nearly doubles observation frequency (~2-3 day revisit). Each
-pixel is scored by its distance to the nearest cloud/shadow, and
-\code{qualityMosaic} selects the best observation per pixel location. Cloud
-masking combines Fmask QA bits with spectral cloud detection and NDSI-based
-snow rescue with a SWIR gate.
+Iterates over each year-month provided, building a cloud-free, snow-preserving
+surface-reflectance composite from merged HLS S30 (Sentinel-2) and L30
+(Landsat 8/9) imagery. Merging both collections nearly doubles observation
+frequency (~2-3 day revisit). Each composite is a per-pixel \emph{medoid} -
+the real observation whose spectrum is closest to the per-pixel median -
+which preserves physically valid spectra and avoids the band-mixing and
+cloud-edge artefacts of distance-weighted mosaics.
 }
 \details{
 The compositing strategy is:
 \enumerate{
-\item Per-pixel quality scoring: distance to nearest cloud/shadow/bad pixel,
-normalized to 0-1 over \code{cloud_buffer} pixels
-\item Best-pixel selection via \code{qualityMosaic} — selects the observation
-with the highest quality score at each pixel location
-\item Gap filling from neighboring months (up to \code{max_months}) using
-the same best-pixel approach, closest months first
-\item Focal median fills any final remaining gaps
+\item Per-scene masking (\code{.make_hls_masker}): Fmask QA bits
+(cloud / adjacent / shadow), a 1.38 um cirrus-band test for thin
+cloud, a visible + SWIR brightness gate, and a physical reflectance
+ceiling, with a snow override (high NDSI, low SWIR, bright green) so
+genuine snow is never removed.
+\item Per-pixel medoid composite of the target month's clear observations.
+\item Gap filling from the \strong{same calendar month in other years}
+(\code{.hls_multiyear_fill}) - nearest years first
+(\code{near_span}), then all available years - so completeness is
+guaranteed without blending across seasons.
+\item Focal median as an absolute last resort for any pixel never clear in
+any year.
 }
+
+Cloud detection deliberately errs aggressive: residual cloud is converted to
+gaps and filled from clear same-month observations in other years, rather than
+selecting a "least-bad but still cloudy" pixel. Output reflectance is scaled
+0-1 (already provided that way by GEE for HLS v2.0).
+}
+\seealso{
+\code{\link{define_aoi}}, \code{\link{poll_drive}},
+\code{\link{compute_albedo}}, \code{\link{compute_reflectance}}
 }
