@@ -590,9 +590,9 @@ download_albedo <- function(aoi,
 
 # Internal helpers --------------------------------------------------------
 
-.make_maskHLS_full <- function(ndsi_thresh, green_thresh,
-                              cloud_ndsi_thresh, blue_thresh,
-                              swir_max_thresh) {
+.make_quality_scored <- function(ndsi_thresh, green_thresh,
+                                cloud_ndsi_thresh, blue_thresh,
+                                swir_max_thresh, cloud_buffer) {
   function(img) {
     fmask       <- img$select("Fmask")
     fmask_cloud <- fmask$bitwiseAnd(2^1)$neq(0)
@@ -612,34 +612,16 @@ download_albedo <- function(aoi,
       And(img$select("swir")$lt(swir_max_thresh))
     cloud <- cloud$And(is_snow$Not())
 
-    mask <- cloud$Or(adjacent)$Or(shadow)$Or(high_aot)$Not()
-    img$updateMask(mask)
-  }
-}
+    bad <- cloud$Or(adjacent)$Or(shadow)$Or(high_aot)
 
-.make_maskHLS_no_aot <- function(ndsi_thresh, green_thresh,
-                                 cloud_ndsi_thresh, blue_thresh,
-                                 swir_max_thresh) {
-  function(img) {
-    fmask       <- img$select("Fmask")
-    fmask_cloud <- fmask$bitwiseAnd(2^1)$neq(0)
-    adjacent    <- fmask$bitwiseAnd(2^2)$neq(0)
-    shadow      <- fmask$bitwiseAnd(2^3)$neq(0)
+    dist <- bad$fastDistanceTransform(as.integer(cloud_buffer * 2L + 1L))$sqrt()
+    quality <- dist$min(cloud_buffer)$divide(cloud_buffer)$
+      toFloat()$rename("quality")
 
-    ndsi <- img$normalizedDifference(c("green", "swir"))
-
-    spectral_cloud <- ndsi$lt(cloud_ndsi_thresh)$
-      And(img$select("blue")$gt(blue_thresh))
-
-    cloud <- fmask_cloud$Or(spectral_cloud)
-
-    is_snow <- ndsi$gte(ndsi_thresh)$
-      And(img$select("green")$gt(green_thresh))$
-      And(img$select("swir")$lt(swir_max_thresh))
-    cloud <- cloud$And(is_snow$Not())
-
-    mask <- cloud$Or(adjacent)$Or(shadow)$Not()
-    img$updateMask(mask)
+    img$select("red", "green", "blue", "nir")$
+      toFloat()$
+      addBands(quality)$
+      updateMask(bad$Not())
   }
 }
 
@@ -658,16 +640,15 @@ download_albedo <- function(aoi,
   )))
 }
 
-.temporal_weighted_fill <- function(ee_aoi, target_date,
+.temporal_quality_fill <- function(ee_aoi, target_date,
                                     s30_bands, l30_bands, band_rename,
                                     max_months = 3,
                                     ndsi_thresh = 0.4, green_thresh = 0.3,
                                     cloud_ndsi_thresh = 0.2, blue_thresh = 0.25,
-                                    swir_max_thresh = 0.15) {
+                                    swir_max_thresh = 0.15, cloud_buffer = 150) {
 
-  target_center       <- ee$Date(target_date)
-  target_month_center <- target_center$advance(15, "day")
-  filled              <- NULL
+  target_center <- ee$Date(target_date)
+  filled        <- NULL
 
   for (offset in 1:max_months) {
     for (direction in c(-1, 1)) {
@@ -690,50 +671,14 @@ download_albedo <- function(aoi,
       n <- neighbor_ic$size()$getInfo()
       if (n == 0) next
 
-      # Apply masks
-      masked_ic <- neighbor_ic$
-        map(.make_maskHLS_full(ndsi_thresh, green_thresh,
-                               cloud_ndsi_thresh, blue_thresh,
-                               swir_max_thresh))$
-        map(.make_maskHLS_no_aot(ndsi_thresh, green_thresh,
-                                  cloud_ndsi_thresh, blue_thresh,
-                                  swir_max_thresh))
+      neighbor_best <- neighbor_ic$
+        map(.make_quality_scored(ndsi_thresh, green_thresh,
+                                 cloud_ndsi_thresh, blue_thresh,
+                                 swir_max_thresh, cloud_buffer))$
+        qualityMosaic("quality")$
+        select("red", "green", "blue", "nir")
 
-      # Cast to float32 and compute effective weights
-      weighted_ic <- masked_ic$map(function(img) {
-        img <- img$select("red", "green", "blue", "nir")$cast(
-          ee$Dictionary(list(
-            red   = "float",
-            green = "float",
-            blue  = "float",
-            nir   = "float"
-          ))
-        )
-
-        img_date         <- img$date()
-        day_dist         <- img_date$difference(target_month_center, "day")$abs()$add(1)
-        weight           <- ee$Number(1)$divide(day_dist)
-        pixel_mask       <- img$select("red")$mask()
-        effective_weight <- pixel_mask$multiply(weight)$
-          rename("effective_weight")$
-          cast(ee$Dictionary(list(effective_weight = "float")))
-
-        img$multiply(weight)$
-          addBands(effective_weight)$
-          set("weight", weight)
-      })
-
-      # Weighted sum of valid pixels only
-      weighted_sum <- weighted_ic$select(c("red", "green", "blue", "nir"))$sum()
-
-      # Sum of effective weights only
-      weight_sum <- weighted_ic$select("effective_weight")$sum()
-
-      # Divide only where weight_sum > 0
-      neighbor_mean <- weighted_sum$divide(weight_sum)$
-        updateMask(weight_sum$gt(0))
-
-      filled <- if (is.null(filled)) neighbor_mean else filled$unmask(neighbor_mean)
+      filled <- if (is.null(filled)) neighbor_best else filled$unmask(neighbor_best)
     }
   }
 
@@ -744,22 +689,22 @@ download_albedo <- function(aoi,
 
 #' Download HLS Sentinel-2 Imagery from Google Earth Engine
 #'
-#' Iterates over each date provided, applying a two-level cloud/shadow masking
-#' strategy to merged HLS S30 (Sentinel-2) and L30 (Landsat 8/9) imagery.
-#' Merging both collections nearly doubles observation frequency (~2-3 day
-#' revisit vs ~5 day Sentinel-only). Cloud masking combines Fmask QA bits
-#' with spectral cloud detection (NDSI + blue brightness) and NDSI-based snow
-#' rescue to handle both cloud omission and snow/cloud confusion. If gaps remain
-#' after masking, temporally adjacent images (up to \code{max_months} months
-#' either side) fill gaps via inverse distance weighted mean. A focal median is
-#' applied as a final fallback.
+#' Iterates over each date provided, using a best-available-pixel strategy
+#' on merged HLS S30 (Sentinel-2) and L30 (Landsat 8/9) imagery. Merging both
+#' collections nearly doubles observation frequency (~2-3 day revisit). Each
+#' pixel is scored by its distance to the nearest cloud/shadow, and
+#' \code{qualityMosaic} selects the best observation per pixel location. Cloud
+#' masking combines Fmask QA bits with spectral cloud detection and NDSI-based
+#' snow rescue with a SWIR gate.
 #'
-#' The masking strategy applied is:
+#' The compositing strategy is:
 #' \enumerate{
-#'   \item Full mask (Fmask cloud + spectral cloud, adjacent, shadow, high AOT)
-#'         with NDSI snow rescue — median composite
-#'   \item No AOT mask with same cloud/snow logic — median fills remaining gaps
-#'   \item Temporally weighted mean from surrounding months fills remaining gaps
+#'   \item Per-pixel quality scoring: distance to nearest cloud/shadow/bad pixel,
+#'         normalized to 0-1 over \code{cloud_buffer} pixels
+#'   \item Best-pixel selection via \code{qualityMosaic} — selects the observation
+#'         with the highest quality score at each pixel location
+#'   \item Gap filling from neighboring months (up to \code{max_months}) using
+#'         the same best-pixel approach, closest months first
 #'   \item Focal median fills any final remaining gaps
 #' }
 #'
@@ -792,6 +737,9 @@ download_albedo <- function(aoi,
 #'   absorbs SWIR (< 0.1); thin cloud over snow reflects SWIR (> 0.15).
 #'   Pixels with SWIR above this are not rescued even if NDSI indicates snow.
 #'   Default is 0.15
+#' @param cloud_buffer Distance in pixels over which the quality score
+#'   transitions from 0 (at cloud edge) to 1 (far from cloud). Controls how
+#'   aggressively near-cloud pixels are deprioritized. Default is 150
 #' @param poll Logical. Whether to poll Google Drive and download files after
 #'   all tasks are submitted. Default is TRUE
 #' @param poll_interval Polling interval in seconds. Default is 30
@@ -815,6 +763,7 @@ download_hls <- function(aoi,
                         cloud_ndsi_thresh = 0.2,
                         blue_thresh = 0.25,
                         swir_max_thresh = 0.15,
+                        cloud_buffer = 150,
                         poll = TRUE,
                         poll_interval = 30,
                         timeout = 300) {
@@ -872,27 +821,15 @@ download_hls <- function(aoi,
 
       cat(sprintf("Year %d, Month %02d: %d images found (S30+L30)\n", y, mo, n))
 
-      # Level 1: Full mask median
-      median_full <- hls_ic_raw$
-        map(.make_maskHLS_full(ndsi_thresh, green_thresh,
-                               cloud_ndsi_thresh, blue_thresh,
-                               swir_max_thresh))$
+      # Best-pixel composite: each pixel selected from the observation
+      # with the highest quality score (furthest from clouds)
+      combined <- hls_ic_raw$
+        map(.make_quality_scored(ndsi_thresh, green_thresh,
+                                 cloud_ndsi_thresh, blue_thresh,
+                                 swir_max_thresh, cloud_buffer))$
+        qualityMosaic("quality")$
         select("red", "green", "blue", "nir")$
-        map(.float32_cast)$
-        median()$
         clip(ee_aoi)
-
-      # Level 2: No AOT mask fills gaps
-      median_no_aot <- hls_ic_raw$
-        map(.make_maskHLS_no_aot(ndsi_thresh, green_thresh,
-                                  cloud_ndsi_thresh, blue_thresh,
-                                  swir_max_thresh))$
-        select("red", "green", "blue", "nir")$
-        map(.float32_cast)$
-        median()$
-        clip(ee_aoi)
-
-      combined <- median_full$unmask(median_no_aot)
 
       # Check for remaining gaps
       any_masked_result <- combined$select("red")$mask()$Not()$
@@ -911,7 +848,7 @@ download_hls <- function(aoi,
 
         target_date <- sprintf("%d-%02d-15", y, mo)
 
-        temporal_fill <- .temporal_weighted_fill(
+        temporal_fill <- .temporal_quality_fill(
           ee_aoi            = ee_aoi,
           target_date       = target_date,
           s30_bands         = s30_bands,
@@ -922,7 +859,8 @@ download_hls <- function(aoi,
           green_thresh      = green_thresh,
           cloud_ndsi_thresh = cloud_ndsi_thresh,
           blue_thresh       = blue_thresh,
-          swir_max_thresh   = swir_max_thresh
+          swir_max_thresh   = swir_max_thresh,
+          cloud_buffer      = cloud_buffer
         )
 
         if (!is.null(temporal_fill)) {
