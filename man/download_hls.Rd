@@ -17,6 +17,7 @@ download_hls(
   cloud_ndsi_thresh = 0.2,
   blue_thresh = 0.25,
   swir_max_thresh = 0.15,
+  cloud_buffer = 150,
   poll = TRUE,
   poll_interval = 30,
   timeout = 300
@@ -64,6 +65,10 @@ absorbs SWIR (< 0.1); thin cloud over snow reflects SWIR (> 0.15).
 Pixels with SWIR above this are not rescued even if NDSI indicates snow.
 Default is 0.15}
 
+\item{cloud_buffer}{Distance in pixels over which the quality score
+transitions from 0 (at cloud edge) to 1 (far from cloud). Controls how
+aggressively near-cloud pixels are deprioritized. Default is 150}
+
 \item{poll}{Logical. Whether to poll Google Drive and download files after
 all tasks are submitted. Default is TRUE}
 
@@ -79,23 +84,23 @@ Invisibly returns a named list with elements:
 \item{poll_result}{Result of poll_drive() if poll = TRUE, otherwise NULL}
 }
 \description{
-Iterates over each date provided, applying a two-level cloud/shadow masking
-strategy to merged HLS S30 (Sentinel-2) and L30 (Landsat 8/9) imagery.
-Merging both collections nearly doubles observation frequency (~2-3 day
-revisit vs ~5 day Sentinel-only). Cloud masking combines Fmask QA bits
-with spectral cloud detection (NDSI + blue brightness) and NDSI-based snow
-rescue to handle both cloud omission and snow/cloud confusion. If gaps remain
-after masking, temporally adjacent images (up to \code{max_months} months
-either side) fill gaps via inverse distance weighted mean. A focal median is
-applied as a final fallback.
+Iterates over each date provided, using a best-available-pixel strategy
+on merged HLS S30 (Sentinel-2) and L30 (Landsat 8/9) imagery. Merging both
+collections nearly doubles observation frequency (~2-3 day revisit). Each
+pixel is scored by its distance to the nearest cloud/shadow, and
+\code{qualityMosaic} selects the best observation per pixel location. Cloud
+masking combines Fmask QA bits with spectral cloud detection and NDSI-based
+snow rescue with a SWIR gate.
 }
 \details{
-The masking strategy applied is:
+The compositing strategy is:
 \enumerate{
-\item Full mask (Fmask cloud + spectral cloud, adjacent, shadow, high AOT)
-with NDSI snow rescue — median composite
-\item No AOT mask with same cloud/snow logic — median fills remaining gaps
-\item Temporally weighted mean from surrounding months fills remaining gaps
+\item Per-pixel quality scoring: distance to nearest cloud/shadow/bad pixel,
+normalized to 0-1 over \code{cloud_buffer} pixels
+\item Best-pixel selection via \code{qualityMosaic} — selects the observation
+with the highest quality score at each pixel location
+\item Gap filling from neighboring months (up to \code{max_months}) using
+the same best-pixel approach, closest months first
 \item Focal median fills any final remaining gaps
 }
 }
