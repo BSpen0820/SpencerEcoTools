@@ -13,8 +13,7 @@ compute_albedo(
   rgb_band_mins = c(640, 530, 450),
   rgb_band_maxs = c(670, 590, 510),
   cir_band_mins = c(780, 640, 530),
-  cir_band_maxs = c(880, 670, 590),
-  max_albedo = 0.6
+  cir_band_maxs = c(880, 670, 590)
 )
 }
 \arguments{
@@ -43,9 +42,6 @@ Default is c(780, 640, 530) for Sentinel-2}
 
 \item{cir_band_maxs}{Numeric vector of CIR band maximum wavelengths in nm.
 Default is c(880, 670, 590) for Sentinel-2}
-
-\item{max_albedo}{Hard ceiling for albedo values before MODIS adjustment.
-Pixels above this value are clamped down to it. Default is 0.6, common for fresh snow}
 }
 \value{
 Invisibly returns a data frame logging the status of each
