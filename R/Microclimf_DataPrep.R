@@ -1700,8 +1700,6 @@ download_modis_lai <- function(aoi,
 #'   Default is c(780, 640, 530) for Sentinel-2
 #' @param cir_band_maxs Numeric vector of CIR band maximum wavelengths in nm.
 #'   Default is c(880, 670, 590) for Sentinel-2
-#' @param max_albedo Hard ceiling for albedo values before MODIS adjustment.
-#'   Pixels above this value are clamped down to it. Default is 0.6, common for fresh snow
 #'
 #' @return Invisibly returns a data frame logging the status of each
 #'   year/month combination processed
