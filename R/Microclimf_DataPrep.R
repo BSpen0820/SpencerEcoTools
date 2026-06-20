@@ -1714,8 +1714,7 @@ compute_albedo <- function(dates,
                           rgb_band_mins = c(640, 530, 450),
                           rgb_band_maxs = c(670, 590, 510),
                           cir_band_mins = c(780, 640, 530),
-                          cir_band_maxs = c(880, 670, 590),
-                          max_albedo = 0.6) {
+                          cir_band_maxs = c(880, 670, 590)) {
 
   # Extract year and month from dates
   dates <- as.Date(dates)
@@ -1806,9 +1805,7 @@ compute_albedo <- function(dates,
 
     # Clamp to valid range
     albphoto <- terra::clamp(albphoto, lower = 1e-6, upper = 1 - 1e-6)
-
-    # Apply hard ceiling before MODIS adjustment
-    albphoto <- terra::clamp(albphoto, upper = max_albedo, values = TRUE)
+    m_rast <- terra::clamp(m_rast, lower = 1e-6, upper = 1 - 1e-6)
 
     # Adjust to MODIS broadband albedo
     albadjusted <- microclimdata::albedo_adjust(albphoto, m_rast)
