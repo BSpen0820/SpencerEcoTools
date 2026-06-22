@@ -1719,6 +1719,31 @@ run_micro_big_nichemap <- function(tiles,        # tile object from create_tiles
   wsa  <- microclimfPara:::.windsheltera(dtm_fine, 2, 1)
   rm(msl); invisible(gc())
 
+  # --- offload terrain to temp files to free RAM during modeling --------------
+  # The full-DEM terrain features are only ever used as small per-tile crops.
+  # Write them to a per-process temp dir and drop them from RAM; each loop
+  # iteration reloads and crops, then frees the full object before the heavy
+  # model runs. Slower, but keeps peak memory off the full-DEM objects.
+  terr_dir <- tempfile("micro_terrain_")
+  dir.create(terr_dir)
+  on.exit(unlink(terr_dir, recursive = TRUE), add = TRUE)
+
+  slope_path  <- file.path(terr_dir, "slope.tif")
+  aspect_path <- file.path(terr_dir, "aspect.tif")
+  twi_path    <- file.path(terr_dir, "twi.tif")
+  hor_path    <- file.path(terr_dir, "hor.rds")
+  svfa_path   <- file.path(terr_dir, "svfa.rds")
+  wsa_path    <- file.path(terr_dir, "wsa.rds")
+
+  terra::writeRaster(slope,  slope_path,  overwrite = TRUE)
+  terra::writeRaster(aspect, aspect_path, overwrite = TRUE)
+  terra::writeRaster(twi,    twi_path,    overwrite = TRUE)
+  readr::write_rds(hor,  hor_path)
+  readr::write_rds(svfa, svfa_path)
+  readr::write_rds(wsa,  wsa_path)
+
+  rm(slope, aspect, twi, hor, svfa, wsa); invisible(gc())
+
   # --- flat task table: all (tile, date) combinations --------------------------
   n_tiles <- nrow(tiles$tiles_proc)
   n_dates <- nrow(date_ranges)
@@ -1800,9 +1825,13 @@ run_micro_big_nichemap <- function(tiles,        # tile object from create_tiles
     dem_fine_tile   <- terra::crop(dtm_fine,   dem_coarse_tile, snap = "out")
     dem_fine_core   <- terra::crop(dtm_fine,   terra::ext(tile_core))
 
-    slope_tile  <- terra::crop(slope,  dem_fine_tile)
-    aspect_tile <- terra::crop(aspect, dem_fine_tile)
-    twi_tile    <- terra::crop(twi,    dem_fine_tile)
+    slope_src   <- terra::rast(slope_path)
+    slope_tile  <- terra::crop(slope_src,  dem_fine_tile)
+    aspect_src  <- terra::rast(aspect_path)
+    aspect_tile <- terra::crop(aspect_src, dem_fine_tile)
+    twi_src     <- terra::rast(twi_path)
+    twi_tile    <- terra::crop(twi_src,    dem_fine_tile)
+    rm(slope_src, aspect_src, twi_src)
 
     crop_cells  <- terra::cellFromXY(
       dtm_fine,
@@ -1813,9 +1842,15 @@ run_micro_big_nichemap <- function(tiles,        # tile object from create_tiles
     row_idx <- unique(crop_rowcol[, 1])
     col_idx <- unique(crop_rowcol[, 2])
 
+    hor       <- readr::read_rds(hor_path)
     hor_tile  <- hor [row_idx, col_idx, , drop = FALSE]
+    rm(hor)
+    svfa      <- readr::read_rds(svfa_path)
     svfa_tile <- svfa[row_idx, col_idx,   drop = FALSE]
+    rm(svfa)
+    wsa       <- readr::read_rds(wsa_path)
     wsa_tile  <- wsa [row_idx, col_idx, , drop = FALSE]
+    rm(wsa)
     invisible(gc())
 
     tme <- as.POSIXlt(
@@ -1887,17 +1922,15 @@ run_micro_big_nichemap <- function(tiles,        # tile object from create_tiles
           )
         )
         readr::write_rds(pointa, mp_file)
+        rm(pointa); invisible(gc())
         cat(" done.\n")
         log_df <<- rbind(log_df, .log_row(tile_id, period_label, hgt_lbl,
                                           "micropoint", "success", mp_file))
       }, error = function(e) {
-        cat(sprintf(" FAILED: %s\n", conditionMessage(e)))
-        warning(sprintf("Tile %d | %s | %s | micropoint: %s",
-                        tile_id, period_label, hgt_lbl, conditionMessage(e)))
-        log_df <<- rbind(log_df, .log_row(tile_id, period_label, hgt_lbl,
-                                          "micropoint",
-                                          paste0("error: ", conditionMessage(e)),
-                                          mp_file))
+        cat(" FAILED.\n")
+        stop(sprintf("Tile %d | %s | %s | micropoint: %s",
+                     tile_id, period_label, hgt_lbl, conditionMessage(e)),
+             call. = FALSE)
       })
     }
 
@@ -1949,18 +1982,15 @@ run_micro_big_nichemap <- function(tiles,        # tile object from create_tiles
         smod.trim <- trim_tile_buffer(smod, dem_proc = dem_fine_tile, dem_core = dem_fine_core)
         write_tile(smod.trim, out_path = smod_file, tme = tme,
                    compression = compression, file_fmt = file_fmt, dtm = dem_fine_core)
-        rm(smod.trim)
+        rm(smod.trim, pointa_abv); invisible(gc())
         cat(" done.\n")
         log_df <<- rbind(log_df, .log_row(tile_id, period_label, "",
                                           "snow", "success", smod_file))
       }, error = function(e) {
-        cat(sprintf(" FAILED: %s\n", conditionMessage(e)))
-        warning(sprintf("Tile %d | %s | snow: %s",
-                        tile_id, period_label, conditionMessage(e)))
-        log_df <<- rbind(log_df, .log_row(tile_id, period_label, "",
-                                          "snow",
-                                          paste0("error: ", conditionMessage(e)),
-                                          smod_file))
+        cat(" FAILED.\n")
+        stop(sprintf("Tile %d | %s | snow: %s",
+                     tile_id, period_label, conditionMessage(e)),
+             call. = FALSE)
       })
     }
 
@@ -2029,18 +2059,15 @@ run_micro_big_nichemap <- function(tiles,        # tile object from create_tiles
         mout.trim <- trim_tile_buffer(mout, dem_proc = dem_fine_tile, dem_core = dem_fine_core)
         write_tile(mout.trim, out_path = mc_file, tme = tme,
                    compression = compression, file_fmt = file_fmt, dtm = dem_fine_core)
-        rm(mout, mout.trim)
+        rm(mout, mout.trim, pointa); invisible(gc())
         cat(" done.\n")
         log_df <<- rbind(log_df, .log_row(tile_id, period_label, hgt_lbl,
                                           "microclimate", "success", mc_file))
       }, error = function(e) {
-        cat(sprintf(" FAILED: %s\n", conditionMessage(e)))
-        warning(sprintf("Tile %d | %s | %s | microclimate: %s",
-                        tile_id, period_label, hgt_lbl, conditionMessage(e)))
-        log_df <<- rbind(log_df, .log_row(tile_id, period_label, hgt_lbl,
-                                          "microclimate",
-                                          paste0("error: ", conditionMessage(e)),
-                                          mc_file))
+        cat(" FAILED.\n")
+        stop(sprintf("Tile %d | %s | %s | microclimate: %s",
+                     tile_id, period_label, hgt_lbl, conditionMessage(e)),
+             call. = FALSE)
       })
     }
 
@@ -2116,18 +2143,15 @@ run_micro_big_nichemap <- function(tiles,        # tile object from create_tiles
           write_tile(mout.trim, out_path = blw_file, tme = tme,
                      compression = compression, file_fmt = file_fmt,
                      dtm = dem_fine_core, depth_label = hgt_lbl)
-          rm(mout, mout.trim)
+          rm(mout, mout.trim, pointa); invisible(gc())
           cat(" done.\n")
           log_df <<- rbind(log_df, .log_row(tile_id, period_label, hgt_lbl,
                                             "microclimate", "success", blw_file))
         }, error = function(e) {
-          cat(sprintf(" FAILED: %s\n", conditionMessage(e)))
-          warning(sprintf("Tile %d | %s | %s | microclimate: %s",
-                          tile_id, period_label, hgt_lbl, conditionMessage(e)))
-          log_df <<- rbind(log_df, .log_row(tile_id, period_label, hgt_lbl,
-                                            "microclimate",
-                                            paste0("error: ", conditionMessage(e)),
-                                            blw_file))
+          cat(" FAILED.\n")
+          stop(sprintf("Tile %d | %s | %s | microclimate: %s",
+                       tile_id, period_label, hgt_lbl, conditionMessage(e)),
+               call. = FALSE)
         })
       }
     }
