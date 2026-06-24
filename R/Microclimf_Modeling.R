@@ -1446,6 +1446,58 @@ stitch_tiles <- function(tile_dir, out_file, data_type = "mout", file_fmt = "h5"
   })
 }
 
+.interp_nan_layers <- function(clim_list, tme, tile_id, period_label,
+                               max_gap_hours = 48L) {
+  probe  <- terra::unwrap(clim_list[[1]])
+  ncells <- terra::ncell(probe)
+  nlyr   <- terra::nlyr(probe)
+
+  nan_count <- terra::global(probe, function(x) sum(is.nan(x)))[[1]]
+  nan_idx   <- which(nan_count == ncells)
+
+  if (length(nan_idx) == 0L) return(clim_list)
+
+  gaps    <- split(nan_idx, cumsum(c(1, diff(nan_idx) != 1)))
+  max_run <- max(vapply(gaps, length, integer(1)))
+  if (max_run > max_gap_hours)
+    stop(sprintf("Tile %d | %s: climate NaN gap of %d hours exceeds %d-hour limit",
+                 tile_id, period_label, max_run, max_gap_hours))
+
+  gap_dates <- unique(as.Date(tme[nan_idx]))
+  warning(sprintf(
+    "Tile %d | %s: interpolating %d NaN climate hours (%s)",
+    tile_id, period_label, length(nan_idx),
+    paste(gap_dates, collapse = ", ")), call. = FALSE)
+
+  clamp_bounds <- list(
+    precip = c(0, Inf), swdown = c(0, Inf), lwdown = c(0, Inf),
+    difrad = c(0, Inf), windspeed = c(0, Inf), pres = c(0, Inf),
+    relhum = c(0, 100), winddir = c(0, 360)
+  )
+
+  for (nm in names(clim_list)) {
+    r    <- terra::unwrap(clim_list[[nm]])
+    vals <- terra::values(r)
+    vals[is.nan(vals)] <- NA
+
+    for (cell in seq_len(nrow(vals))) {
+      vals[cell, ] <- zoo::na.spline(vals[cell, ], maxgap = max_gap_hours,
+                                     na.rm = FALSE)
+    }
+
+    bounds <- clamp_bounds[[nm]]
+    if (!is.null(bounds)) {
+      vals[vals < bounds[1]] <- bounds[1]
+      if (is.finite(bounds[2])) vals[vals > bounds[2]] <- bounds[2]
+    }
+
+    terra::values(r) <- vals
+    clim_list[[nm]] <- terra::wrap(r)
+  }
+
+  clim_list
+}
+
 # Resolve an RDS input that may be a file path or a directory.
 # When a directory, constructs the expected filename from stem + period_label + study_area.
 .resolve_rds_path <- function(input, stem, period_label, study_area) {
@@ -1875,6 +1927,8 @@ run_micro_big_nichemap <- function(tiles,        # tile object from create_tiles
     climdatag <- readr::read_rds(clim_resolved)
     clim.crop <- lapply(climdatag, function(x) terra::wrap(terra::crop(terra::unwrap(x), dem_coarse_tile)))
     rm(climdatag); invisible(gc())
+
+    clim.crop <- .interp_nan_layers(clim.crop, tme, tile_id, period_label)
 
     # Coverage check: soil/veg rasters can have NA wedges at domain corners from
     # reprojection. Skip rather than run models on all-NA inputs.
