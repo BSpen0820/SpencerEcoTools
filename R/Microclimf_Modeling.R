@@ -337,6 +337,7 @@ trim_tile_buffer <- function(data, dem_proc, dem_core) {
 
 .write_h5 <- function(data_list, var_meta, tme, out_path, dtm, data_type,
                       compression) {
+  if (file.exists(out_path)) file.remove(out_path)
   rhdf5::h5createFile(out_path)
 
   nrow_  <- dim(data_list[[1]])[1]
