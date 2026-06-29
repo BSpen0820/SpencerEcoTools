@@ -1426,6 +1426,195 @@ stitch_tiles <- function(tile_dir, out_file, data_type = "mout", file_fmt = "h5"
                        stringsAsFactors = FALSE))
 }
 
+#' Stitch Microclimate Tile Files from a \code{run_micro_big_nichemap} Output Tree
+#'
+#' Wraps \code{\link{stitch_tiles}} with automatic directory discovery driven
+#' by the output structure produced by \code{\link{run_micro_big_nichemap}}.
+#' The same \code{output_dir}, \code{study_area}, and \code{dates} passed to
+#' the modeling run are used to locate tile directories and assemble one
+#' stitched file per period x model-type combination.
+#'
+#' @param output_dir Character. Root output directory passed to
+#'   \code{\link{run_micro_big_nichemap}}.
+#' @param dates Either a \code{data.frame} with columns \code{Start_Dates} and
+#'   \code{End_Dates} (one row per modeling period), or a length-2 \code{Date}
+#'   vector defining a single period.  Must match the argument used in the
+#'   original modeling run.
+#' @param study_area Character or \code{NULL}.  Same value passed to
+#'   \code{\link{run_micro_big_nichemap}}. When non-\code{NULL}, tile files are
+#'   sought under \code{output_dir/study_area/} and assembled output files are
+#'   prefixed with \code{study_area}. Default \code{NULL}.
+#' @param stitch_dir Character or \code{NULL}. Directory where assembled files
+#'   are written.  Defaults to \code{output_dir/\{study_area\}/Stitched/} (or
+#'   \code{output_dir/Stitched/} when \code{study_area} is \code{NULL}).
+#'   Per-period subdirectories are created automatically.
+#' @param file_fmt Character. \code{"h5"} or \code{"nc"}; must match the
+#'   \code{file_fmt} used in the modeling run.  \code{"h5"} produces an HDF5
+#'   Virtual Dataset; \code{"nc"} produces one GDAL VRT per variable pointing
+#'   to the tile NetCDF files (output files carry a \code{.vrt} extension
+#'   derived from the \code{.nc}-named stem). Default \code{"h5"}.
+#' @param snow Logical. If \code{TRUE}, also stitch \code{Snow_Models}
+#'   directories.  Default \code{FALSE}.
+#' @param dtm Optional \code{terra::SpatRaster} covering the full domain.
+#'   Passed to \code{\link{stitch_tiles}}. When \code{NULL} the domain extent
+#'   is inferred from tile metadata. Default \code{NULL}.
+#' @param python_path Character or \code{NULL}. Path to a Python executable
+#'   with \code{h5py} installed.  Only used when \code{file_fmt = "h5"}.
+#'   Passed to \code{\link{stitch_tiles}}. Default \code{NULL}.
+#' @param fill_value Numeric. Fill value for cells not covered by any tile.
+#'   Passed to \code{\link{stitch_tiles}}. Default \code{NA_real_}.
+#' @param compression Integer 0--9. Retained for compatibility; passed to
+#'   \code{\link{stitch_tiles}}. Default \code{4L}.
+#'
+#' @return Invisibly, a \code{data.frame} with columns \code{period},
+#'   \code{data_type}, \code{tile_file}, and \code{status} — one row per tile
+#'   file processed by each \code{\link{stitch_tiles}} call.  A zero-row
+#'   data.frame is returned when all directories are skipped.  Failed stitches
+#'   are recorded with \code{status = "failed: <message>"} rather than
+#'   stopping, so partial results are preserved when some periods or model
+#'   types are incomplete.
+#'
+#' @details
+#' Period labels are derived from \code{dates} using the same normalisation as
+#' \code{\link{run_micro_big_nichemap}}: both \code{Start_Dates} and
+#' \code{End_Dates} are snapped to the first of their respective months before
+#' formatting as \code{YYYYMM01_to_YYYYMM01}.  This ensures the labels match
+#' the on-disk directory names exactly.
+#'
+#' Tile files must not be moved after stitching.  HDF5 VDS files embed
+#' relative paths from the assembled file to each tile; VRT files embed
+#' absolute paths.  Either way, relocating tile files breaks the virtual
+#' dataset.  When \code{file_fmt = "h5"} and \code{stitch_dir} is on a
+#' different Windows drive letter than \code{output_dir}, a warning is emitted
+#' because cross-drive relative paths are invalid.
+#'
+#' Directories that do not exist or are empty are skipped with a message.
+#' Directories that exist but contain no files matching the expected token
+#' pattern trigger a warning and a failed row in the log without stopping the
+#' remaining periods.
+#'
+#' @seealso \code{\link{run_micro_big_nichemap}} for the modeling run that
+#'   produces the tile files this function assembles.
+#'   \code{\link{stitch_tiles}} for the underlying stitching logic.
+#'
+#' @export
+stitch_tiles_runmicro <- function(output_dir, dates, study_area = NULL,
+                                  stitch_dir  = NULL,
+                                  file_fmt    = c("h5", "nc"),
+                                  snow        = FALSE,
+                                  dtm         = NULL,
+                                  python_path = NULL,
+                                  fill_value  = NA_real_,
+                                  compression = 4L) {
+
+  file_fmt   <- match.arg(file_fmt)
+  stitch_fmt <- if (file_fmt == "h5") "h5" else "vrt"
+  ext        <- if (file_fmt == "h5") ".h5" else ".nc"
+
+  if (!dir.exists(output_dir))
+    stop("output_dir does not exist: ", output_dir)
+  if (!is.logical(snow) || length(snow) != 1L)
+    stop("snow must be a single logical value")
+
+  # --- dates normalisation (mirrors run_micro_big_nichemap lines 1734-1746) ---
+  if (is.data.frame(dates)) {
+    if (!all(c("Start_Dates", "End_Dates") %in% names(dates)))
+      stop("dates data.frame must contain columns 'Start_Dates' and 'End_Dates'")
+    date_ranges <- dates
+  } else if (inherits(dates, "Date") && length(dates) == 2) {
+    date_ranges <- data.frame(Start_Dates      = as.Date(dates[1]),
+                               End_Dates        = as.Date(dates[2]),
+                               stringsAsFactors = FALSE)
+  } else {
+    stop("dates must be a data.frame with Start_Dates/End_Dates columns, or a length-2 Date vector")
+  }
+
+  period_labels <- vapply(seq_len(nrow(date_ranges)), function(i) {
+    s <- as.Date(sprintf("%s-01", format(as.Date(date_ranges$Start_Dates[i]), "%Y-%m")))
+    e <- as.Date(sprintf("%s-01", format(as.Date(date_ranges$End_Dates[i]),   "%Y-%m")))
+    sprintf("%s_to_%s", format(s, "%Y%m%d"), format(e, "%Y%m%d"))
+  }, character(1))
+
+  # --- root paths --------------------------------------------------------------
+  sa_root <- if (!is.null(study_area)) file.path(output_dir, study_area) else output_dir
+  if (is.null(stitch_dir)) stitch_dir <- file.path(sa_root, "Stitched")
+
+  if (file_fmt == "h5") {
+    out_drive  <- toupper(substring(normalizePath(output_dir, mustWork = FALSE), 1, 2))
+    stch_drive <- toupper(substring(normalizePath(stitch_dir, mustWork = FALSE), 1, 2))
+    if (grepl("^[A-Z]:$", out_drive) && out_drive != stch_drive)
+      warning(
+        "stitch_dir is on a different drive than output_dir. ",
+        "HDF5 VDS files embed relative paths to tile files; cross-drive relative ",
+        "paths are invalid on Windows. Use file_fmt = \"nc\" or place stitch_dir ",
+        "on the same drive as output_dir."
+      )
+  }
+
+  mc_root   <- file.path(sa_root, "Microclim_Models")
+  smod_root <- file.path(sa_root, "Snow_Models")
+  prefix    <- if (!is.null(study_area)) study_area else "Model"
+
+  log_df <- data.frame(period    = character(),
+                       data_type = character(),
+                       tile_file = character(),
+                       status    = character(),
+                       stringsAsFactors = FALSE)
+
+  .do_stitch <- function(tile_dir, out_file, data_type, period) {
+    if (!dir.exists(tile_dir) || length(list.files(tile_dir)) == 0L) {
+      message(sprintf("[SKIP] %s dir missing or empty: %s", data_type, tile_dir))
+      return(NULL)
+    }
+    dir.create(dirname(out_file), recursive = TRUE, showWarnings = FALSE)
+    message(sprintf("  Stitching %s -> %s", data_type, out_file))
+    tryCatch({
+      res <- stitch_tiles(tile_dir, out_file, data_type = data_type,
+                          file_fmt = stitch_fmt, dtm = dtm,
+                          python_path = python_path, fill_value = fill_value,
+                          compression = compression)
+      cbind(data.frame(period    = period,
+                       data_type = data_type,
+                       stringsAsFactors = FALSE), res)
+    }, error = function(e) {
+      warning(sprintf("stitch_tiles failed [%s | %s]: %s",
+                      period, data_type, conditionMessage(e)), call. = FALSE)
+      data.frame(period    = period,
+                 data_type = data_type,
+                 tile_file = NA_character_,
+                 status    = paste0("failed: ", conditionMessage(e)),
+                 stringsAsFactors = FALSE)
+    })
+  }
+
+  for (i in seq_along(period_labels)) {
+    period <- period_labels[i]
+    message(sprintf("\n-- Period: %s --", period))
+
+    abv_dir <- file.path(mc_root, period, "AbvGrd")
+    out_abv <- file.path(stitch_dir, period,
+                         sprintf("%s_AbvGrd_MicroclimModel_%s%s", prefix, period, ext))
+    res <- .do_stitch(abv_dir, out_abv, "mout", period)
+    if (!is.null(res)) log_df <- rbind(log_df, res)
+
+    blw_dir <- file.path(mc_root, period, "BlwGrd")
+    out_blw <- file.path(stitch_dir, period,
+                         sprintf("%s_BlwGrd_MicroclimModel_%s%s", prefix, period, ext))
+    res <- .do_stitch(blw_dir, out_blw, "mout_blw", period)
+    if (!is.null(res)) log_df <- rbind(log_df, res)
+
+    if (snow) {
+      smod_dir <- file.path(smod_root, period)
+      out_smod <- file.path(stitch_dir, period,
+                            sprintf("%s_SnowModel_%s%s", prefix, period, ext))
+      res <- .do_stitch(smod_dir, out_smod, "smod", period)
+      if (!is.null(res)) log_df <- rbind(log_df, res)
+    }
+  }
+
+  invisible(log_df)
+}
+
 # --------------------------------------------------------------------------- #
 #  Internal helpers for run_micro_big_nichemap
 # --------------------------------------------------------------------------- #
