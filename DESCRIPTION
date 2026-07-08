@@ -1,12 +1,13 @@
 Package: SpencerEcoTools
 Title: Data Download and Preprocessing Tools for Microclimate Modeling
-Version: 1.0.2
+Version: 1.1.0
 Authors@R: person("Bryan", "Spencer", role = c("aut", "cre"),
                    email = "bspencer@uidaho.edu")
 Description: A collection of tools for automating the download and preprocessing 
     of spatial and remote sensing data from Google Earth Engine, in preparation 
     for microclimate modeling with the microclimf package. Also includes 
-    additional utility functions for ecological spatial analysis workflows.
+    additional utility functions for ecological spatial analysis workflows. Finally,
+    this packages includes preprocessing functions for nichemapper endotherm modeling.
 License: MIT + file LICENSE
 Encoding: UTF-8
 Roxygen: list(markdown = TRUE)
@@ -25,7 +26,9 @@ Imports:
     microclimfPara
 Suggests:
     rhdf5,
-    ncdf4
+    ncdf4,
+    testthat (>= 3.0.0)
+Config/testthat/edition: 3
 Remotes:
     ilyamaclean/microclimdata,
     BSpen0820/microclimfPara
