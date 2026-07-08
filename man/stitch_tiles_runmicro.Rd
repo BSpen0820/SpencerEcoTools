@@ -14,7 +14,8 @@ stitch_tiles_runmicro(
   dtm = NULL,
   python_path = NULL,
   fill_value = NA_real_,
-  compression = 4L
+  compression = 4L,
+  workers = 1
 )
 }
 \arguments{
@@ -58,6 +59,13 @@ Passed to \code{\link{stitch_tiles}}. Default \code{NA_real_}.}
 
 \item{compression}{Integer 0--9. Retained for compatibility; passed to
 \code{\link{stitch_tiles}}. Default \code{4L}.}
+
+\item{workers}{Integer. Passed unchanged to each \code{\link{stitch_tiles}}
+call (see its \code{workers} argument); parallelizes work inside a
+single stitch (domain-extent resolution, and the per-variable VRT build
+when \code{file_fmt = "nc"}). The period / data-type loop in this
+function itself remains sequential -- each \code{\link{stitch_tiles}}
+call still runs one at a time. Default \code{1} (sequential).}
 }
 \value{
 Invisibly, a \code{data.frame} with columns \code{period},

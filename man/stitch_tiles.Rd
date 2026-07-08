@@ -12,7 +12,8 @@ stitch_tiles(
   dtm = NULL,
   python_path = NULL,
   fill_value = NA_real_,
-  compression = 4L
+  compression = 4L,
+  workers = 1
 )
 }
 \arguments{
@@ -53,6 +54,15 @@ NaN when \code{NA_real_}). Default \code{NA_real_}.}
 
 \item{compression}{Integer 0-9. Unused; retained for compatibility.
 Default \code{4L}.}
+
+\item{workers}{Integer. Number of parallel workers (via
+\code{future.apply}) used for (1) resolving the full-domain extent from
+per-tile metadata when \code{dtm = NULL}, and (2) — only when
+\code{file_fmt = "vrt"} — building each variable's \code{.vrt} file.
+Default \code{1} (sequential). Has no effect on the \code{file_fmt =
+"h5"} per-variable stitch step, which always runs sequentially because
+all variables share one output HDF5 file handle; a \code{warning} is
+raised if \code{workers > 1} is combined with \code{file_fmt = "h5"}.}
 }
 \value{
 Invisibly, a \code{data.frame} with columns \code{tile_file} and

@@ -1050,6 +1050,19 @@ write_tile <- function(data, out_path, dtm = NULL, tme = NULL,
   )
 }
 
+# lapply, optionally parallelized via future.apply when workers > 1.
+# Mirrors the workers / future::plan(multisession) / on.exit pattern used in
+# R/Microclimf_DataPrep.R (e.g. download_aorc()).
+.lapply_workers <- function(x, fn, workers = 1) {
+  if (workers > 1) {
+    future::plan(future::multisession, workers = workers)
+    on.exit(future::plan(future::sequential), add = TRUE)
+    future.apply::future_lapply(x, fn, future.seed = TRUE)
+  } else {
+    lapply(x, fn)
+  }
+}
+
 .rel_path <- function(target, from_file) {
   t_norm  <- normalizePath(target,    mustWork = FALSE)
   f_dir   <- dirname(normalizePath(from_file, mustWork = FALSE))
@@ -1132,7 +1145,7 @@ write_tile <- function(data, out_path, dtm = NULL, tme = NULL,
 }
 
 .stitch_nc_vrt <- function(tile_files, out_file, var_names,
-                           data_type = NULL, var_meta = NULL) {
+                           data_type = NULL, var_meta = NULL, workers = 1) {
   if (!requireNamespace("sf",    quietly = TRUE))
     stop('Package \'sf\' is required for VRT stitching. Install with: install.packages("sf")')
   if (!requireNamespace("ncdf4", quietly = TRUE))
@@ -1140,7 +1153,6 @@ write_tile <- function(data, out_path, dtm = NULL, tme = NULL,
 
   out_stem  <- tools::file_path_sans_ext(out_file)
   abs_tiles <- normalizePath(tile_files, mustWork = TRUE)
-  vrt_paths <- stats::setNames(character(length(var_names)), var_names)
 
   if (is.null(data_type))
     data_type <- if ("Tz" %in% var_names) "mout" else "smod"
@@ -1162,7 +1174,7 @@ write_tile <- function(data, out_path, dtm = NULL, tme = NULL,
   # Forward-slash versions of abs paths for matching in GDAL-generated VRT XML
   abs_fwd <- gsub("\\\\", "/", abs_tiles)
 
-  for (vn in var_names) {
+  .build_one_vrt <- function(vn) {
     vrt_path  <- sprintf("%s_%s.vrt", out_stem, vn)
     gdal_srcs <- sprintf('NETCDF:"%s":%s', abs_tiles, vn)
 
@@ -1226,8 +1238,11 @@ write_tile <- function(data, out_path, dtm = NULL, tme = NULL,
     }
 
     writeLines(strsplit(vrt_text, "\n", fixed = TRUE)[[1L]], vrt_path)
-    vrt_paths[[vn]] <- vrt_path
+    vrt_path
   }
+
+  vrt_results <- .lapply_workers(var_names, .build_one_vrt, workers)
+  vrt_paths   <- stats::setNames(unlist(vrt_results, use.names = FALSE), var_names)
 
   cat(sprintf("Created %d VRT file(s) with stem: %s\n", length(vrt_paths), out_stem))
   invisible(vrt_paths)
@@ -1275,6 +1290,14 @@ write_tile <- function(data, out_path, dtm = NULL, tme = NULL,
 #'   NaN when \code{NA_real_}). Default \code{NA_real_}.
 #' @param compression Integer 0-9. Unused; retained for compatibility.
 #'   Default \code{4L}.
+#' @param workers Integer. Number of parallel workers (via
+#'   \code{future.apply}) used for (1) resolving the full-domain extent from
+#'   per-tile metadata when \code{dtm = NULL}, and (2) — only when
+#'   \code{file_fmt = "vrt"} — building each variable's \code{.vrt} file.
+#'   Default \code{1} (sequential). Has no effect on the \code{file_fmt =
+#'   "h5"} per-variable stitch step, which always runs sequentially because
+#'   all variables share one output HDF5 file handle; a \code{warning} is
+#'   raised if \code{workers > 1} is combined with \code{file_fmt = "h5"}.
 #'
 #' @return Invisibly, a \code{data.frame} with columns \code{tile_file} and
 #'   \code{status}.
@@ -1310,10 +1333,15 @@ write_tile <- function(data, out_path, dtm = NULL, tme = NULL,
 #' @export
 stitch_tiles <- function(tile_dir, out_file, data_type = "mout", file_fmt = "h5",
                          dtm = NULL, python_path = NULL, fill_value = NA_real_,
-                         compression = 4L) {
+                         compression = 4L, workers = 1) {
   data_type   <- match.arg(data_type, c("mout", "smod", "mout_blw"))
   file_fmt    <- match.arg(file_fmt, c("h5", "vrt"))
   compression <- as.integer(compression)
+
+  if (file_fmt == "h5" && workers > 1)
+    warning("workers is ignored for file_fmt = 'h5'; all variables share one ",
+             "HDF5 output file and must be written sequentially. Use ",
+             "file_fmt = 'vrt' to parallelize the per-variable stitch.")
 
   # --- Discover tile files using token-based matching -------------------------
   ext_pat    <- if (file_fmt == "h5") "\\.h5$" else "\\.nc$"
@@ -1382,11 +1410,11 @@ stitch_tiles <- function(tile_dir, out_file, data_type = "mout", file_fmt = "h5"
     if (file_fmt == "h5") {
       if (!requireNamespace("rhdf5", quietly = TRUE))
         stop('Package \'rhdf5\' is required. Install with: BiocManager::install("rhdf5")')
-      all_attrs <- lapply(tile_files, .read_h5_tile_attrs)
+      all_attrs <- .lapply_workers(tile_files, .read_h5_tile_attrs, workers)
     } else {
       if (!requireNamespace("ncdf4", quietly = TRUE))
         stop('Package \'ncdf4\' is required. Install with: install.packages("ncdf4")')
-      all_attrs <- lapply(tile_files, .read_nc_tile_attrs)
+      all_attrs <- .lapply_workers(tile_files, .read_nc_tile_attrs, workers)
     }
     full_xmin <- min(sapply(all_attrs, function(a) as.numeric(a$xmin)))
     full_xmax <- max(sapply(all_attrs, function(a) as.numeric(a$xmax)))
@@ -1419,7 +1447,7 @@ stitch_tiles <- function(tile_dir, out_file, data_type = "mout", file_fmt = "h5"
                    fill_value, python_path)
   } else {
     .stitch_nc_vrt(tile_files, out_file, var_names,
-                   data_type = data_type, var_meta = var_meta)
+                   data_type = data_type, var_meta = var_meta, workers = workers)
   }
 
   invisible(data.frame(tile_file = tile_files, status = "stitched",
@@ -1465,6 +1493,12 @@ stitch_tiles <- function(tile_dir, out_file, data_type = "mout", file_fmt = "h5"
 #'   Passed to \code{\link{stitch_tiles}}. Default \code{NA_real_}.
 #' @param compression Integer 0--9. Retained for compatibility; passed to
 #'   \code{\link{stitch_tiles}}. Default \code{4L}.
+#' @param workers Integer. Passed unchanged to each \code{\link{stitch_tiles}}
+#'   call (see its \code{workers} argument); parallelizes work inside a
+#'   single stitch (domain-extent resolution, and the per-variable VRT build
+#'   when \code{file_fmt = "nc"}). The period / data-type loop in this
+#'   function itself remains sequential -- each \code{\link{stitch_tiles}}
+#'   call still runs one at a time. Default \code{1} (sequential).
 #'
 #' @return Invisibly, a \code{data.frame} with columns \code{period},
 #'   \code{data_type}, \code{tile_file}, and \code{status} — one row per tile
@@ -1505,7 +1539,8 @@ stitch_tiles_runmicro <- function(output_dir, dates, study_area = NULL,
                                   dtm         = NULL,
                                   python_path = NULL,
                                   fill_value  = NA_real_,
-                                  compression = 4L) {
+                                  compression = 4L,
+                                  workers     = 1) {
 
   file_fmt   <- match.arg(file_fmt)
   stitch_fmt <- if (file_fmt == "h5") "h5" else "vrt"
@@ -1572,7 +1607,7 @@ stitch_tiles_runmicro <- function(output_dir, dates, study_area = NULL,
       res <- stitch_tiles(tile_dir, out_file, data_type = data_type,
                           file_fmt = stitch_fmt, dtm = dtm,
                           python_path = python_path, fill_value = fill_value,
-                          compression = compression)
+                          compression = compression, workers = workers)
       cbind(data.frame(period    = period,
                        data_type = data_type,
                        stringsAsFactors = FALSE), res)
