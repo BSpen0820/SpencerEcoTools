@@ -225,7 +225,15 @@ run_endotherm_model <- function(workspace_dir, exe_name = "Endo2022a.exe",
   if (identical(sysname, "Windows")) {
     system2(exe_name, input = c("alomvars.dat", "endo.dat"), stdout = TRUE, stderr = TRUE)
   } else {
-    wineprefix <- paste0("/tmp/wineprefix_", Sys.getpid())
+    # Wine refuses to create its config dir under a prefix whose nearest
+    # existing ancestor it doesn't own - true for bare "/tmp" in non-root
+    # containers (Docker/Apptainer commonly run as an unprivileged user
+    # while /tmp itself stays root-owned). tempdir() is created by this R
+    # session and so is always owned by the current user; pre-creating the
+    # prefix dir under it (rather than letting Wine discover "/tmp" as the
+    # nearest existing ancestor) avoids the ownership check entirely.
+    wineprefix <- file.path(tempdir(), paste0("wineprefix_", Sys.getpid()))
+    dir.create(wineprefix, recursive = TRUE, showWarnings = FALSE)
     system(
       paste0(
         "printf 'alomvars.dat\\nendo.dat\\n' | ",
