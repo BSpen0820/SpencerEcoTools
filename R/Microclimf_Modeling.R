@@ -2329,7 +2329,7 @@ run_micro_big_nichemap <- function(tiles,        # tile object from create_tiles
               runchecks  = FALSE,         slr        = slope_tile,
               apr        = aspect_tile,  hor        = hor_tile,
               twi        = twi_tile,     wsa        = wsa_tile,
-              svf        = svfa_tile,    Dynreqhgt  = Dynreqhgt,
+              svf        = svfa_tile,    Dynreqhgt  = FALSE,
               parallel   = parallel,     ncores     = ncores
             )
           )
@@ -2398,7 +2398,7 @@ run_micro_big_nichemap <- function(tiles,        # tile object from create_tiles
                 slr        = slope_tile,   apr        = aspect_tile,
                 hor        = hor_tile,     twi        = twi_tile,
                 wsa        = wsa_tile,     svf        = svfa_tile,
-                Dynreqhgt  = Dynreqhgt,   parallel   = parallel,
+                Dynreqhgt  = FALSE,   parallel   = parallel,
                 ncores     = ncores
               )
             )
@@ -2412,7 +2412,7 @@ run_micro_big_nichemap <- function(tiles,        # tile object from create_tiles
                 runchecks  = FALSE,        slr        = slope_tile,
                 apr        = aspect_tile,  hor        = hor_tile,
                 twi        = twi_tile,     wsa        = wsa_tile,
-                svf        = svfa_tile,    Dynreqhgt  = Dynreqhgt,
+                svf        = svfa_tile,    Dynreqhgt  = FALSE,
                 parallel   = parallel,     ncores     = ncores
               )
             )
