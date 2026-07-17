@@ -47,12 +47,16 @@ test_that(".first_spatraster unwraps a plain SpatRaster", {
 })
 
 test_that(".first_spatraster unwraps a PackedSpatRaster", {
-  r <- terra::wrap(terra::rast(nrows = 2, ncols = 2))
+  r <- terra::rast(nrows = 2, ncols = 2)
+  terra::values(r) <- 1:4
+  r <- terra::wrap(r)
   expect_true(inherits(.first_spatraster(r), "SpatRaster"))
 })
 
 test_that(".first_spatraster finds a raster nested inside a list", {
-  r <- terra::wrap(terra::rast(nrows = 2, ncols = 2))
+  r <- terra::rast(nrows = 2, ncols = 2)
+  terra::values(r) <- 1:4
+  r <- terra::wrap(r)
   nested <- list(a = 1, b = list(c = r))
   expect_true(inherits(.first_spatraster(nested), "SpatRaster"))
 })
