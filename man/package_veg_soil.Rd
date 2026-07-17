@@ -16,7 +16,8 @@ package_veg_soil(
   soilpara_dir,
   study_area = NULL,
   lctype = "CORINE",
-  water = 512
+  water = 512,
+  dtm_fine = NULL
 )
 }
 \arguments{
@@ -63,6 +64,12 @@ Default is "CORINE"}
 
 \item{water}{Integer. Land cover code for water bodies passed to
 \code{microclimdata::create_soilgrid()}. Default is 512}
+
+\item{dtm_fine}{Optional \code{SpatRaster}. Fine-resolution DEM (e.g. the
+\code{dtm_fine} passed to \code{\link{run_micro_big_nichemap}}) used only
+for validation: if supplied, a warning is issued when the packaged
+vegetation/soil grid's resolution or CRS does not match it. Default
+\code{NULL} skips this check.}
 }
 \value{
 Invisibly returns a data frame logging the status of each
