@@ -2649,7 +2649,7 @@ estimate_diffuse_rad <- function(dates,
 #' @param dtm_fine Optional \code{SpatRaster}. Fine-resolution DEM (e.g. the
 #'   \code{dtm_fine} passed to \code{\link{run_micro_big_nichemap}}) used only
 #'   for validation: if supplied, a warning is issued when the packaged
-#'   vegetation/soil grid's resolution or CRS does not match it. Default
+#'   vegetation/soil grid's resolution, CRS, or origin does not match it. Default
 #'   \code{NULL} skips this check.
 #'
 #' @return Invisibly returns a data frame logging the status of each
@@ -3223,8 +3223,9 @@ summarize_climate_normals <- function(dates,
 #'
 #'   The packaged climate raster is reprojected to \code{template}'s
 #'   CRS and cropped to its extent, but is not resampled to \code{template}'s
-#'   resolution. A resolution mismatch against \code{template} triggers a
-#'   one-time warning (checked on the first month of the first period) rather
+#'   resolution. A resolution or origin mismatch against \code{template} triggers a
+#'   one-time warning (checked on the first month/period for which packaged
+#'   climate data is successfully loaded) rather
 #'   than an error, since \code{package_climate} does not know what
 #'   downstream DEM the output will ultimately be cropped against.
 #'
@@ -3304,6 +3305,7 @@ package_climate <- function(dates,
 
   # Build log
   log <- list()
+  .grid_checked <- FALSE
 
   for (i in seq_len(nrow(date_ranges))) {
 
@@ -3360,8 +3362,9 @@ package_climate <- function(dates,
       if (length(sw_f) == 0) stop(sprintf("No DSWRF files found for year %d month %02d", y, m))
       r_sw <- load_var(sw_f, template)
 
-      if (i == 1L && j == 1L) {
+      if (!.grid_checked) {
         .check_grid_match(template, r_sw, "template", "packaged climate", action = "warn")
+        .grid_checked <- TRUE
       }
 
       sw_t <- terra::time(r_sw)

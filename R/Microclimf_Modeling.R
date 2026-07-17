@@ -19,17 +19,22 @@
   action <- match.arg(action)
   ref_res    <- terra::res(ref)
   target_res <- terra::res(target)
+  ref_origin    <- terra::origin(ref)
+  target_origin <- terra::origin(target)
 
-  res_ok <- isTRUE(all.equal(ref_res, target_res, tolerance = tol))
-  crs_ok <- terra::same.crs(ref, target)
+  res_ok    <- isTRUE(all.equal(ref_res, target_res, tolerance = tol))
+  crs_ok    <- terra::same.crs(ref, target)
+  origin_ok <- isTRUE(all.equal(ref_origin, target_origin, tolerance = tol))
 
-  if (res_ok && crs_ok) return(invisible(TRUE))
+  if (res_ok && crs_ok && origin_ok) return(invisible(TRUE))
 
   msg <- sprintf(
-    "%s and %s do not share the same grid:\n  %s resolution: %s\n  %s resolution: %s\n  CRS match: %s",
+    "%s and %s do not share the same grid:\n  %s resolution: %s\n  %s resolution: %s\n  %s origin: %s\n  %s origin: %s\n  CRS match: %s",
     ref_label, target_label,
     ref_label, paste(signif(ref_res, 10), collapse = " x "),
     target_label, paste(signif(target_res, 10), collapse = " x "),
+    ref_label, paste(signif(ref_origin, 10), collapse = " x "),
+    target_label, paste(signif(target_origin, 10), collapse = " x "),
     crs_ok
   )
 
@@ -1965,7 +1970,7 @@ stitch_tiles_runmicro <- function(output_dir, dates, study_area = NULL,
 #' **Input grid validation.**  Before terrain features are computed, every
 #' period's resolved \code{clim}, \code{vegp}, and \code{soilc} files are
 #' checked against \code{dtm_coarse} (\code{clim}) and \code{dtm_fine}
-#' (\code{vegp}, \code{soilc}) for matching resolution and CRS. A mismatch
+#' (\code{vegp}, \code{soilc}) for matching resolution, CRS, and grid origin/alignment. A mismatch
 #' stops the function immediately, before any terrain or model computation.
 #'
 #' @seealso \code{\link{create_tiles}} to generate \code{tiles} input.

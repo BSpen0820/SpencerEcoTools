@@ -205,7 +205,7 @@ computations.
 \strong{Input grid validation.}  Before terrain features are computed, every
 period's resolved \code{clim}, \code{vegp}, and \code{soilc} files are
 checked against \code{dtm_coarse} (\code{clim}) and \code{dtm_fine}
-(\code{vegp}, \code{soilc}) for matching resolution and CRS. A mismatch
+(\code{vegp}, \code{soilc}) for matching resolution, CRS, and grid origin/alignment. A mismatch
 stops the function immediately, before any terrain or model computation.
 }
 \seealso{

@@ -68,7 +68,7 @@ Default is "CORINE"}
 \item{dtm_fine}{Optional \code{SpatRaster}. Fine-resolution DEM (e.g. the
 \code{dtm_fine} passed to \code{\link{run_micro_big_nichemap}}) used only
 for validation: if supplied, a warning is issued when the packaged
-vegetation/soil grid's resolution or CRS does not match it. Default
+vegetation/soil grid's resolution, CRS, or origin does not match it. Default
 \code{NULL} skips this check.}
 }
 \value{
