@@ -2003,7 +2003,8 @@ run_micro_big_nichemap <- function(tiles,        # tile object from create_tiles
       (clust_array_arg < 1 || clust_array_arg > clust_array_size))
     stop("clust_array_arg must be between 1 and clust_array_size")
 
-  if (reqhgt <= 0) stop("reqhgt must be positive")
+  if (!is.numeric(reqhgt) || length(reqhgt) != 1 || is.na(reqhgt) || reqhgt <= 0)
+    stop("reqhgt must be a single positive numeric value")
 
   # --- normalise dates ---------------------------------------------------------
   if (is.data.frame(dates)) {
