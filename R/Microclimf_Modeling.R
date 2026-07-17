@@ -10,6 +10,45 @@
   }
 }
 
+# --------------------------------------------------------------------------- #
+#  Grid-matching validation helpers
+# --------------------------------------------------------------------------- #
+
+.check_grid_match <- function(ref, target, ref_label, target_label,
+                               action = c("stop", "warn"), tol = 1e-6) {
+  action <- match.arg(action)
+  ref_res    <- terra::res(ref)
+  target_res <- terra::res(target)
+
+  res_ok <- isTRUE(all.equal(ref_res, target_res, tolerance = tol))
+  crs_ok <- terra::same.crs(ref, target)
+
+  if (res_ok && crs_ok) return(invisible(TRUE))
+
+  msg <- sprintf(
+    "%s and %s do not share the same grid:\n  %s resolution: %s\n  %s resolution: %s\n  CRS match: %s",
+    ref_label, target_label,
+    ref_label, paste(signif(ref_res, 10), collapse = " x "),
+    target_label, paste(signif(target_res, 10), collapse = " x "),
+    crs_ok
+  )
+
+  if (action == "stop") stop(msg, call. = FALSE) else warning(msg, call. = FALSE)
+  invisible(FALSE)
+}
+
+.first_spatraster <- function(x) {
+  if (inherits(x, "SpatRaster")) return(x)
+  if (inherits(x, "PackedSpatRaster")) return(terra::unwrap(x))
+  if (is.list(x)) {
+    for (el in x) {
+      r <- tryCatch(.first_spatraster(el), error = function(e) NULL)
+      if (!is.null(r)) return(r)
+    }
+  }
+  stop("No SpatRaster found")
+}
+
 #' Create Tiles for Large Raster Processing
 #'
 #' Creates a tile raster for processing large rasters in memory-efficient chunks.
