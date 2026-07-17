@@ -2646,6 +2646,11 @@ estimate_diffuse_rad <- function(dates,
 #'   Default is "CORINE"
 #' @param water Integer. Land cover code for water bodies passed to
 #'   \code{microclimdata::create_soilgrid()}. Default is 512
+#' @param dtm_fine Optional \code{SpatRaster}. Fine-resolution DEM (e.g. the
+#'   \code{dtm_fine} passed to \code{\link{run_micro_big_nichemap}}) used only
+#'   for validation: if supplied, a warning is issued when the packaged
+#'   vegetation/soil grid's resolution or CRS does not match it. Default
+#'   \code{NULL} skips this check.
 #'
 #' @return Invisibly returns a data frame logging the status of each
 #'   date range processed
@@ -2661,7 +2666,8 @@ package_veg_soil <- function(dates,
                              soilpara_dir,
                              study_area = NULL,
                              lctype = "CORINE",
-                             water = 512) {
+                             water = 512,
+                             dtm_fine = NULL) {
 
   # Process dates input
   if (is.data.frame(dates)) {
@@ -2840,6 +2846,11 @@ package_veg_soil <- function(dates,
         lc_rs       <- lc
         refldata_rs <- refldata
 
+      }
+
+      if (!is.null(dtm_fine)) {
+        .check_grid_match(dtm_fine, lai_rs, "dtm_fine",
+                          sprintf("packaged veg/soil (%s)", period_label), action = "warn")
       }
 
       gc()
