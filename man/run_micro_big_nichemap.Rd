@@ -201,6 +201,12 @@ using internal microclimf helpers (\code{microclimf:::.topidx},
 \code{microclimf:::.horizon}, \code{microclimf:::.windsheltera}).  Per-tile
 subsets are extracted by row/column index, avoiding repeated full-domain
 computations.
+
+\strong{Input grid validation.}  Before terrain features are computed, every
+period's resolved \code{clim}, \code{vegp}, and \code{soilc} files are
+checked against \code{dtm_coarse} (\code{clim}) and \code{dtm_fine}
+(\code{vegp}, \code{soilc}) for matching resolution and CRS. A mismatch
+stops the function immediately, before any terrain or model computation.
 }
 \seealso{
 \code{\link{create_tiles}} to generate \code{tiles} input.

@@ -1948,6 +1948,12 @@ stitch_tiles_runmicro <- function(output_dir, dates, study_area = NULL,
 #' subsets are extracted by row/column index, avoiding repeated full-domain
 #' computations.
 #'
+#' **Input grid validation.**  Before terrain features are computed, every
+#' period's resolved \code{clim}, \code{vegp}, and \code{soilc} files are
+#' checked against \code{dtm_coarse} (\code{clim}) and \code{dtm_fine}
+#' (\code{vegp}, \code{soilc}) for matching resolution and CRS. A mismatch
+#' stops the function immediately, before any terrain or model computation.
+#'
 #' @seealso \code{\link{create_tiles}} to generate \code{tiles} input.
 #'   \code{\link{trim_tile_buffer}} for buffer removal.
 #'   \code{\link{write_tile}} for output file format details.
@@ -2026,6 +2032,34 @@ run_micro_big_nichemap <- function(tiles,        # tile object from create_tiles
     if (!file.exists(.inp[[1]]) && !dir.exists(.inp[[1]]))
       stop(sprintf("'%s' does not exist as a file or directory:\n  %s", .inp[[2]], .inp[[1]]))
   }
+
+  # --- validate clim / vegp / soilc grids against dtm_coarse / dtm_fine ------
+  cat("--- run_micro_big_nichemap: validating input grids ---\n")
+  for (.i in seq_len(nrow(date_ranges))) {
+    .p <- .normalize_period(date_ranges$Start_Dates[.i], date_ranges$End_Dates[.i])
+
+    .clim_path  <- .resolve_rds_path(clim,  "Climate",  .p$period_label, study_area)
+    .vegp_path  <- .resolve_rds_path(vegp,  "VegPara",  .p$period_label, study_area)
+    .soilc_path <- .resolve_rds_path(soilc, "SoilPara", .p$period_label, study_area)
+
+    .clim_r <- .first_spatraster(readr::read_rds(.clim_path))
+    .check_grid_match(dtm_coarse, .clim_r, "dtm_coarse",
+                       sprintf("clim (%s)", .p$period_label), action = "stop")
+    rm(.clim_r)
+
+    .vegp_r <- .first_spatraster(readr::read_rds(.vegp_path))
+    .check_grid_match(dtm_fine, .vegp_r, "dtm_fine",
+                       sprintf("vegp (%s)", .p$period_label), action = "stop")
+    rm(.vegp_r)
+
+    .soilc_r <- .first_spatraster(readr::read_rds(.soilc_path))
+    .check_grid_match(dtm_fine, .soilc_r, "dtm_fine",
+                       sprintf("soilc (%s)", .p$period_label), action = "stop")
+    rm(.soilc_r)
+
+    invisible(gc())
+  }
+  cat("  All input grids match.\n")
 
   # --- heights -----------------------------------------------------------------
   sdepth     <- c(0, 1.5, 5, 10, 15, 20, 30, 50, 100, 200) / -100
