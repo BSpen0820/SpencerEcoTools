@@ -1781,6 +1781,18 @@ stitch_tiles_runmicro <- function(output_dir, dates, study_area = NULL,
   input
 }
 
+# Normalizes a date range to first-of-month start/end and builds the
+# "YYYYMMDD_to_YYYYMMDD" period label. Shared by the pre-flight grid
+# validation pass and the main per-task loop in run_micro_big_nichemap().
+.normalize_period <- function(start, end) {
+  start_date <- as.Date(sprintf("%s-01", format(as.Date(start), "%Y-%m")))
+  end_date   <- as.Date(sprintf("%s-01", format(as.Date(end),   "%Y-%m")))
+  period_label <- sprintf("%s_to_%s",
+                          format(start_date, "%Y%m%d"),
+                          format(end_date,   "%Y%m%d"))
+  list(start_date = start_date, end_date = end_date, period_label = period_label)
+}
+
 # --------------------------------------------------------------------------- #
 #  run_micro_big_nichemap -- exported
 # --------------------------------------------------------------------------- #
@@ -2121,11 +2133,10 @@ run_micro_big_nichemap <- function(tiles,        # tile object from create_tiles
     tile_proc <- tiles$tiles_proc[tile_i, ]
     tile_core <- tiles$tiles_core[tile_i, ]
 
-    start_date   <- as.Date(sprintf("%s-01", format(as.Date(date_ranges$Start_Dates[d]), "%Y-%m")))
-    end_date     <- as.Date(sprintf("%s-01", format(as.Date(date_ranges$End_Dates[d]),   "%Y-%m")))
-    period_label <- sprintf("%s_to_%s",
-                            format(start_date, "%Y%m%d"),
-                            format(end_date,   "%Y%m%d"))
+    .p           <- .normalize_period(date_ranges$Start_Dates[d], date_ranges$End_Dates[d])
+    start_date   <- .p$start_date
+    end_date     <- .p$end_date
+    period_label <- .p$period_label
 
     if (is.null(current_d) || d != current_d) {
       clim_resolved  <- .resolve_rds_path(clim,  "Climate",  period_label, study_area)
