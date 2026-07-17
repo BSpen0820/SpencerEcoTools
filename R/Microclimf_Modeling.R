@@ -105,6 +105,11 @@
 #' are the fine-to-coarse row/column ratios, and 257 bytes per coarse cell per
 #' hour is an empirical estimate for \code{micropointa} overhead.
 #'
+#' \code{coarse_dem} and \code{fine_dem} are expected to share the same CRS
+#' and to have a whole-number fine-to-coarse resolution ratio; a mismatch on
+#' either produces a warning (not an error) since \code{create_tiles} only
+#' uses the ratio for memory estimation and tile-ID resampling.
+#'
 #' @examples
 #' \dontrun{
 #'   # Memory-based auto sizing (recommended)
@@ -144,6 +149,15 @@ create_tiles <- function(coarse_dem,
 
   ratio_r <- nrow(fine_dem) / nrow(coarse_dem)
   ratio_c <- ncol(fine_dem) / ncol(coarse_dem)
+
+  if (!terra::same.crs(coarse_dem, fine_dem)) {
+    warning("coarse_dem and fine_dem have different CRS; tile extents may not align correctly.")
+  }
+  if (abs(ratio_r - round(ratio_r)) > 1e-6 || abs(ratio_c - round(ratio_c)) > 1e-6) {
+    warning(sprintf(
+      "fine_dem resolution is not a whole-number multiple of coarse_dem resolution (row ratio = %.4f, col ratio = %.4f); tile boundaries may not align to whole fine-DEM cells.",
+      ratio_r, ratio_c))
+  }
 
   bytes_per_eff_coarse <- n_hours * (8 * n_arrays * ratio_r * ratio_c + 257)
   max_eff_coarse       <- mem_budget / bytes_per_eff_coarse

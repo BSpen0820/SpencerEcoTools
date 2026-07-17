@@ -80,6 +80,11 @@ where \code{n_eff_coarse = (tile_nrow + 2*buffer_size) * (tile_ncol + 2*buffer_s
 \code{n_arrays} is 16 (snow) or 10 (no snow), \code{ratio_r}/\code{ratio_c}
 are the fine-to-coarse row/column ratios, and 257 bytes per coarse cell per
 hour is an empirical estimate for \code{micropointa} overhead.
+
+\code{coarse_dem} and \code{fine_dem} are expected to share the same CRS
+and to have a whole-number fine-to-coarse resolution ratio; a mismatch on
+either produces a warning (not an error) since \code{create_tiles} only
+uses the ratio for memory estimation and tile-ID resampling.
 }
 \examples{
 \dontrun{
