@@ -33,6 +33,15 @@ test_that(".check_grid_match stops on CRS mismatch even with matching resolution
                "do not share the same grid")
 })
 
+test_that(".check_grid_match stops on origin mismatch even with matching resolution and CRS", {
+  r1 <- terra::rast(resolution = 0.01, crs = "EPSG:4326",
+                     xmin = 0, xmax = 0.05, ymin = 0, ymax = 0.05)
+  r2 <- terra::rast(resolution = 0.01, crs = "EPSG:4326",
+                     xmin = 0.005, xmax = 0.055, ymin = 0.005, ymax = 0.055)
+  expect_error(.check_grid_match(r1, r2, "ref", "target", action = "stop"),
+               "do not share the same grid")
+})
+
 test_that(".check_grid_match tolerates tiny floating-point resolution differences", {
   r1 <- terra::rast(resolution = 0.01, crs = "EPSG:4326",
                      xmin = 0, xmax = 0.05, ymin = 0, ymax = 0.05)

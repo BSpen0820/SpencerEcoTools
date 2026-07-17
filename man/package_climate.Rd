@@ -69,8 +69,9 @@ be representative of vegetation or soil parameter outputs.
 
 The packaged climate raster is reprojected to \code{template}'s
 CRS and cropped to its extent, but is not resampled to \code{template}'s
-resolution. A resolution mismatch against \code{template} triggers a
-one-time warning (checked on the first month of the first period) rather
+resolution. A resolution or origin mismatch against \code{template} triggers a
+one-time warning (checked on the first month/period for which packaged
+climate data is successfully loaded) rather
 than an error, since \code{package_climate} does not know what
 downstream DEM the output will ultimately be cropped against.
 }
