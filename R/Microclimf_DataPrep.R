@@ -3210,6 +3210,13 @@ summarize_climate_normals <- function(dates,
 #'   A warning is issued reminding the user that the template raster should
 #'   be representative of vegetation or soil parameter outputs.
 #'
+#'   The packaged climate raster is reprojected to \code{template}'s
+#'   CRS and cropped to its extent, but is not resampled to \code{template}'s
+#'   resolution. A resolution mismatch against \code{template} triggers a
+#'   one-time warning (checked on the first month of the first period) rather
+#'   than an error, since \code{package_climate} does not know what
+#'   downstream DEM the output will ultimately be cropped against.
+#'
 #' @param dates A data.frame with columns \code{Start_Dates} and \code{End_Dates},
 #'   where each row defines a date range to process. Alternatively, a vector of
 #'   length 2 with \code{as.Date()} values where first is start date and last is
@@ -3341,6 +3348,11 @@ package_climate <- function(dates,
       sw_f <- clim_files[grepl("DSWRF", names(clim_files))]
       if (length(sw_f) == 0) stop(sprintf("No DSWRF files found for year %d month %02d", y, m))
       r_sw <- load_var(sw_f, template)
+
+      if (i == 1L && j == 1L) {
+        .check_grid_match(template, r_sw, "template", "packaged climate", action = "warn")
+      }
+
       sw_t <- terra::time(r_sw)
       r_sw <- terra::wrap(r_sw)
 
