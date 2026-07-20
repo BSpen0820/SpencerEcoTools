@@ -1140,3 +1140,40 @@ write_endotherm_inputs <- function(output_dir,
   }
   out
 }
+
+# --------------------------------------------------------------------------- #
+#  micro_to_csv(): in-memory SpatRaster I/O backend
+# --------------------------------------------------------------------------- #
+
+.mtc_open_spat <- function(r) {
+  layer_names <- names(r)
+  var_names   <- unique(sub("_[0-9]+$", "", layer_names))
+
+  t_r <- tryCatch(terra::time(r), error = function(e) NULL)
+  if (is.null(t_r) || all(is.na(t_r)))
+    stop("Input SpatRaster has no time metadata (terra::time(r)); cannot align to requested dates")
+
+  first_var <- var_names[1]
+  keep <- sub("_[0-9]+$", "", layer_names) == first_var
+  time_utc <- as.POSIXct(t_r[keep], tz = "UTC")
+
+  ext <- terra::ext(r); res <- terra::res(r)
+  list(kind = "spat", source = r,
+       nrow = terra::nrow(r), ncol = terra::ncol(r),
+       xmin = ext$xmin, xmax = ext$xmax, ymin = ext$ymin, ymax = ext$ymax,
+       res_x = res[1], res_y = res[2],
+       crs_wkt = terra::crs(r, proj = FALSE),
+       time_utc = time_utc, vars = var_names, layer_names = layer_names)
+}
+
+.mtc_read_spat <- function(handle, vars, x_idx, y_idx, time_idx) {
+  r <- handle$source
+  cell_no <- terra::cellFromRowCol(r, y_idx, x_idx)
+  out <- list()
+  for (vn in vars) {
+    lyr_idx <- which(sub("_[0-9]+$", "", handle$layer_names) == vn)[time_idx]
+    vals <- terra::extract(r[[lyr_idx]], cell_no)
+    out[[vn]] <- as.numeric(vals[1, ])
+  }
+  out
+}

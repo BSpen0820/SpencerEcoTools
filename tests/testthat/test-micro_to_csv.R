@@ -284,3 +284,44 @@ test_that(".mtc_read_vrt reads exact values at a specific cell and time range", 
 test_that(".mtc_open_vrt stops when no matching VRT files exist for the stem", {
   expect_error(.mtc_open_vrt(file.path(tempdir(), "no_such_stem_xyz")), "No .vrt files")
 })
+
+test_that(".mtc_open_spat reads grid metadata from an already-open multi-variable SpatRaster", {
+  skip_if_not_installed("ncdf4")
+  fix <- .mtc_write_fixture_pair("nc")
+  r <- terra::rast(fix$abv_path)  # no subds -> stacks all vars as "{var}_{time_idx}"
+  h <- .mtc_open_spat(r)
+
+  expect_equal(h$kind, "spat")
+  expect_equal(h$nrow, 3L); expect_equal(h$ncol, 2L)
+  expect_equal(length(h$time_utc), 120L)
+  expect_true(all(c("Tz", "relhum", "windspeed", "Rdirdown", "Rdifdown", "Rlwdown") %in% h$vars))
+})
+
+test_that(".mtc_read_spat reads exact values at a specific cell and time range", {
+  skip_if_not_installed("ncdf4")
+  fix <- .mtc_write_fixture_pair("nc")
+  r <- terra::rast(fix$abv_path)
+  h <- .mtc_open_spat(r)
+
+  out <- .mtc_read_spat(h, c("Tz", "relhum"), x_idx = 2, y_idx = 1, time_idx = 5:10)
+  expect_equal(out$Tz,     fix$fx$mout$Tz[1, 2, 5:10], tolerance = 1e-6)
+  expect_equal(out$relhum, fix$fx$mout$relhum[1, 2, 5:10], tolerance = 1e-6)
+})
+
+test_that(".mtc_read_spat reads below-ground Tz_BlwGrd_* layers", {
+  skip_if_not_installed("ncdf4")
+  fix <- .mtc_write_fixture_pair("nc")
+  r <- terra::rast(fix$blw_path)
+  h <- .mtc_open_spat(r)
+
+  expect_true("Tz_BlwGrd_0015" %in% h$vars)
+  out <- .mtc_read_spat(h, "Tz_BlwGrd_0015", x_idx = 2, y_idx = 2, time_idx = 1:3)
+  expect_equal(out$Tz_BlwGrd_0015, fix$blw_arrs$BlwGrd_0015[2, 2, 1:3], tolerance = 1e-6)
+})
+
+test_that(".mtc_open_spat stops when the SpatRaster has no time metadata", {
+  r <- terra::rast(nrows = 2, ncols = 2)
+  names(r) <- "Tz_1"
+  terra::values(r) <- 1:4
+  expect_error(.mtc_open_spat(r), "time metadata")
+})
