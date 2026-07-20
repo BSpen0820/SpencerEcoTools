@@ -1247,8 +1247,8 @@ write_endotherm_inputs <- function(output_dir,
 
 .mtc_resolve_tannul <- function(tannul, abv_handle, x_idx, y_idx) {
   if (!is.null(tannul)) {
-    if (!is.numeric(tannul) || length(tannul) != 1)
-      stop("'tannul' must be a single numeric value or NULL")
+    if (!is.numeric(tannul) || length(tannul) != 1 || is.na(tannul))
+      stop("'tannul' must be a single non-NA numeric value or NULL")
     return(as.numeric(tannul))
   }
 
