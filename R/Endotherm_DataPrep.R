@@ -903,3 +903,26 @@ write_endotherm_inputs <- function(output_dir,
   out <- do.call(rbind, rows)
   out[order(out$date, out$hour_offset), ]
 }
+
+# --------------------------------------------------------------------------- #
+#  micro_to_csv(): solar zenith angle
+# --------------------------------------------------------------------------- #
+
+.mtc_compute_zen <- function(utc_time, lon, lat, tz = "America/Denver") {
+  old_tz <- Sys.getenv("TZ")
+  Sys.setenv(TZ = "UTC")
+  on.exit(Sys.setenv(TZ = old_tz), add = TRUE)
+
+  utc_time   <- as.POSIXct(utc_time, tz = "UTC")
+  local_time <- lubridate::with_tz(utc_time, tz)
+  solar_time <- solaR::local2Solar(local_time, lon = lon)
+
+  solar_days <- as.POSIXct(unique(lubridate::date(solar_time)), tz = "UTC")
+  solD <- solaR::fSolD(lat = lat, BTd = solar_days, method = "michalsky")
+  solI <- solaR::fSolI(solD = solD, BTi = solar_time, sample = "hour",
+                       EoT = TRUE, keep.night = TRUE)
+
+  cos_thz <- zoo::coredata(solI$cosThzS)
+  zen <- acos(pmin(pmax(cos_thz, -1), 1)) * 180 / pi
+  pmin(zen, 90)
+}

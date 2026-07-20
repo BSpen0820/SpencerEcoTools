@@ -63,3 +63,23 @@ test_that(".mtc_match_time_index stops when no requested day has full coverage",
   date_bounds <- .mtc_resolve_dates(as.Date("2020-07-02"), tz = "America/Denver")
   expect_error(.mtc_match_time_index(time_utc, date_bounds), "No requested dates")
 })
+
+test_that(".mtc_compute_zen peaks near solar noon and clamps night values to 90", {
+  utc_time <- seq(as.POSIXct("2017-07-15 06:00:00", tz = "UTC"), by = "hour",
+                  length.out = 24)
+  zen <- .mtc_compute_zen(utc_time, lon = -110.7, lat = 43.9, tz = "America/Denver")
+
+  expect_length(zen, 24)
+  expect_true(all(zen <= 90))
+  local_hour <- as.integer(format(lubridate::with_tz(utc_time, "America/Denver"), "%H"))
+  expect_equal(zen[local_hour == 0], 90)                 # midnight: below horizon, clamped
+  expect_true(zen[which.min(abs(local_hour - 13))] < 30) # near solar noon: sun high
+  expect_true(min(zen) == zen[which(local_hour %in% 12:14)][which.min(zen[local_hour %in% 12:14])])
+})
+
+test_that(".mtc_compute_zen restores the system TZ after running", {
+  old_tz <- Sys.getenv("TZ")
+  utc_time <- as.POSIXct("2017-07-15 12:00:00", tz = "UTC")
+  .mtc_compute_zen(utc_time, lon = -110.7, lat = 43.9, tz = "America/Denver")
+  expect_equal(Sys.getenv("TZ"), old_tz)
+})
