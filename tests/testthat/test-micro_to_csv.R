@@ -123,6 +123,13 @@ test_that(".mtc_resolve_cell stops on grid mismatch for index-based selection", 
                "do not share the same grid")
 })
 
+test_that(".mtc_resolve_cell stops when grids have matching res/origin/CRS but different dimensions", {
+  g1 <- .mtc_test_grid(nrow_ = 3, ncol_ = 2)
+  g2 <- .mtc_test_grid(nrow_ = 5, ncol_ = 2)  # same origin/res/crs, different row count
+  expect_error(.mtc_resolve_cell(g1, g2, cell = c(1, 1), cell_input_type = "index"),
+               "dimensions")
+})
+
 test_that(".mtc_resolve_cell stops on out-of-bounds index", {
   g <- .mtc_test_grid()
   expect_error(.mtc_resolve_cell(g, g, cell = c(99, 1), cell_input_type = "index"),
