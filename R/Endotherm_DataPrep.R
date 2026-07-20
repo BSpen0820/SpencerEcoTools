@@ -1240,3 +1240,24 @@ write_endotherm_inputs <- function(output_dir,
 
   as.numeric(val)
 }
+
+# --------------------------------------------------------------------------- #
+#  micro_to_csv(): TANNUL resolution
+# --------------------------------------------------------------------------- #
+
+.mtc_resolve_tannul <- function(tannul, abv_handle, x_idx, y_idx) {
+  if (!is.null(tannul)) {
+    if (!is.numeric(tannul) || length(tannul) != 1)
+      stop("'tannul' must be a single numeric value or NULL")
+    return(as.numeric(tannul))
+  }
+
+  n_hours <- length(abv_handle$time_utc)
+  if (n_hours / 24 < 330)
+    warning(sprintf(
+      "Computing TANNUL from only %.1f days of data (< ~330); this may not represent a full annual cycle",
+      n_hours / 24))
+
+  vals <- .mtc_read(abv_handle, "Tz", x_idx, y_idx, seq_len(n_hours))$Tz
+  mean(vals, na.rm = TRUE)
+}

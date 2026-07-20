@@ -391,3 +391,25 @@ test_that(".mtc_resolve_elev stops when the cell falls outside the DEM extent", 
 test_that(".mtc_resolve_elev stops on an invalid elev type", {
   expect_error(.mtc_resolve_elev(TRUE, 0, 0, "EPSG:4326"), "numeric")
 })
+
+test_that(".mtc_resolve_tannul returns a direct numeric value as-is", {
+  skip_if_not_installed("ncdf4")
+  fix <- .mtc_write_fixture_pair("nc")
+  h <- .mtc_open(fix$abv_path)
+  expect_equal(.mtc_resolve_tannul(12.3, h, x_idx = 1, y_idx = 1), 12.3)
+})
+
+test_that(".mtc_resolve_tannul stops on a non-scalar tannul", {
+  skip_if_not_installed("ncdf4")
+  fix <- .mtc_write_fixture_pair("nc")
+  h <- .mtc_open(fix$abv_path)
+  expect_error(.mtc_resolve_tannul(c(1, 2), h, x_idx = 1, y_idx = 1), "single")
+})
+
+test_that(".mtc_resolve_tannul computes the full-time-axis mean when NULL, with a short-span warning", {
+  skip_if_not_installed("ncdf4")
+  fix <- .mtc_write_fixture_pair("nc", ntime_ = 120)  # 5 days, well under 330
+  h <- .mtc_open(fix$abv_path)
+  expect_warning(val <- .mtc_resolve_tannul(NULL, h, x_idx = 2, y_idx = 1), "annual cycle")
+  expect_equal(val, mean(fix$fx$mout$Tz[1, 2, ]))
+})
