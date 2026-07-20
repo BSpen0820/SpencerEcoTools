@@ -473,3 +473,103 @@ test_that(".mtc_build_soil derives dynamic depth headers from Tz_BlwGrd_* names,
   expect_equal(out$D1.5cm, c(3, 4))
   expect_equal(out$D5cm, c(5, 6))
 })
+
+test_that("micro_to_csv() end-to-end: correct shape, duplicated shade frames, correct row count", {
+  skip_if_not_installed("ncdf4")
+  fix <- .mtc_write_fixture_pair("nc", ntime_ = 120,
+                                 start = as.POSIXct("2020-07-01 00:00:00", tz = "UTC"))
+
+  out <- micro_to_csv(
+    abvgrd_input = fix$abv_path, blwgrd_input = fix$blw_path,
+    cell = c(2, 1), cell_input_type = "index",
+    dates = as.Date(c("2020-07-02", "2020-07-03")),
+    elev = 1850, tannul = 5.5, tz = "America/Denver"
+  )
+
+  expect_named(out, c("metout", "shadmet", "soil", "shadsoil"))
+  expect_equal(nrow(out$metout), 48)  # 2 local days x 24 hours
+  expect_equal(nrow(out$soil), 48)
+  expect_equal(out$shadmet, out$metout)   # no shade dimension: exact duplicate
+  expect_equal(out$shadsoil, out$soil)
+  expect_equal(colnames(out$metout),
+              colnames(read.csv(test_path("fixtures", "metout.csv"))))
+  expect_true(all(c("TIME", "D0cm", "D1.5cm", "D5cm") %in% colnames(out$soil)))
+  expect_equal(out$metout$ELEV, c(1850, rep(0, 47)))
+  expect_true(all(out$metout$TANNUL == 5.5))
+})
+
+test_that("micro_to_csv() gives identical numeric results across nc, h5, and spat inputs for the same cell", {
+  skip_if_not_installed("ncdf4")
+  skip_if_not_installed("rhdf5")
+
+  nc_fix <- .mtc_write_fixture_pair("nc", ntime_ = 96,
+                                    start = as.POSIXct("2020-07-01 00:00:00", tz = "UTC"))
+  # Rebuild an identical h5 pair from the SAME underlying fixture arrays so results are comparable
+  h5_abv <- tempfile(fileext = ".h5"); h5_blw <- tempfile(fileext = ".h5")
+  write_tile(nc_fix$fx$mout, h5_abv, dtm = nc_fix$fx$dtm, tme = nc_fix$fx$tme, file_fmt = "h5")
+  for (dl in names(nc_fix$blw_arrs)) {
+    write_tile(list(Tz = nc_fix$blw_arrs[[dl]], tme = nc_fix$fx$tme), h5_blw,
+              dtm = nc_fix$fx$dtm, tme = nc_fix$fx$tme, file_fmt = "h5", depth_label = dl)
+  }
+
+  args <- list(cell = c(1, 2), cell_input_type = "index",
+              dates = as.Date("2020-07-02"), elev = 1000, tannul = 6, tz = "America/Denver")
+
+  out_nc <- do.call(micro_to_csv, c(list(abvgrd_input = nc_fix$abv_path,
+                                         blwgrd_input = nc_fix$blw_path), args))
+  out_h5 <- do.call(micro_to_csv, c(list(abvgrd_input = h5_abv, blwgrd_input = h5_blw), args))
+  out_spat <- do.call(micro_to_csv, c(list(abvgrd_input = terra::rast(nc_fix$abv_path),
+                                           blwgrd_input = terra::rast(nc_fix$blw_path)), args))
+
+  expect_equal(out_nc$metout, out_h5$metout, tolerance = 1e-6)
+  expect_equal(out_nc$metout, out_spat$metout, tolerance = 1e-6)
+  expect_equal(out_nc$soil, out_h5$soil, tolerance = 1e-6)
+  expect_equal(out_nc$soil, out_spat$soil, tolerance = 1e-6)
+})
+
+test_that("micro_to_csv() resolves a cell by lonlat and by cellnumber consistently with index", {
+  skip_if_not_installed("ncdf4")
+  fix <- .mtc_write_fixture_pair("nc", ntime_ = 48,
+                                 start = as.POSIXct("2020-07-01 00:00:00", tz = "UTC"))
+
+  h <- .mtc_open(fix$abv_path)
+  tmpl <- .mtc_grid_template(h)
+  ll <- terra::crds(terra::project(
+    terra::vect(matrix(c(terra::xFromCol(tmpl, 1), terra::yFromRow(tmpl, 2)), nrow = 1),
+               crs = terra::crs(tmpl)),
+    "EPSG:4326"))
+
+  base_args <- list(abvgrd_input = fix$abv_path, blwgrd_input = fix$blw_path,
+                    dates = as.Date("2020-07-01"), elev = 1500, tannul = 3, tz = "America/Denver")
+
+  out_index <- do.call(micro_to_csv, c(base_args, list(cell = c(1, 2), cell_input_type = "index")))
+  out_ll    <- do.call(micro_to_csv, c(base_args, list(cell = c(ll[1, 1], ll[1, 2]),
+                                                        cell_input_type = "lonlat")))
+  out_cn    <- do.call(micro_to_csv, c(base_args, list(cell = 1 + h$ncol,  # row 2, col 1 (row-major)
+                                                        cell_input_type = "cellnumber")))
+
+  expect_equal(out_index$metout, out_ll$metout, tolerance = 1e-6)
+  expect_equal(out_index$metout, out_cn$metout, tolerance = 1e-6)
+})
+
+test_that("micro_to_csv() stops when elev is missing", {
+  skip_if_not_installed("ncdf4")
+  fix <- .mtc_write_fixture_pair("nc")
+  expect_error(
+    micro_to_csv(fix$abv_path, fix$blw_path, cell = c(1, 1), cell_input_type = "index",
+                dates = as.Date("2020-07-02"), elev = NULL),
+    "single"
+  )
+})
+
+test_that("micro_to_csv() stops on more than 52 unique requested days", {
+  skip_if_not_installed("ncdf4")
+  fix <- .mtc_write_fixture_pair("nc", ntime_ = 24 * 60,
+                                 start = as.POSIXct("2020-01-01 00:00:00", tz = "UTC"))
+  many_dates <- as.Date("2020-01-01") + 0:52
+  expect_error(
+    micro_to_csv(fix$abv_path, fix$blw_path, cell = c(1, 1), cell_input_type = "index",
+                dates = many_dates, elev = 1000),
+    "52"
+  )
+})
