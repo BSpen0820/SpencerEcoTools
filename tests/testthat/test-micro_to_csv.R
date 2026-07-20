@@ -420,3 +420,56 @@ test_that(".mtc_resolve_tannul computes the full-time-axis mean when NULL, with 
   expect_warning(val <- .mtc_resolve_tannul(NULL, h, x_idx = 2, y_idx = 1), "annual cycle")
   expect_equal(val, mean(fix$fx$mout$Tz[1, 2, ]))
 })
+
+test_that(".mtc_build_metout produces the exact 13-column shape of the reference CSV", {
+  ref <- read.csv(test_path("fixtures", "metout.csv"))
+  day_index <- data.frame(date = as.Date("2020-07-02"), doy = 184L,
+                          hour_offset = 0:2,
+                          utc_idx = 1:3,
+                          utc_time = as.POSIXct("2020-07-02 06:00:00", tz = "UTC") + (0:2) * 3600)
+  abv_series <- list(Tz = c(10, 12, 14), relhum = c(50, 55, 60), windspeed = c(1, 2, 3),
+                    Rdirdown = c(0, 100, 200), Rdifdown = c(0, 10, 20),
+                    Rlwdown = c(300, 310, 320))
+  zen <- c(90, 60, 30)
+
+  out <- .mtc_build_metout(day_index, abv_series, zen, elev = 1850, tannul = 5.5)
+
+  expect_equal(colnames(out), colnames(ref))
+  expect_equal(nrow(out), 3L)
+  expect_equal(out$DOY, c(184L, 184L, 184L))
+  expect_equal(out$TIME, c(0, 60, 120))
+  expect_equal(out$TALOC, out$TAREF)
+  expect_equal(out$RHLOC, out$RH)
+  expect_equal(out$VLOC, out$VREF)
+  expect_equal(out$SOLR, c(0, 110, 220))
+  expect_equal(out$ELEV, c(1850, 0, 0))
+  expect_equal(out$TANNUL, c(5.5, 5.5, 5.5))
+
+  sigma <- 5.670374e-8
+  expect_equal(out$TSKYC, (abv_series$Rlwdown / sigma)^0.25 - 273.15)
+})
+
+test_that(".mtc_build_metout ELEV row-1 quirk holds even when elev is a plain number and rows are many", {
+  day_index <- data.frame(date = rep(as.Date("2020-07-02"), 5), doy = 184L,
+                          hour_offset = 0:4, utc_idx = 1:5,
+                          utc_time = as.POSIXct("2020-07-02 06:00:00", tz = "UTC") + (0:4) * 3600)
+  abv_series <- list(Tz = rep(10, 5), relhum = rep(50, 5), windspeed = rep(1, 5),
+                    Rdirdown = rep(0, 5), Rdifdown = rep(0, 5), Rlwdown = rep(300, 5))
+  out <- .mtc_build_metout(day_index, abv_series, zen = rep(90, 5), elev = 2000, tannul = 4)
+  expect_equal(out$ELEV, c(2000, 0, 0, 0, 0))
+})
+
+test_that(".mtc_build_soil derives dynamic depth headers from Tz_BlwGrd_* names, sorted by depth", {
+  day_index <- data.frame(date = as.Date("2020-07-02"), doy = 184L, hour_offset = 0:1,
+                          utc_idx = 1:2,
+                          utc_time = as.POSIXct("2020-07-02 06:00:00", tz = "UTC") + (0:1) * 3600)
+  blw_series <- list(Tz_BlwGrd_0050 = c(5, 6), Tz_BlwGrd_0000 = c(1, 2), Tz_BlwGrd_0015 = c(3, 4))
+
+  out <- .mtc_build_soil(day_index, blw_series)
+
+  expect_equal(colnames(out), c("TIME", "D0cm", "D1.5cm", "D5cm"))
+  expect_equal(out$TIME, c(0, 60))
+  expect_equal(out$D0cm, c(1, 2))
+  expect_equal(out$D1.5cm, c(3, 4))
+  expect_equal(out$D5cm, c(5, 6))
+})

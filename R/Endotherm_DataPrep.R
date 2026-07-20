@@ -1261,3 +1261,45 @@ write_endotherm_inputs <- function(output_dir,
   vals <- .mtc_read(abv_handle, "Tz", x_idx, y_idx, seq_len(n_hours))$Tz
   mean(vals, na.rm = TRUE)
 }
+
+# --------------------------------------------------------------------------- #
+#  micro_to_csv(): column-derivation builders
+# --------------------------------------------------------------------------- #
+
+.mtc_build_metout <- function(day_index, abv_series, zen, elev, tannul) {
+  n <- nrow(day_index)
+  sigma <- 5.670374e-8
+
+  taloc <- abv_series$Tz
+  rhloc <- abv_series$relhum
+  vloc  <- abv_series$windspeed
+  solr  <- abv_series$Rdirdown + abv_series$Rdifdown
+  tskyc <- (abv_series$Rlwdown / sigma)^0.25 - 273.15
+
+  elev_col <- c(elev, rep(0, n - 1L))
+
+  data.frame(
+    DOY    = day_index$doy,
+    TIME   = day_index$hour_offset * 60,
+    TALOC  = taloc, TAREF = taloc,
+    RHLOC  = rhloc, RH    = rhloc,
+    VLOC   = vloc,  VREF  = vloc,
+    ZEN    = zen,
+    SOLR   = solr,
+    TSKYC  = tskyc,
+    ELEV   = elev_col,
+    TANNUL = rep(tannul, n)
+  )
+}
+
+.mtc_build_soil <- function(day_index, blw_series) {
+  depth_vars <- names(blw_series)
+  depth_mm   <- as.numeric(sub("^Tz_BlwGrd_", "", depth_vars))
+  depth_cm   <- depth_mm / 10
+  col_names  <- sprintf("D%scm", format(depth_cm, trim = TRUE, drop0trailing = TRUE))
+
+  ord <- order(depth_cm)
+  df  <- data.frame(TIME = day_index$hour_offset * 60)
+  for (i in ord) df[[col_names[i]]] <- blw_series[[depth_vars[i]]]
+  df
+}
