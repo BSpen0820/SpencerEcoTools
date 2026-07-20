@@ -406,6 +406,13 @@ test_that(".mtc_resolve_tannul stops on a non-scalar tannul", {
   expect_error(.mtc_resolve_tannul(c(1, 2), h, x_idx = 1, y_idx = 1), "single")
 })
 
+test_that(".mtc_resolve_tannul stops on an NA tannul", {
+  skip_if_not_installed("ncdf4")
+  fix <- .mtc_write_fixture_pair("nc")
+  h <- .mtc_open(fix$abv_path)
+  expect_error(.mtc_resolve_tannul(NA_real_, h, x_idx = 1, y_idx = 1), "non-NA")
+})
+
 test_that(".mtc_resolve_tannul computes the full-time-axis mean when NULL, with a short-span warning", {
   skip_if_not_installed("ncdf4")
   fix <- .mtc_write_fixture_pair("nc", ntime_ = 120)  # 5 days, well under 330
