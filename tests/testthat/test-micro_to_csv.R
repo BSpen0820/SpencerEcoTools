@@ -83,3 +83,74 @@ test_that(".mtc_compute_zen restores the system TZ after running", {
   .mtc_compute_zen(utc_time, lon = -110.7, lat = 43.9, tz = "America/Denver")
   expect_equal(Sys.getenv("TZ"), old_tz)
 })
+
+.mtc_test_grid <- function(nrow_ = 3, ncol_ = 2, xmin = 500000, ymin = 4800000,
+                           res = 30, crs_wkt = "EPSG:32612") {
+  list(nrow = nrow_, ncol = ncol_,
+       xmin = xmin, xmax = xmin + ncol_ * res,
+       ymin = ymin, ymax = ymin + nrow_ * res,
+       crs_wkt = terra::crs(terra::rast(crs = crs_wkt), proj = FALSE))
+}
+
+test_that(".mtc_grid_template builds a matching empty SpatRaster", {
+  g <- .mtc_test_grid()
+  r <- .mtc_grid_template(g)
+  expect_equal(terra::nrow(r), 3L)
+  expect_equal(terra::ncol(r), 2L)
+  expect_equal(terra::res(r), c(30, 30))
+})
+
+test_that(".mtc_resolve_cell with cell_input_type = 'index' resolves directly", {
+  g <- .mtc_test_grid()
+  pos <- .mtc_resolve_cell(g, g, cell = c(2, 1), cell_input_type = "index")
+  expect_equal(pos$abv_x_idx, 2L)
+  expect_equal(pos$abv_y_idx, 1L)
+  expect_equal(pos$blw_x_idx, 2L)
+  expect_equal(pos$blw_y_idx, 1L)
+})
+
+test_that(".mtc_resolve_cell with cell_input_type = 'cellnumber' resolves row-major", {
+  g <- .mtc_test_grid(nrow_ = 3, ncol_ = 2)
+  pos <- .mtc_resolve_cell(g, g, cell = 3, cell_input_type = "cellnumber")
+  expect_equal(pos$abv_x_idx, 1L)  # cell 3 = row 2, col 1 (row-major, 2 cols/row)
+  expect_equal(pos$abv_y_idx, 2L)
+})
+
+test_that(".mtc_resolve_cell stops on grid mismatch for index-based selection", {
+  g1 <- .mtc_test_grid()
+  g2 <- .mtc_test_grid(res = 60)
+  expect_error(.mtc_resolve_cell(g1, g2, cell = c(1, 1), cell_input_type = "index"),
+               "do not share the same grid")
+})
+
+test_that(".mtc_resolve_cell stops on out-of-bounds index", {
+  g <- .mtc_test_grid()
+  expect_error(.mtc_resolve_cell(g, g, cell = c(99, 1), cell_input_type = "index"),
+               "outside the grid")
+})
+
+test_that(".mtc_resolve_cell with cell_input_type = 'lonlat' reprojects and resolves", {
+  g <- .mtc_test_grid()
+  tmpl <- .mtc_grid_template(g)
+  # centre of cell (1,1) in native coords, reprojected to lon/lat
+  native_pt <- terra::vect(matrix(c(terra::xFromCol(tmpl, 1), terra::yFromRow(tmpl, 1)),
+                                  nrow = 1), crs = terra::crs(tmpl))
+  ll <- terra::crds(terra::project(native_pt, "EPSG:4326"))
+  pos <- .mtc_resolve_cell(g, g, cell = c(ll[1, 1], ll[1, 2]), cell_input_type = "lonlat")
+  expect_equal(pos$abv_x_idx, 1L)
+  expect_equal(pos$abv_y_idx, 1L)
+  expect_true(is.numeric(pos$lon) && is.numeric(pos$lat))
+})
+
+test_that(".mtc_resolve_cell stops when lonlat falls outside the grid", {
+  g <- .mtc_test_grid()
+  expect_error(.mtc_resolve_cell(g, g, cell = c(0, 0), cell_input_type = "lonlat"),
+               "outside")
+})
+
+test_that(".mtc_resolve_cell stops on bad cell_input_type or cell length", {
+  g <- .mtc_test_grid()
+  expect_error(.mtc_resolve_cell(g, g, cell = c(1, 1), cell_input_type = "bogus"))
+  expect_error(.mtc_resolve_cell(g, g, cell = 1, cell_input_type = "index"),
+               "length 2")
+})
