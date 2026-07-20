@@ -205,3 +205,42 @@ test_that(".mtc_read_nc reads below-ground Tz_BlwGrd_* variables", {
   out <- .mtc_read_nc(h, "Tz_BlwGrd_0015", x_idx = 2, y_idx = 2, time_idx = 1:3)
   expect_equal(out$Tz_BlwGrd_0015, fix$blw_arrs$BlwGrd_0015[2, 2, 1:3])
 })
+
+test_that(".mtc_open_h5 reads correct grid metadata, time axis, and below-ground vars", {
+  skip_if_not_installed("rhdf5")
+  fix <- .mtc_write_fixture_pair("h5")
+  h <- .mtc_open_h5(fix$abv_path)
+
+  expect_equal(h$kind, "h5")
+  expect_equal(h$nrow, 3L); expect_equal(h$ncol, 2L)
+  expect_equal(h$res_x, 30); expect_equal(h$res_y, 30)
+  expect_equal(length(h$time_utc), 120L)
+  expect_equal(h$time_utc[1], fix$fx$tme[1])
+  expect_true(all(c("Tz", "relhum", "windspeed", "Rdirdown", "Rdifdown", "Rlwdown") %in% h$vars))
+
+  hb <- .mtc_open_h5(fix$blw_path)
+  expect_true("Tz_BlwGrd_0015" %in% hb$vars)
+})
+
+test_that(".mtc_read_h5 reads exact values at a specific cell, including a gapped time_idx", {
+  skip_if_not_installed("rhdf5")
+  fix <- .mtc_write_fixture_pair("h5")
+  h <- .mtc_open_h5(fix$abv_path)
+
+  out <- .mtc_read_h5(h, c("Tz", "relhum"), x_idx = 2, y_idx = 1, time_idx = 5:10)
+  expect_equal(out$Tz,     fix$fx$mout$Tz[1, 2, 5:10])
+  expect_equal(out$relhum, fix$fx$mout$relhum[1, 2, 5:10])
+
+  gapped <- c(3, 4, 5, 50, 51, 52)
+  out2 <- .mtc_read_h5(h, "Tz", x_idx = 1, y_idx = 3, time_idx = gapped)
+  expect_equal(out2$Tz, fix$fx$mout$Tz[3, 1, gapped])
+})
+
+test_that(".mtc_read_h5 reads below-ground Tz_BlwGrd_* group datasets", {
+  skip_if_not_installed("rhdf5")
+  fix <- .mtc_write_fixture_pair("h5")
+  h <- .mtc_open_h5(fix$blw_path)
+
+  out <- .mtc_read_h5(h, "Tz_BlwGrd_0015", x_idx = 2, y_idx = 2, time_idx = 1:3)
+  expect_equal(out$Tz_BlwGrd_0015, fix$blw_arrs$BlwGrd_0015[2, 2, 1:3])
+})
