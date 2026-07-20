@@ -1036,6 +1036,9 @@ write_endotherm_inputs <- function(output_dir,
 }
 
 .mtc_read_nc <- function(handle, vars, x_idx, y_idx, time_idx) {
+  if (!requireNamespace("ncdf4", quietly = TRUE))
+    stop('Package \'ncdf4\' is required. Install with: install.packages("ncdf4")')
+
   nc <- ncdf4::nc_open(handle$source)
   on.exit(ncdf4::nc_close(nc), add = TRUE)
 
