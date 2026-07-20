@@ -1058,3 +1058,48 @@ write_endotherm_inputs <- function(output_dir,
   }
   out
 }
+
+# --------------------------------------------------------------------------- #
+#  micro_to_csv(): HDF5 I/O backend
+# --------------------------------------------------------------------------- #
+
+.mtc_open_h5 <- function(path) {
+  if (!requireNamespace("rhdf5", quietly = TRUE))
+    stop('Package \'rhdf5\' is required. Install with: BiocManager::install("rhdf5")')
+
+  attrs <- rhdf5::h5readAttributes(path, "/")
+  time_str <- rhdf5::h5read(path, "time")
+  rhdf5::H5close()
+  time_utc <- as.POSIXct(time_str, format = "%Y-%m-%dT%H:%M:%S", tz = "UTC")
+
+  ls <- rhdf5::h5ls(path, recursive = FALSE)
+  root_datasets <- ls$name[ls$group == "/" & ls$otype == "H5I_DATASET" & ls$name != "time"]
+  blw_groups    <- ls$name[ls$group == "/" & ls$otype == "H5I_GROUP"]
+  blw_vars      <- sprintf("Tz_%s", blw_groups)
+
+  list(kind = "h5", source = path,
+       nrow = as.integer(attrs$nrow), ncol = as.integer(attrs$ncol),
+       xmin = as.numeric(attrs$xmin), xmax = as.numeric(attrs$xmax),
+       ymin = as.numeric(attrs$ymin), ymax = as.numeric(attrs$ymax),
+       res_x = as.numeric(attrs$res_x), res_y = as.numeric(attrs$res_y),
+       crs_wkt = attrs$crs_wkt, time_utc = time_utc,
+       vars = c(root_datasets, blw_vars))
+}
+
+.mtc_read_h5 <- function(handle, vars, x_idx, y_idx, time_idx) {
+  if (!requireNamespace("rhdf5", quietly = TRUE))
+    stop('Package \'rhdf5\' is required. Install with: BiocManager::install("rhdf5")')
+
+  out <- list()
+  for (vn in vars) {
+    ds_path <- if (grepl("^Tz_BlwGrd_", vn)) sprintf("%s/Tz", sub("^Tz_", "", vn)) else vn
+    # write_tile() stores HDF5 datasets in R's native [nrow, ncol, ntime]
+    # order (row/y first, then column/x) -- the opposite of the netCDF
+    # backend's (x, y, time) dimension order -- so the index list here must
+    # be (y_idx, x_idx, time_idx), not (x_idx, y_idx, time_idx).
+    v <- rhdf5::h5read(handle$source, ds_path, index = list(y_idx, x_idx, time_idx))
+    out[[vn]] <- as.numeric(v)
+  }
+  rhdf5::H5close()
+  out
+}
