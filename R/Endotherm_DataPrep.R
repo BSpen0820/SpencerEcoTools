@@ -1003,3 +1003,55 @@ write_endotherm_inputs <- function(output_dir,
        x_coord = x_coord, y_coord = y_coord,
        lon = ll[1, 1], lat = ll[1, 2])
 }
+
+# --------------------------------------------------------------------------- #
+#  micro_to_csv(): NetCDF I/O backend
+# --------------------------------------------------------------------------- #
+
+.mtc_open_nc <- function(path) {
+  if (!requireNamespace("ncdf4", quietly = TRUE))
+    stop('Package \'ncdf4\' is required. Install with: install.packages("ncdf4")')
+
+  nc <- ncdf4::nc_open(path)
+  on.exit(ncdf4::nc_close(nc), add = TRUE)
+
+  x_v <- nc$dim$x$vals; y_v <- nc$dim$y$vals
+  res_x <- abs(diff(x_v))[1]; res_y <- abs(diff(y_v))[1]
+
+  crs_att <- ncdf4::ncatt_get(nc, "crs", "crs_wkt")
+  crs_wkt <- if (isTRUE(crs_att$hasatt)) crs_att$value else NA_character_
+
+  time_units   <- nc$dim$time$units
+  origin_str   <- trimws(sub("hours since\\s+", "", time_units))
+  origin_str   <- sub("\\s+UTC$", "", origin_str)
+  origin_posix <- as.POSIXct(origin_str, tz = "UTC", format = "%Y-%m-%dT%H:%M:%S")
+  time_utc     <- origin_posix + nc$dim$time$vals * 3600
+
+  list(kind = "nc", source = path,
+       nrow = nc$dim$y$len, ncol = nc$dim$x$len,
+       xmin = min(x_v) - res_x / 2, xmax = max(x_v) + res_x / 2,
+       ymin = min(y_v) - res_y / 2, ymax = max(y_v) + res_y / 2,
+       res_x = res_x, res_y = res_y, crs_wkt = crs_wkt,
+       time_utc = time_utc, vars = setdiff(names(nc$var), "crs"))
+}
+
+.mtc_read_nc <- function(handle, vars, x_idx, y_idx, time_idx) {
+  nc <- ncdf4::nc_open(handle$source)
+  on.exit(ncdf4::nc_close(nc), add = TRUE)
+
+  runs <- split(time_idx, cumsum(c(1, diff(time_idx) != 1)))
+
+  out <- list()
+  for (vn in vars) {
+    vals <- numeric(length(time_idx))
+    pos  <- 1L
+    for (run in runs) {
+      v <- ncdf4::ncvar_get(nc, vn, start = c(x_idx, y_idx, run[1]),
+                            count = c(1, 1, length(run)))
+      vals[pos:(pos + length(run) - 1L)] <- v
+      pos <- pos + length(run)
+    }
+    out[[vn]] <- vals
+  }
+  out
+}
