@@ -1211,3 +1211,32 @@ write_endotherm_inputs <- function(output_dir,
         spat = .mtc_read_spat(handle, vars, x_idx, y_idx, time_idx),
         stop(sprintf("Unknown handle kind: %s", handle$kind)))
 }
+
+# --------------------------------------------------------------------------- #
+#  micro_to_csv(): ELEV resolution
+# --------------------------------------------------------------------------- #
+
+.mtc_resolve_elev <- function(elev, x_coord, y_coord, crs_wkt) {
+  if (is.numeric(elev)) {
+    if (length(elev) != 1 || is.na(elev))
+      stop("'elev' must be a single non-NA numeric value or a DEM path/SpatRaster")
+    return(as.numeric(elev))
+  }
+
+  dem <- if (inherits(elev, "SpatRaster")) {
+    elev
+  } else if (is.character(elev) && length(elev) == 1) {
+    terra::rast(elev)
+  } else {
+    stop("'elev' must be numeric, a single file path, or a SpatRaster")
+  }
+
+  pt     <- terra::vect(matrix(c(x_coord, y_coord), nrow = 1), crs = crs_wkt)
+  pt_dem <- terra::project(pt, terra::crs(dem))
+  val    <- terra::extract(dem, pt_dem)[1, 2]
+
+  if (is.na(val))
+    stop("'elev' DEM sampling returned NA: the cell falls outside the DEM extent or over a no-data area")
+
+  as.numeric(val)
+}

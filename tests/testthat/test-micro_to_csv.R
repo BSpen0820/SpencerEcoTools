@@ -361,3 +361,33 @@ test_that(".mtc_read dispatches to the right backend and returns matching values
   expect_equal(out_nc$Tz, nc_fix$fx$mout$Tz[2, 1, 1:5])
   expect_equal(out_h5$Tz, h5_fix$fx$mout$Tz[2, 1, 1:5])
 })
+
+test_that(".mtc_resolve_elev returns a direct numeric value as-is", {
+  expect_equal(.mtc_resolve_elev(1850, x_coord = 0, y_coord = 0, crs_wkt = "EPSG:4326"), 1850)
+})
+
+test_that(".mtc_resolve_elev stops on a non-scalar or NA numeric", {
+  expect_error(.mtc_resolve_elev(c(1, 2), 0, 0, "EPSG:4326"), "single")
+  expect_error(.mtc_resolve_elev(NA_real_, 0, 0, "EPSG:4326"), "single")
+})
+
+test_that(".mtc_resolve_elev samples a SpatRaster DEM at the cell's coordinates", {
+  dem <- terra::rast(nrows = 3, ncols = 3, xmin = 0, xmax = 3, ymin = 0, ymax = 3,
+                     crs = "EPSG:4326")
+  terra::values(dem) <- matrix(c(100, 200, 300, 400, 500, 600, 700, 800, 900),
+                               nrow = 3, byrow = TRUE)
+  val <- .mtc_resolve_elev(dem, x_coord = 1.5, y_coord = 1.5, crs_wkt = "EPSG:4326")
+  expect_equal(val, 500)
+})
+
+test_that(".mtc_resolve_elev stops when the cell falls outside the DEM extent", {
+  dem <- terra::rast(nrows = 2, ncols = 2, xmin = 0, xmax = 2, ymin = 0, ymax = 2,
+                     crs = "EPSG:4326")
+  terra::values(dem) <- 1:4
+  expect_error(.mtc_resolve_elev(dem, x_coord = 100, y_coord = 100, crs_wkt = "EPSG:4326"),
+              "NA")
+})
+
+test_that(".mtc_resolve_elev stops on an invalid elev type", {
+  expect_error(.mtc_resolve_elev(TRUE, 0, 0, "EPSG:4326"), "numeric")
+})
