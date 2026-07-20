@@ -926,3 +926,76 @@ write_endotherm_inputs <- function(output_dir,
   zen <- acos(pmin(pmax(cos_thz, -1), 1)) * 180 / pi
   pmin(zen, 90)
 }
+
+# --------------------------------------------------------------------------- #
+#  micro_to_csv(): cell resolution
+# --------------------------------------------------------------------------- #
+
+.mtc_grid_template <- function(grid) {
+  terra::rast(nrows = grid$nrow, ncols = grid$ncol,
+             xmin = grid$xmin, xmax = grid$xmax,
+             ymin = grid$ymin, ymax = grid$ymax,
+             crs  = grid$crs_wkt)
+}
+
+.mtc_resolve_cell <- function(abv_handle, blw_handle, cell, cell_input_type) {
+  cell_input_type <- match.arg(cell_input_type, c("index", "lonlat", "cellnumber"))
+
+  if (cell_input_type %in% c("index", "cellnumber")) {
+    abv_tmpl <- .mtc_grid_template(abv_handle)
+    blw_tmpl <- .mtc_grid_template(blw_handle)
+    .check_grid_match(abv_tmpl, blw_tmpl, "abvgrd_input", "blwgrd_input", action = "stop")
+  }
+
+  if (cell_input_type == "index") {
+    if (length(cell) != 2)
+      stop("'cell' must be length 2 (x_idx, y_idx) for cell_input_type = 'index'")
+    x_idx <- as.integer(cell[1]); y_idx <- as.integer(cell[2])
+    if (x_idx < 1 || x_idx > abv_handle$ncol || y_idx < 1 || y_idx > abv_handle$nrow)
+      stop(sprintf("cell index (%d, %d) is outside the grid (%d cols x %d rows)",
+                   x_idx, y_idx, abv_handle$ncol, abv_handle$nrow))
+    abv_x_idx <- x_idx; abv_y_idx <- y_idx
+    blw_x_idx <- x_idx; blw_y_idx <- y_idx
+
+  } else if (cell_input_type == "cellnumber") {
+    if (length(cell) != 1)
+      stop("'cell' must be length 1 for cell_input_type = 'cellnumber'")
+    cell <- as.integer(cell)
+    n_cells <- abv_handle$nrow * abv_handle$ncol
+    if (cell < 1 || cell > n_cells)
+      stop(sprintf("cell number %d is outside the grid (%d cells)", cell, n_cells))
+    abv_y_idx <- ((cell - 1L) %/% abv_handle$ncol) + 1L
+    abv_x_idx <- ((cell - 1L) %% abv_handle$ncol) + 1L
+    blw_x_idx <- abv_x_idx; blw_y_idx <- abv_y_idx
+
+  } else { # lonlat
+    if (length(cell) != 2)
+      stop("'cell' must be length 2 (lon, lat) for cell_input_type = 'lonlat'")
+    pt <- terra::vect(matrix(cell, nrow = 1), crs = "EPSG:4326")
+
+    abv_tmpl <- .mtc_grid_template(abv_handle)
+    xy_abv   <- terra::crds(terra::project(pt, terra::crs(abv_tmpl)))
+    abv_x_idx <- terra::colFromX(abv_tmpl, xy_abv[1, 1])
+    abv_y_idx <- terra::rowFromY(abv_tmpl, xy_abv[1, 2])
+    if (is.na(abv_x_idx) || is.na(abv_y_idx))
+      stop("lon/lat falls outside abvgrd_input's grid extent")
+
+    blw_tmpl <- .mtc_grid_template(blw_handle)
+    xy_blw   <- terra::crds(terra::project(pt, terra::crs(blw_tmpl)))
+    blw_x_idx <- terra::colFromX(blw_tmpl, xy_blw[1, 1])
+    blw_y_idx <- terra::rowFromY(blw_tmpl, xy_blw[1, 2])
+    if (is.na(blw_x_idx) || is.na(blw_y_idx))
+      stop("lon/lat falls outside blwgrd_input's grid extent")
+  }
+
+  abv_tmpl <- .mtc_grid_template(abv_handle)
+  x_coord  <- terra::xFromCol(abv_tmpl, abv_x_idx)
+  y_coord  <- terra::yFromRow(abv_tmpl, abv_y_idx)
+  pt_native <- terra::vect(matrix(c(x_coord, y_coord), nrow = 1), crs = terra::crs(abv_tmpl))
+  ll <- terra::crds(terra::project(pt_native, "EPSG:4326"))
+
+  list(abv_x_idx = abv_x_idx, abv_y_idx = abv_y_idx,
+       blw_x_idx = blw_x_idx, blw_y_idx = blw_y_idx,
+       x_coord = x_coord, y_coord = y_coord,
+       lon = ll[1, 1], lat = ll[1, 2])
+}
