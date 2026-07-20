@@ -1103,3 +1103,40 @@ write_endotherm_inputs <- function(output_dir,
   rhdf5::H5close()
   out
 }
+
+# --------------------------------------------------------------------------- #
+#  micro_to_csv(): VRT I/O backend
+# --------------------------------------------------------------------------- #
+
+.mtc_open_vrt <- function(stem, vrt_files = Sys.glob(sprintf("%s_*.vrt", stem))) {
+  if (length(vrt_files) == 0)
+    stop(sprintf("No .vrt files found matching stem: %s_*.vrt", stem))
+
+  stem_base <- basename(stem)
+  fnames    <- tools::file_path_sans_ext(basename(vrt_files))
+  var_names <- substring(fnames, nchar(stem_base) + 2)
+
+  r0  <- terra::rast(vrt_files[1])
+  ext <- terra::ext(r0)
+  res <- terra::res(r0)
+
+  list(kind = "vrt", source = stem, vrt_files = vrt_files,
+       nrow = terra::nrow(r0), ncol = terra::ncol(r0),
+       xmin = ext$xmin, xmax = ext$xmax, ymin = ext$ymin, ymax = ext$ymax,
+       res_x = res[1], res_y = res[2],
+       crs_wkt = terra::crs(r0, proj = FALSE),
+       time_utc = as.POSIXct(terra::time(r0), tz = "UTC"),
+       vars = var_names)
+}
+
+.mtc_read_vrt <- function(handle, vars, x_idx, y_idx, time_idx) {
+  out <- list()
+  for (vn in vars) {
+    vf <- handle$vrt_files[match(vn, handle$vars)]
+    r  <- terra::rast(vf)
+    cell_no <- terra::cellFromRowCol(r, y_idx, x_idx)
+    vals <- terra::extract(r[[time_idx]], cell_no)
+    out[[vn]] <- as.numeric(vals[1, ])
+  }
+  out
+}

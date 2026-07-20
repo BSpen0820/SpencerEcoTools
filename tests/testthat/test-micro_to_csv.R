@@ -244,3 +244,43 @@ test_that(".mtc_read_h5 reads below-ground Tz_BlwGrd_* group datasets", {
   out <- .mtc_read_h5(h, "Tz_BlwGrd_0015", x_idx = 2, y_idx = 2, time_idx = 1:3)
   expect_equal(out$Tz_BlwGrd_0015, fix$blw_arrs$BlwGrd_0015[2, 2, 1:3])
 })
+
+.mtc_write_vrt_fixture <- function(nrow_ = 3, ncol_ = 2, ntime_ = 120,
+                                   start = as.POSIXct("2020-07-01 00:00:00", tz = "UTC")) {
+  skip_if_not_installed("ncdf4")
+  fx <- .mtc_test_fixture_data(nrow_, ncol_, ntime_, start)
+  tile_dir <- tempfile("vrt_tiles_")
+  dir.create(tile_dir)
+  tile_path <- file.path(tile_dir, "Tile_001_test_MicroclimModel_period.nc")
+  write_tile(fx$mout, tile_path, dtm = fx$dtm, tme = fx$tme, file_fmt = "nc")
+
+  stem <- tempfile("vrt_stem_")
+  stitch_tiles(tile_dir, stem, data_type = "mout", file_fmt = "vrt", dtm = fx$dtm)
+
+  list(stem = stem, fx = fx)
+}
+
+test_that(".mtc_open_vrt reads correct grid metadata and time axis from per-variable VRTs", {
+  skip_if_not_installed("ncdf4")
+  fix <- .mtc_write_vrt_fixture()
+  h <- .mtc_open_vrt(fix$stem)
+
+  expect_equal(h$kind, "vrt")
+  expect_equal(h$nrow, 3L); expect_equal(h$ncol, 2L)
+  expect_equal(length(h$time_utc), 120L)
+  expect_true(all(c("Tz", "relhum", "windspeed", "Rdirdown", "Rdifdown", "Rlwdown") %in% h$vars))
+})
+
+test_that(".mtc_read_vrt reads exact values at a specific cell and time range", {
+  skip_if_not_installed("ncdf4")
+  fix <- .mtc_write_vrt_fixture()
+  h <- .mtc_open_vrt(fix$stem)
+
+  out <- .mtc_read_vrt(h, c("Tz", "relhum"), x_idx = 2, y_idx = 1, time_idx = 5:10)
+  expect_equal(out$Tz,     fix$fx$mout$Tz[1, 2, 5:10], tolerance = 1e-6)
+  expect_equal(out$relhum, fix$fx$mout$relhum[1, 2, 5:10], tolerance = 1e-6)
+})
+
+test_that(".mtc_open_vrt stops when no matching VRT files exist for the stem", {
+  expect_error(.mtc_open_vrt(file.path(tempdir(), "no_such_stem_xyz")), "No .vrt files")
+})
