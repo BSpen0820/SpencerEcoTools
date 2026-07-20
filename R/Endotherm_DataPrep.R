@@ -854,3 +854,52 @@ write_endotherm_inputs <- function(output_dir,
 
   invisible(log_df)
 }
+
+# --------------------------------------------------------------------------- #
+#  micro_to_csv(): date/time resolution helpers
+# --------------------------------------------------------------------------- #
+
+.mtc_resolve_dates <- function(dates, tz = "America/Denver") {
+  if (!inherits(dates, "Date") || length(dates) < 1)
+    stop("'dates' must be a Date vector (length-2 range or specific dates)")
+
+  all_dates   <- if (length(dates) == 2) seq(dates[1], dates[2], by = "day") else dates
+  local_dates <- sort(unique(all_dates))
+
+  if (length(local_dates) > 52)
+    stop(sprintf("'dates' resolves to %d unique days; maximum allowed is 52",
+                 length(local_dates)))
+
+  midnight_local <- as.POSIXct(paste(local_dates, "00:00:00"), tz = tz)
+  utc_start <- lubridate::with_tz(midnight_local, "UTC")
+  utc_end   <- utc_start + lubridate::hours(24)
+
+  data.frame(date = local_dates, doy = lubridate::yday(local_dates),
+            utc_start = utc_start, utc_end = utc_end)
+}
+
+.mtc_match_time_index <- function(time_utc, date_bounds) {
+  rows <- vector("list", nrow(date_bounds))
+  for (i in seq_len(nrow(date_bounds))) {
+    idx <- sort(which(time_utc >= date_bounds$utc_start[i] &
+                      time_utc <  date_bounds$utc_end[i]))
+    if (length(idx) < 24) {
+      warning(sprintf("Only %d/24 hourly records found for %s; skipping this day",
+                      length(idx), date_bounds$date[i]))
+      next
+    }
+    idx <- idx[seq_len(24)]
+    rows[[i]] <- data.frame(
+      date        = date_bounds$date[i],
+      doy         = date_bounds$doy[i],
+      hour_offset = 0:23,
+      utc_idx     = idx,
+      utc_time    = time_utc[idx]
+    )
+  }
+  rows <- rows[!vapply(rows, is.null, logical(1))]
+  if (length(rows) == 0)
+    stop("No requested dates have complete (24-hour) coverage in the source time axis")
+  out <- do.call(rbind, rows)
+  out[order(out$date, out$hour_offset), ]
+}
