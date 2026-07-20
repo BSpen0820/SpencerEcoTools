@@ -1177,3 +1177,37 @@ write_endotherm_inputs <- function(output_dir,
   }
   out
 }
+
+# --------------------------------------------------------------------------- #
+#  micro_to_csv(): unified I/O dispatcher
+# --------------------------------------------------------------------------- #
+
+.mtc_open <- function(input) {
+  if (inherits(input, "SpatRaster")) return(.mtc_open_spat(input))
+
+  if (!is.character(input) || length(input) != 1)
+    stop("Input must be a file path (character) or a SpatRaster")
+
+  ext <- tolower(tools::file_ext(input))
+  if (ext == "nc") {
+    if (!file.exists(input)) stop(sprintf("File not found: %s", input))
+    return(.mtc_open_nc(input))
+  }
+  if (ext == "h5") {
+    if (!file.exists(input)) stop(sprintf("File not found: %s", input))
+    return(.mtc_open_h5(input))
+  }
+  if (ext == "") return(.mtc_open_vrt(input))
+
+  stop(sprintf(
+    "Unrecognized input: '%s' (expected .nc, .h5, a .vrt stem, or a SpatRaster)", input))
+}
+
+.mtc_read <- function(handle, vars, x_idx, y_idx, time_idx) {
+  switch(handle$kind,
+        nc   = .mtc_read_nc(handle, vars, x_idx, y_idx, time_idx),
+        h5   = .mtc_read_h5(handle, vars, x_idx, y_idx, time_idx),
+        vrt  = .mtc_read_vrt(handle, vars, x_idx, y_idx, time_idx),
+        spat = .mtc_read_spat(handle, vars, x_idx, y_idx, time_idx),
+        stop(sprintf("Unknown handle kind: %s", handle$kind)))
+}

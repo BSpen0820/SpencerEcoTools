@@ -325,3 +325,39 @@ test_that(".mtc_open_spat stops when the SpatRaster has no time metadata", {
   terra::values(r) <- 1:4
   expect_error(.mtc_open_spat(r), "time metadata")
 })
+
+test_that(".mtc_open dispatches correctly across all 4 input kinds", {
+  skip_if_not_installed("ncdf4")
+  skip_if_not_installed("rhdf5")
+
+  nc_fix  <- .mtc_write_fixture_pair("nc")
+  h5_fix  <- .mtc_write_fixture_pair("h5")
+  vrt_fix <- .mtc_write_vrt_fixture()
+
+  expect_equal(.mtc_open(nc_fix$abv_path)$kind, "nc")
+  expect_equal(.mtc_open(h5_fix$abv_path)$kind, "h5")
+  expect_equal(.mtc_open(vrt_fix$stem)$kind, "vrt")
+  expect_equal(.mtc_open(terra::rast(nc_fix$abv_path))$kind, "spat")
+})
+
+test_that(".mtc_open stops on a missing file or unrecognized extension", {
+  expect_error(.mtc_open("does_not_exist.nc"), "not found")
+  expect_error(.mtc_open("does_not_exist.tif"), "Unrecognized")
+})
+
+test_that(".mtc_read dispatches to the right backend and returns matching values", {
+  skip_if_not_installed("ncdf4")
+  skip_if_not_installed("rhdf5")
+
+  nc_fix <- .mtc_write_fixture_pair("nc")
+  h5_fix <- .mtc_write_fixture_pair("h5")
+
+  h_nc <- .mtc_open(nc_fix$abv_path)
+  h_h5 <- .mtc_open(h5_fix$abv_path)
+
+  out_nc <- .mtc_read(h_nc, "Tz", x_idx = 1, y_idx = 2, time_idx = 1:5)
+  out_h5 <- .mtc_read(h_h5, "Tz", x_idx = 1, y_idx = 2, time_idx = 1:5)
+
+  expect_equal(out_nc$Tz, nc_fix$fx$mout$Tz[2, 1, 1:5])
+  expect_equal(out_h5$Tz, h5_fix$fx$mout$Tz[2, 1, 1:5])
+})
