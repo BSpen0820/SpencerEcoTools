@@ -945,6 +945,10 @@ write_endotherm_inputs <- function(output_dir,
     abv_tmpl <- .mtc_grid_template(abv_handle)
     blw_tmpl <- .mtc_grid_template(blw_handle)
     .check_grid_match(abv_tmpl, blw_tmpl, "abvgrd_input", "blwgrd_input", action = "stop")
+    if (abv_handle$nrow != blw_handle$nrow || abv_handle$ncol != blw_handle$ncol)
+      stop(sprintf(
+        "abvgrd_input and blwgrd_input do not share the same grid dimensions (%d x %d vs %d x %d rows x cols)",
+        abv_handle$nrow, abv_handle$ncol, blw_handle$nrow, blw_handle$ncol))
   }
 
   if (cell_input_type == "index") {
