@@ -1066,10 +1066,10 @@ write_endotherm_inputs <- function(output_dir,
 .mtc_open_h5 <- function(path) {
   if (!requireNamespace("rhdf5", quietly = TRUE))
     stop('Package \'rhdf5\' is required. Install with: BiocManager::install("rhdf5")')
+  on.exit(rhdf5::H5close(), add = TRUE)
 
   attrs <- rhdf5::h5readAttributes(path, "/")
   time_str <- rhdf5::h5read(path, "time")
-  rhdf5::H5close()
   time_utc <- as.POSIXct(time_str, format = "%Y-%m-%dT%H:%M:%S", tz = "UTC")
 
   ls <- rhdf5::h5ls(path, recursive = FALSE)
@@ -1089,6 +1089,7 @@ write_endotherm_inputs <- function(output_dir,
 .mtc_read_h5 <- function(handle, vars, x_idx, y_idx, time_idx) {
   if (!requireNamespace("rhdf5", quietly = TRUE))
     stop('Package \'rhdf5\' is required. Install with: BiocManager::install("rhdf5")')
+  on.exit(rhdf5::H5close(), add = TRUE)
 
   out <- list()
   for (vn in vars) {
@@ -1100,7 +1101,6 @@ write_endotherm_inputs <- function(output_dir,
     v <- rhdf5::h5read(handle$source, ds_path, index = list(y_idx, x_idx, time_idx))
     out[[vn]] <- as.numeric(v)
   }
-  rhdf5::H5close()
   out
 }
 
