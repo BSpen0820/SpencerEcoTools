@@ -12,16 +12,18 @@ when citing data sources in a manuscript.
 \section{Data sources}{
 \tabular{lllll}{
    Data Type \tab Title / Product \tab Variable(s) Used \tab Unit \tab Reference \cr
-   Elevation \tab Copernicus GLO-30 DEM \tab Elevation \tab meters \tab European Space Agency, Sinergise (2021). \emph{Copernicus Global Digital Elevation Model}. Distributed by OpenTopography. \doi{10.5069/G9028PQB} \cr
-   Surface reflectance (primary) \tab Harmonized Landsat Sentinel-2 (HLS) v2.0 - HLSS30 & HLSL30 \tab Red, green, blue, NIR surface reflectance \tab unitless (reflectance, 0-1) \tab Masek, J., Ju, J., Roger, J., Skakun, S., Vermote, E., Claverie, M., Dungan, J., Yin, Z., Freitag, B., & Justice, C. (2021). \emph{HLS Sentinel-2 Multi-spectral Instrument Surface Reflectance Daily Global 30 m v2.0 (HLSS30)} and \emph{HLS Landsat Operational Land Imager Surface Reflectance Daily Global 30 m v2.0 (HLSL30)}. NASA EOSDIS Land Processes DAAC. \doi{10.5067/HLS/HLSS30.002}; \doi{10.5067/HLS/HLSL30.002} \cr
-   Surface reflectance (alternative) \tab Copernicus Sentinel-2 MSI Level-2A Surface Reflectance (Harmonized) \tab Red, green, blue, NIR surface reflectance \tab unitless (reflectance, 0-1) \tab European Space Agency (2022). \emph{Sentinel-2 MSI Level-2A BOA Reflectance, Harmonized}. Copernicus Programme. \url{https://sentinel.esa.int/web/sentinel/user-guides/sentinel-2-msi} \cr
-   Cloud/shadow mask \tab Cloud Score+ (S2_HARMONIZED) \tab Cloud/shadow quality score (\code{cs}, \code{cs_cdf}) \tab unitless (0-1 probability) \tab Pasquarella, V. J., Brown, C. F., Czerwinski, W., & Rucklidge, W. J. (2023). Comprehensive quality assessment of optical satellite imagery using weakly supervised video learning. \emph{CVPR Workshops (EarthVision)}. Dataset: Google Earth Engine \code{GOOGLE/CLOUD_SCORE_PLUS/V1/S2_HARMONIZED} \cr
+   Elevation \tab Copernicus GLO-30 DEM \tab Elevation \tab meters \tab European Space Agency (2024). \emph{Copernicus Global Digital Elevation Model}. Distributed by OpenTopography. \doi{10.5069/G9028PQB} \cr
+   Surface reflectance (primary) \tab Harmonized Landsat Sentinel-2 (HLS) v2.0 - HLSS30 & HLSL30 \tab Red, green, blue, NIR surface reflectance \tab unitless (reflectance, 0-1) \tab Neigh, C., Ju, J., Roger, J.-C., Skakun, S., Vermote, E., Claverie, M., Dungan, J., Yin, Z., Freitag, B., & Justice, C. (2021). \emph{HLS Sentinel-2 Multi-spectral Instrument Surface Reflectance Daily Global 30 m v2.0 (HLSS30)} and \emph{HLS Landsat Operational Land Imager Surface Reflectance Daily Global 30 m v2.0 (HLSL30)}. NASA EOSDIS Land Processes DAAC. \doi{10.5067/HLS/HLSS30.002}; \doi{10.5067/HLS/HLSL30.002} \cr
+   Surface reflectance (alternative) \tab Copernicus Sentinel-2 MSI Level-2A Surface Reflectance (Harmonized) \tab Red, green, blue, NIR surface reflectance \tab unitless (reflectance, 0-1) \tab European Space Agency (2015). \emph{Sentinel-2 User Handbook} (Issue 1.2, Rev. 2). Copernicus Programme. \url{https://sentinels.copernicus.eu/documents/247904/685211/Sentinel-2_User_Handbook} \cr
+   Cloud/shadow mask \tab Cloud Score+ (S2_HARMONIZED) \tab Cloud/shadow quality score (\code{cs}, \code{cs_cdf}) \tab unitless (0-1 probability) \tab Pasquarella, V. J., Brown, C. F., Czerwinski, W., & Rucklidge, W. J. (2023). Comprehensive quality assessment of optical satellite imagery using weakly supervised video learning. \emph{CVPR Workshops (EarthVision)}, 2125-2135. \doi{10.1109/CVPRW59228.2023.00206} \cr
    Leaf Area Index \tab MODIS MCD15A3H v061 \tab LAI \tab m^2^ m^-2^ \tab Myneni, R., Knyazikhin, Y., & Park, T. (2021). \emph{MODIS/Terra+Aqua Leaf Area Index/FPAR 4-Day L4 Global 500 m SIN Grid V061}. NASA EOSDIS Land Processes DAAC. \doi{10.5067/MODIS/MCD15A3H.061} \cr
    Albedo \tab MODIS MCD43A3 v061 \tab Black-sky/white-sky albedo \tab unitless (fraction, 0-1) \tab Schaaf, C., & Wang, Z. (2021). \emph{MODIS/Terra+Aqua BRDF/Albedo Daily L3 Global 500 m SIN Grid V061}. NASA EOSDIS Land Processes DAAC. \doi{10.5067/MODIS/MCD43A3.061} \cr
    Soil physical properties \tab SoilGrids 2.0 \tab Bulk density, clay, sand, silt fraction \tab cg cm^-3^ (bulk density); g kg^-1^ (clay/sand/silt) \tab Poggio, L., de Sousa, L. M., Batjes, N. H., Heuvelink, G. B. M., Kempen, B., Ribeiro, E., & Rossiter, D. (2021). SoilGrids 2.0: producing soil information for the globe with quantified spatial uncertainty. \emph{SOIL}, 7, 217-240. \doi{10.5194/soil-7-217-2021} \cr
-   Hourly climate forcing \tab NOAA Analysis of Record for Calibration (AORC) v1.1 \tab Precipitation, downward longwave/shortwave radiation, surface pressure, specific humidity, 2 m air temperature, 10 m U/V wind components \tab mm hr^-1^; W m^-2^; Pa; kg kg^-1^; degC (converted from K); m s^-1^ \tab NOAA Office of Water Prediction (2021). \emph{Analysis of Record for Calibration (AORC) v1.1}. NOAA National Water Model, distributed via AWS Open Data. \url{https://registry.opendata.aws/noaa-nws-aorc/} \cr
-   Land cover \tab National Land Cover Database (NLCD) \tab Land cover class \tab categorical \tab Dewitz, J. (2021). \emph{National Land Cover Database (NLCD) 2019 Products}. U.S. Geological Survey data release. \doi{10.5066/P9KZCM54} \cr
-   Vegetation height \tab LANDFIRE Existing Vegetation Height (EVH) \tab Vegetation height class \tab categorical -> meters \tab LANDFIRE (2022). \emph{Existing Vegetation Height, LANDFIRE 2.2.0}. U.S. Department of the Interior, Geological Survey; U.S. Department of Agriculture, Forest Service. \url{https://www.landfire.gov} \cr
+   Hourly climate forcing \tab NOAA Analysis of Record for Calibration (AORC) v1.1 \tab Precipitation, downward longwave/shortwave radiation, surface pressure, specific humidity, 2 m air temperature, 10 m U/V wind components \tab mm hr^-1^; W m^-2^; Pa; kg kg^-1^; degC (converted from K); m s^-1^ \tab Fall, G., Kitzmiller, D., Pavlovic, S., Zhang, Z., Patrick, N., St. Laurent, M., Trypaluk, C., Wu, W., & Miller, D. (2023). The Office of Water Prediction's Analysis of Record for Calibration, Version 1.1: Dataset description and precipitation evaluation. \emph{JAWRA Journal of the American Water Resources Association}, 59(6), 1246-1272. \doi{10.1111/1752-1688.13143}. Data distributed via AWS Open Data: \url{https://registry.opendata.aws/noaa-nws-aorc/} \cr
+   Land cover (primary) \tab National Land Cover Database (NLCD) \tab Land cover class \tab categorical \tab Dewitz, J., and U.S. Geological Survey (2021). \emph{National Land Cover Database (NLCD) 2019 Products} (ver. 2.0, June 2021). U.S. Geological Survey data release. \doi{10.5066/P9KZCM54} \cr
+   Land cover (alternative) \tab ESA WorldCover 10 m 2020 v100 \tab Land cover class \tab categorical \tab Zanaga, D., Van De Kerchove, R., De Keersmaecker, W., Souverijns, N., Brockmann, C., Quast, R., Wevers, J., Grosu, A., Paccini, A., Vergnaud, S., Cartus, O., Santoro, M., Fritz, S., Georgieva, I., Lesiv, M., Carter, S., Herold, M., Li, L., Tsendbazar, N.-E., Ramoino, F., & Arino, O. (2021). \emph{ESA WorldCover 10 m 2020 v100}. Zenodo. \doi{10.5281/zenodo.5571936} \cr
+   Vegetation height (primary) \tab LANDFIRE Existing Vegetation Height (EVH) \tab Vegetation height class \tab categorical -> meters \tab LANDFIRE (2020). \emph{Existing Vegetation Height, LANDFIRE 2.2.0 (LF2020)}. U.S. Department of the Interior, Geological Survey; U.S. Department of Agriculture, Forest Service. \url{https://www.landfire.gov} \cr
+   Vegetation height (alternative) \tab ETH Global Canopy Height 2020 (10 m) \tab Canopy top height \tab meters \tab Lang, N., Jetz, W., Schindler, K., & Wegner, J. D. (2023). A high-resolution canopy height model of the Earth. \emph{Nature Ecology & Evolution}, 7(11), 1778-1789. \doi{10.1038/s41559-023-02206-6} \cr
 }
 }
 
@@ -33,6 +35,22 @@ produced the final imagery. Cloud Score+ is a mask rather than a modeled
 variable, but determines which pixels survive into the reflectance
 composites and is worth citing on that basis. AORC access dates matter for
 citation purposes since NOAA periodically updates the Zarr store version.
+The Fall et al. (2023) journal article is the primary citable reference
+for AORC v1.1; the AWS registry entry is a secondary data-access citation.
+The NLCD and ESA WorldCover rows are alternates, not both required for a
+given run: NLCD is produced by this package's own \code{NLCD_2_CORINE()}
+preprocessing step, while ESA WorldCover is obtained via
+\code{microclimdata::lcover_download(type = "ESA")} (Earth Engine collection
+\code{ESA/WorldCover/v100}) - cite whichever supplied the land cover layer
+actually used. Similarly, LANDFIRE EVH and the ETH Global Canopy Height
+product are alternates: LANDFIRE is produced by this package's own
+\code{LandfireVegHght_AsNumeric()} preprocessing step, while ETH Global Canopy
+Height is obtained via \code{microclimdata::vegheight_download()} (Earth Engine
+asset \code{users/nlang/ETH_GlobalCanopyHeight_2020_10m_v1}).
+All references were verified in 2026-07 against their authoritative
+source pages (GEE Data Catalog, NASA LP DAAC/Earthdata, USGS, ESA/Copernicus,
+NOAA, Zenodo, and LANDFIRE); see \code{SpencerEcoTools_DataSources.bib} for the
+corresponding Zotero-importable BibTeX records.
 }
 
 \seealso{
