@@ -25,10 +25,13 @@ because \code{Endo2022a.exe} hard-codes these names in its working
 directory.}
 
 \item{model_settings}{Named list of simulation-level settings: \code{julnum,
-juldays, hrout, outout, microin, outfile, outunits, strht, geom, geomult,
-apnd, ventpct, inccond, frcmpr, usralom, actht, err, acthrs, minfrg,
-nrght, prdht, fasky, fagrd, faobj, usrnure, afrnt, bfrnt, aside, bside}.
-\code{juldays} must have length \code{julnum}.}
+juldays, hrout, outout, microin, outfile, outunits, depend, strht, geom,
+geomult, apnd, ventpct, inccond, frcmpr, usralom, actht, err, acthrs,
+minfrg, nrght, prdht, fasky, fagrd, faobj, usrnure, afrnt, bfrnt, aside,
+bside}. \code{juldays} must have length \code{julnum}. \code{depend} is
+\code{endo.dat}'s DEPEND value (default \code{2.5}, matching the
+validated Female Bighorn Sheep baseline): if \code{2.0 < depend < 3.0},
+metabolic output is total W; if \code{depend == 2.0}, it is W/kg.}
 
 \item{animal}{Named list of whole-animal properties: \code{species, class,
 marsup, cp, mass, timdepmass, mass2, fatpct, timdepfat, fatpct2, subqfat,
