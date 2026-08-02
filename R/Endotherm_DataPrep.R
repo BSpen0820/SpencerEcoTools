@@ -4,8 +4,8 @@
 # Endotherm Model/Sheep_MetabolicChamber/{endo.dat,alomvars.dat}.
 # Fields with no equivalent in that reference (the huddle/tree-sleep block,
 # which was absent from that file; a couple of fields hard-coded as literals
-# in this script's row-writer, e.g. fur "tran" and the endo.dat "DEPEND"
-# value) retain their prior (Chacma Baboon example) defaults.
+# in this script's row-writer, e.g. fur "tran") retain their prior (Chacma
+# Baboon example) defaults.
 
 .default_model_settings <- function() {
   list(
@@ -16,6 +16,7 @@
     microin  = "CSV",
     outfile  = "CSV",
     outunits = "KJ",
+    depend   = 2.5,
     strht    = "N",
     geom     = 1,
     geomult  = 3,
@@ -273,10 +274,13 @@
 #'   because \code{Endo2022a.exe} hard-codes these names in its working
 #'   directory.
 #' @param model_settings Named list of simulation-level settings: \code{julnum,
-#'   juldays, hrout, outout, microin, outfile, outunits, strht, geom, geomult,
-#'   apnd, ventpct, inccond, frcmpr, usralom, actht, err, acthrs, minfrg,
-#'   nrght, prdht, fasky, fagrd, faobj, usrnure, afrnt, bfrnt, aside, bside}.
-#'   \code{juldays} must have length \code{julnum}.
+#'   juldays, hrout, outout, microin, outfile, outunits, depend, strht, geom,
+#'   geomult, apnd, ventpct, inccond, frcmpr, usralom, actht, err, acthrs,
+#'   minfrg, nrght, prdht, fasky, fagrd, faobj, usrnure, afrnt, bfrnt, aside,
+#'   bside}. \code{juldays} must have length \code{julnum}. \code{depend} is
+#'   \code{endo.dat}'s DEPEND value (default \code{2.5}, matching the
+#'   validated Female Bighorn Sheep baseline): if \code{2.0 < depend < 3.0},
+#'   metabolic output is total W; if \code{depend == 2.0}, it is W/kg.
 #' @param animal Named list of whole-animal properties: \code{species, class,
 #'   marsup, cp, mass, timdepmass, mass2, fatpct, timdepfat, fatpct2, subqfat,
 #'   density, usrmet, met}.
@@ -430,7 +434,7 @@ write_endotherm_inputs <- function(output_dir,
   row12 <- c("9th Variable: What type of output files from endotherm model: 'CSV' or 'OUT'", "\n")
   row13 <- c("10th Variable: What units for metabolic requirements in MONTH and YEAR output files: 'JL', 'KJ', or 'MJ'  *Joules, Kilojoules, or Megajoules*", "\n")
   row14 <- c("-----------------------------------------------------------------------------", "\n")
-  row15 <- paste("'ENDOTIME' '", ms$hrout, "' '", ms$outout, "' 1.0 'NDTHRM' 0 0 '", ms$microin, "'  '", ms$outfile, "' '", ms$outunits, "'", sep = "", "\n")
+  row15 <- paste("'ENDOTIME' '", ms$hrout, "' '", ms$outout, "' ", ms$depend, " 'NDTHRM' 0 0 '", ms$microin, "'  '", ms$outfile, "' '", ms$outunits, "'", sep = "", "\n")
   row16 <- c("", "\n")
   row17 <- c("Do a transient in   If a transient, is it   Consider stored  Specific   Class of animal (6 letters): 'MAMMAL',\"\t", "\n")
   row18 <- c("addition to steady  for the animal (1.)  heat in energy   Heat       'BIRDIE','REPTIL','AMPHIB','INSECT'\"\t\t  ", "\n")
