@@ -22,6 +22,79 @@ test_that("run_metabolic_chamber errors when save_dir does not exist", {
   )
 })
 
+test_that("run_metabolic_chamber errors when scenarios is character(0)", {
+  fake_exe <- tempfile(fileext = ".exe")
+  writeLines("not a real exe", fake_exe)
+  on.exit(unlink(fake_exe))
+  expect_error(
+    run_metabolic_chamber(get_endotherm_defaults(), exe_path = fake_exe, scenarios = character(0)),
+    "scenarios"
+  )
+})
+
+test_that("run_metabolic_chamber errors when endo_inputs is missing required group(s)", {
+  fake_exe <- tempfile(fileext = ".exe")
+  writeLines("not a real exe", fake_exe)
+  on.exit(unlink(fake_exe))
+  bad_inputs <- get_endotherm_defaults()
+  bad_inputs$flying_digging <- NULL
+  expect_error(
+    run_metabolic_chamber(bad_inputs, exe_path = fake_exe),
+    "flying_digging"
+  )
+})
+
+test_that("run_metabolic_chamber messages when endo_inputs$model_settings$julnum is not 12", {
+  fake_exe <- tempfile(fileext = ".exe")
+  writeLines("not a real exe", fake_exe)
+  on.exit(unlink(fake_exe))
+
+  testthat::local_mocked_bindings(
+    run_endotherm_model = function(workspace_dir, exe_name, sysname) {
+      list(success = FALSE, message = "simulated failure")
+    }
+  )
+
+  bad_inputs <- get_endotherm_defaults(julnum = 6, juldays = c(15, 45, 74, 105, 135, 166))
+  expect_message(
+    try(run_metabolic_chamber(bad_inputs, exe_path = fake_exe, scenarios = "standing_variable"), silent = TRUE),
+    "julnum = 12"
+  )
+})
+
+test_that("run_metabolic_chamber computes target_rmr before running any scenario", {
+  fake_exe <- tempfile(fileext = ".exe")
+  writeLines("not a real exe", fake_exe)
+  on.exit(unlink(fake_exe))
+
+  bad_inputs <- get_endotherm_defaults()
+  bad_inputs$animal$usrmet <- "N"
+  bad_inputs$animal$class <- "BIRDIE"
+
+  events <- character(0)
+  testthat::local_mocked_bindings(
+    run_endotherm_model = function(workspace_dir, exe_name, sysname) {
+      events <<- c(events, "exe_invoked")
+      list(success = FALSE, message = "simulated failure")
+    }
+  )
+
+  withCallingHandlers(
+    try(
+      run_metabolic_chamber(bad_inputs, exe_path = fake_exe, scenarios = "standing_variable"),
+      silent = TRUE
+    ),
+    warning = function(w) {
+      if (grepl("MAMMAL", conditionMessage(w))) events <<- c(events, "mammal_warning")
+      invokeRestart("muffleWarning")
+    }
+  )
+
+  # the MAMMAL warning (from .mc_target_rmr, hoisted before the loop) must
+  # fire before the first (mocked) exe invocation, not after 4 real runs.
+  expect_equal(events, c("mammal_warning", "exe_invoked"))
+})
+
 # --- Mocked exe-free tests: exercise the warn+skip / stop-on-all-fail control
 # flow without needing the real Endotherm exe. run_endotherm_model() is
 # mocked; the fake "success" path writes minimal fake HOURPLOT.csv/OUTPUT
@@ -119,6 +192,28 @@ test_that("run_metabolic_chamber's save_dir option copies each scenario's endo.d
 
   expect_true(file.exists(file.path(save_dir, "standing_variable_endo.dat")))
   expect_true(file.exists(file.path(save_dir, "standing_variable_alomvars.dat")))
+})
+
+test_that("run_metabolic_chamber cleans up all scenario temp directories, not just the last", {
+  fake_exe <- tempfile(fileext = ".exe")
+  writeLines("not a real exe", fake_exe)
+  on.exit(unlink(fake_exe))
+
+  testthat::local_mocked_bindings(
+    run_endotherm_model = function(workspace_dir, exe_name, sysname) {
+      .write_fake_hourplot(file.path(workspace_dir, "HOURPLOT.csv"))
+      .write_fake_output(file.path(workspace_dir, "OUTPUT"))
+      list(success = TRUE, message = "Calculations completed.")
+    }
+  )
+
+  before <- list.files(tempdir(), pattern = "^mc_")
+  run_metabolic_chamber(get_endotherm_defaults(), exe_path = fake_exe,
+                         scenarios = c("standing_variable", "curled_variable",
+                                       "curled_constant", "standing_constant"))
+  after <- list.files(tempdir(), pattern = "^mc_")
+
+  expect_equal(after, before)
 })
 
 # --- Real-exe integration test, mirrors test-run_endotherm_model.R's pattern.
