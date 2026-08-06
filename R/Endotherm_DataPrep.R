@@ -260,6 +260,71 @@
     stop(sprintf("'%s' must have length %d (model_settings$julnum), got %d", name, n, length(x)))
 }
 
+#' Get the default parameter set for write_endotherm_inputs()
+#'
+#' Returns the same internal default values that \code{write_endotherm_inputs()}
+#' falls back to for any argument group left as \code{list()}, bundled into a
+#' single named list so they can be inspected, edited, and passed back in.
+#'
+#' @param julnum Number of julian days in the model run. Defaults to \code{12}
+#'   (one per month, matching the reference Female Bighorn Sheep example).
+#'   Any julnum-dependent vector field in the returned \code{animal, fur,
+#'   physiology, diet} groups (e.g. \code{animal$mass2}, \code{diet$digef})
+#'   is sized to this value.
+#' @param juldays Numeric vector of julian day numbers, length \code{julnum}.
+#'   Defaults to the reference Female Bighorn Sheep example's 12 monthly
+#'   midpoints. Written into the returned \code{model_settings$juldays} (and
+#'   \code{julnum} into \code{model_settings$julnum}), overriding
+#'   \code{write_endotherm_inputs()}'s own internal default for that group so
+#'   the returned bundle stays internally consistent.
+#'
+#' @return A named \code{list()} with nine elements — \code{model_settings,
+#'   animal, fur, physiology, diet, thermoreg, flying_digging, nest_shelter,
+#'   allometry} — using the same names as \code{write_endotherm_inputs()}'s
+#'   arguments, suitable for editing and passing back in with
+#'   \code{do.call(write_endotherm_inputs, c(list(output_dir = ...), defaults))}.
+#'
+#' @details
+#' \code{write_endotherm_inputs()} builds each of its nine argument groups by
+#' merging a caller-supplied \code{list()} onto an internal, unexported
+#' default. This function exposes those defaults directly so they don't have
+#' to be read out of the package source to be inspected or modified.
+#'
+#' @examples
+#' \dontrun{
+#'   defaults <- get_endotherm_defaults()
+#'   str(defaults$animal)
+#'
+#'   # Tweak a couple of fields, then write inputs using the edited bundle
+#'   defaults$animal$mass <- 60
+#'   defaults$animal$species <- "Male Bighorn"
+#'   do.call(write_endotherm_inputs, c(list(output_dir = "working_dir"), defaults))
+#' }
+#'
+#' @seealso write_endotherm_inputs
+#' @export
+get_endotherm_defaults <- function(julnum = 12,
+                                    juldays = c(15, 45, 74, 105, 135, 166,
+                                                196, 227, 258, 288, 319, 349)) {
+  .chk_vec_len(juldays, julnum, "juldays")
+
+  ms <- .default_model_settings()
+  ms$julnum <- julnum
+  ms$juldays <- juldays
+
+  list(
+    model_settings = ms,
+    animal         = .default_animal(julnum),
+    fur            = .default_fur(julnum),
+    physiology     = .default_physiology(julnum),
+    diet           = .default_diet(julnum),
+    thermoreg      = .default_thermoreg(),
+    flying_digging = .default_flying_digging(),
+    nest_shelter   = .default_nest_shelter(),
+    allometry      = .default_allometry()
+  )
+}
+
 #' Write NicheMapR Endotherm model input files (endo.dat, alomvars.dat)
 #'
 #' Builds the fixed-format \code{endo.dat} and \code{alomvars.dat} input files
