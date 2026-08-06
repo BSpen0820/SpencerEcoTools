@@ -128,6 +128,17 @@ Insert into `R/Endotherm_DataPrep.R` immediately after `.chk_vec_len()` (after l
 #' default. This function exposes those defaults directly so they don't have
 #' to be read out of the package source to be inspected or modified.
 #'
+#' @examples
+#' \dontrun{
+#'   defaults <- get_endotherm_defaults()
+#'   str(defaults$animal)
+#'
+#'   # Tweak a couple of fields, then write inputs using the edited bundle
+#'   defaults$animal$mass <- 60
+#'   defaults$animal$species <- "Male Bighorn"
+#'   do.call(write_endotherm_inputs, c(list(output_dir = "working_dir"), defaults))
+#' }
+#'
 #' @seealso write_endotherm_inputs
 #' @export
 get_endotherm_defaults <- function(julnum = 12,
