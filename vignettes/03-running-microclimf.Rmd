@@ -1,0 +1,230 @@
+---
+title: "Running microclimf Models: Local and Cluster"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Running microclimf Models: Local and Cluster}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  eval = FALSE
+)
+```
+
+This picks up where `02-data-pipeline` left off: a packaged climate RDS,
+vegetation/soil parameter RDS files, and a fine-resolution DEM for the
+UI Arboretum dummy site. It covers tiling, running `microclimf` locally,
+and running the same model as a SLURM array job.
+
+## 1. Build the coarse (climate-resolution) DEM
+
+`create_tiles()` and `run_micro_big_nichemap()` need a `coarse_dem` on the
+same grid as the packaged climate data — not the fine 30 m DEM. Build it by
+resampling the fine DEM onto the climate raster's actual grid:
+
+```{r}
+library(terra)
+library(SpencerEcoTools)
+
+dem_fine <- terra::rast("./Data/DEM/DEM_GLO30.tif")
+
+clim_rds     <- readRDS("./Data/Weather_Pkg/UI_Arboretum_Climate_20230701_to_20230831.RDS")
+clim_template <- terra::unwrap(clim_rds[[1]])
+
+dem_coarse <- terra::resample(dem_fine, clim_template)
+terra::writeRaster(dem_coarse, "./Data/DEM/DEM_Coarse_UI_Arboretum.tif", overwrite = TRUE)
+```
+
+(Climate RDS files store a wrapped `SpatRaster` — `terra::unwrap()` is
+required before use, matching how `package_climate()` writes them.)
+
+## 2. Create tiles
+
+```{r}
+dates_df <- data.frame(
+  Start_Dates = as.Date("2023-07-01"),
+  End_Dates   = as.Date("2023-08-31")
+)
+
+tiles <- create_tiles(
+  coarse_dem        = dem_coarse,
+  fine_dem          = dem_fine,
+  dates             = as.Date(c("2023-07-01", "2023-08-31")),
+  tile_dims         = c(1, 1),
+  snow_modeling     = FALSE,
+  return_tiles_rast = TRUE
+)
+```
+
+The dummy site is small enough to fit in a single tile
+(`tile_dims = c(1, 1)`). On a real, larger study area, either pass bigger
+`tile_dims` or omit `tile_dims` entirely (`NULL`, the default) to let
+`create_tiles()` pick the largest tile size that fits within
+`mem_fraction` (default 70%) of available system RAM — this is what keeps
+`run_micro_big_nichemap()` memory-safe on large domains.
+
+## 3. Run locally
+
+```{r}
+log_local <- run_micro_big_nichemap(
+  tiles       = tiles,
+  clim        = "./Data/Weather_Pkg",
+  dates       = dates_df,
+  dtm_fine    = dem_fine,
+  dtm_coarse  = dem_coarse,
+  vegp        = "./Data/VegPara",
+  soilc       = "./Data/SoilPara",
+  output_dir  = "./Microclim_out",
+  reqhgt      = 2,
+  zref        = 2,
+  windhgt     = 10,
+  matemp      = NA,
+  snow        = FALSE,
+  Dynreqhgt   = TRUE,
+  altcorrect  = 2,
+  parallel    = TRUE,
+  ncores      = 4,
+  study_area  = "UI_Arboretum",
+  file_fmt    = "nc",
+  compression = 6
+)
+```
+
+This models every height in one process: the above-ground height
+(`reqhgt = 2`, i.e. 2 m) plus all ten fixed soil depths (0-200 cm), for
+every tile and every period in `dates`. With no `clust_array_arg`/
+`clust_array_size` supplied, all `(tile, period)` combinations run in this
+one R session.
+
+## 4. Run on a SLURM cluster
+
+`run_micro_big_nichemap()` never submits jobs itself — `clust_array_arg`
+and `clust_array_size` are hidden `...` arguments an SBATCH array script
+passes in, so each array task processes a slice of the same
+`(tile, period)` combinations the local run processed all at once. Put the
+model call in its own script:
+
+`run_microclimf_cluster.R`:
+```r
+#!/usr/bin/env Rscript
+library(terra)
+library(SpencerEcoTools)
+
+n_threads <- as.integer(Sys.getenv("SLURM_CPUS_PER_TASK", unset = "1"))
+terraOptions(threads = n_threads, memfrac = 0.7, tempdir = "~/terra_temp")
+
+args <- commandArgs(trailingOnly = TRUE)
+get_arg <- function(name, default = NA) {
+  x <- grep(paste0("^--", name, "="), args, value = TRUE)
+  if (length(x) == 0) return(default)
+  sub(paste0("^--", name, "="), "", x)
+}
+clust_array_arg  <- get_arg("clust_array_arg")
+clust_array_size <- get_arg("clust_array_size")
+
+dem_fine   <- rast("./Data/DEM/DEM_GLO30.tif")
+dem_coarse <- rast("./Data/DEM/DEM_Coarse_UI_Arboretum.tif")
+
+dates_df <- data.frame(
+  Start_Dates = as.Date("2023-07-01"),
+  End_Dates   = as.Date("2023-08-31")
+)
+
+tiles <- create_tiles(
+  coarse_dem = dem_coarse, fine_dem = dem_fine,
+  dates      = as.Date(c("2023-07-01", "2023-08-31")),
+  tile_dims  = c(1, 1), return_tiles_rast = TRUE
+)
+
+log <- run_micro_big_nichemap(
+  tiles = tiles, clim = "./Data/Weather_Pkg", dates = dates_df,
+  dtm_fine = dem_fine, dtm_coarse = dem_coarse,
+  vegp = "./Data/VegPara", soilc = "./Data/SoilPara",
+  output_dir = "./Microclim_out",
+  reqhgt = 2, zref = 2, windhgt = 10, matemp = NA,
+  snow = FALSE, Dynreqhgt = TRUE, altcorrect = 2,
+  parallel = TRUE, ncores = n_threads,
+  study_area = "UI_Arboretum", file_fmt = "nc", compression = 6,
+  clust_array_arg  = as.integer(clust_array_arg),
+  clust_array_size = as.integer(clust_array_size)
+)
+
+cat(sprintf("Task %s/%s complete.\n", clust_array_arg, clust_array_size))
+```
+
+And a companion SBATCH script that drives it as an array job. Suppose a
+real (non-dummy) run of this study area produces 4 tiles over 1 period —
+4 total `(tile, period)` tasks, so the array is sized to 4:
+
+`run_microclimf.sbatch`:
+```bash
+#!/bin/bash
+#SBATCH --job-name=microclimf_UI_Arboretum
+#SBATCH --array=1-4
+#SBATCH --cpus-per-task=4
+#SBATCH --mem=16G
+#SBATCH --time=02:00:00
+#SBATCH --output=logs/microclimf_%A_%a.out
+
+module load R
+
+Rscript run_microclimf_cluster.R \
+  --clust_array_arg=${SLURM_ARRAY_TASK_ID} \
+  --clust_array_size=4
+```
+
+`run_micro_big_nichemap()` enumerates all `(tile, period)` combinations
+1-N and distributes them round-robin across the array
+(`rep(seq_len(clust_array_size), length.out = N_tasks)`, tile index
+cycling fastest) — so `--array=1-4` here means each of the 4 array tasks
+gets exactly one `(tile, period)` combination in this example. Size
+`--array` and `--clust_array_size` to `N_tiles x N_periods`, or fewer if
+running multiple combinations per node.
+
+## 5. Stitch tile outputs back together
+
+Whether the run was local or a completed SLURM array, each `(tile, period)`
+combination is written as a separate file under `output_dir`.
+`stitch_tiles_runmicro()` assembles them into one full-domain file per
+period and data type:
+
+```{r}
+stitch_tiles_runmicro(
+  output_dir = "./Microclim_out",
+  dates      = dates_df,
+  study_area = "UI_Arboretum",
+  file_fmt   = "nc"
+)
+```
+
+With `file_fmt = "nc"`, this builds a GDAL VRT per variable (no data
+copied, tile files must stay at their original paths); `file_fmt = "h5"`
+instead builds an HDF5 virtual dataset. Use whichever `file_fmt` matches
+what `run_micro_big_nichemap()` was run with.
+
+## 6. Inspect results at a point
+
+`micro_to_csv()` extracts one grid cell's modeled time series from a
+stitched above-ground + below-ground output pair, reshaped into
+NicheMapR-style data frames — useful for a quick sanity check, or as input
+to point-model workflows downstream of this package's scope:
+
+```{r}
+pt_series <- micro_to_csv(
+  abvgrd_input    = "./Microclim_out/UI_Arboretum/Stitched/20230701_to_20230831/UI_Arboretum_AbvGrd_MicroclimModel_20230701_to_20230831",
+  blwgrd_input    = "./Microclim_out/UI_Arboretum/Stitched/20230701_to_20230831/UI_Arboretum_BlwGrd_MicroclimModel_20230701_to_20230831",
+  cell            = 1,
+  cell_input_type = "cellnumber",
+  dates           = as.Date(c("2023-07-01", "2023-07-07")),
+  elev            = 790
+)
+```
+
+Note the `.vrt`-mode inputs above are the shared *stem* path — no
+extension, no variable suffix — since `stitch_tiles_runmicro(file_fmt =
+"nc")` writes one `{stem}_{varname}.vrt` file per variable rather than one
+combined file.
