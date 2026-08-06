@@ -580,7 +580,7 @@ write_endotherm_inputs <- function(output_dir,
   row93 <- c("Core     Core   Core    Min. diff   Texpir-     % skin wet  Max % skin    Sweat OK?\tPiloerect?  Max pilo     conductivity (0.412 - 2.8 W/mC)    thermal conductivity (W/mC)? 1.0= fur surface;", "\n")
   row94 <- c("regul_T  max T  min T   Tc-Tskin(C) Tair (C)    (sweat)     wet (sweat)   (Y/N)\t\t(Y/N)\t    Pct (%)      Start    Minimum  Maximum           (Y/N)    Value               0.5=halfway b/w fur and skin", "\n")
   row95 <- c("----     -----  ----   ----------   -------     ----------  -----------   ---------    ----------   --------\t -------  -------  -------\t      -----    -----               ---------------", "\n")
-  row96 <- c(format(round(ph$tcreg, 1), nsmall = 1), "\t", format(round(ph$tcmin, 1), nsmall = 1), "\t", format(round(ph$tcmax, 1), nsmall = 1), "\t   ", format(round(ph$tctskdif, 1), nsmall = 1), "\t     ", format(round(ph$texptair, 1), nsmall = 1),
+  row96 <- c(format(round(ph$tcreg, 1), nsmall = 1), "\t", format(round(ph$tcmax, 1), nsmall = 1), "\t", format(round(ph$tcmin, 1), nsmall = 1), "\t   ", format(round(ph$tctskdif, 1), nsmall = 1), "\t     ", format(round(ph$texptair, 1), nsmall = 1),
              "\t ", format(round(ph$sknwet, 1), nsmall = 1), "\t\t", format(round(ph$maxsknwet, 1), nsmall = 1), "\t    ", sQuote(ph$sweat), "\t\t", sQuote(ph$pilo), "\t    ", format(round(ph$maxpilo, 1), nsmall = 1), "\t  ", format(round(ph$flshk, 1), nsmall = 1), "\t    ", format(round(ph$flshkmin, 1), nsmall = 1),
              "\t    ", format(round(ph$flshkmax, 1), nsmall = 1), "\t\t\t", sQuote(ph$usrfurk), "\t", format(round(ph$usrfurk2, 1), nsmall = 1), "\t\t\t", format(round(ph$radfurdep, 1), nsmall = 1), "\n")
   row97  <- c("", "\n")
