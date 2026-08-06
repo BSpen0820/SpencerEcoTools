@@ -13,6 +13,9 @@
 }
 
 test_that("plot.metchamber_result builds both charts when all 4 scenarios are present", {
+  grDevices::pdf(NULL)
+  on.exit(grDevices::dev.off(), add = TRUE)
+
   result <- .fake_metchamber_result(.mc_scenario_ids)
   plots <- plot(result)
   expect_named(plots, c("variable_temp", "constant_temp"))
@@ -21,6 +24,9 @@ test_that("plot.metchamber_result builds both charts when all 4 scenarios are pr
 })
 
 test_that("plot.metchamber_result builds only the available pair", {
+  grDevices::pdf(NULL)
+  on.exit(grDevices::dev.off(), add = TRUE)
+
   result <- .fake_metchamber_result(c("standing_variable", "curled_variable"))
   plots <- plot(result)
   expect_named(plots, "variable_temp")
