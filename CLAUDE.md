@@ -93,14 +93,48 @@ Bryan writes SBATCH scripts manually and passes `$SLURM_ARRAY_TASK_ID`. Function
 
 ## Output file naming
 
-- Above-ground: `{study_area}_AbvGrd_MicropointModel_{period_label}.RDS`
-- Below-ground: `{study_area}_BlwGrd_{depth_mm}_MicropointModel_{period_label}.RDS` (depth in zero-padded 4-digit mm, e.g., `BlwGrd_0015` for 1.5 cm)
+`run_micro_big_nichemap()` writes per-tile output in two distinct stages under
+`output_dir/[study_area/]`, and `stitch_tiles_runmicro()` combines those tiles
+into a third, final stage. Depth labels (`{hgt_lbl}`) are always `AbvGrd` or
+`BlwGrd_{depth_mm}` (depth in zero-padded 4-digit mm, e.g. `BlwGrd_0015` for
+1.5 cm), from the internal `.hgt_label()` helper.
+
+- **Stage 1 — raw micropoint models** (`Micropoint_Models/{period_label}/{hgt_lbl}/`):
+  one RDS per tile per height, always `.RDS` regardless of `file_fmt`.
+  `Tile_{NNN}_{study_area}_{hgt_lbl}_MicropointModel_{period_label}.RDS`
+- **Stage 2 — per-tile converted microclimate models** (`Microclim_Models/{period_label}/{hgt_lbl}/`):
+  written via `write_tile()` in `file_fmt` (`.h5`/`.nc`); below-ground depths
+  are combined into one file per tile (HDF5 group `/BlwGrd_{depth_mm}/Tz` or
+  NetCDF variable `Tz_BlwGrd_{depth_mm}`).
+  `Tile_{NNN}_{study_area}_{hgt_lbl}_MicroclimModel_{period_label}.{h5,nc}`
+- **Snow models** (if `snow = TRUE`), written once per tile+period under
+  `Snow_Models/{period_label}/`:
+  `Tile_{NNN}_{study_area}_SnowModel_{period_label}.{h5,nc}`
+- **Stage 3 — stitched, full-domain** (`stitch_tiles_runmicro()`, under
+  `Stitched/{period_label}/`, or `stitch_tiles()` directly for a single
+  tile directory): one file per data type, no `Tile_{NNN}` prefix.
+  `{study_area}_AbvGrd_MicroclimModel_{period_label}.{h5,nc}` /
+  `{study_area}_BlwGrd_MicroclimModel_{period_label}.{h5,nc}`. With
+  `file_fmt = "nc"` this is a GDAL VRT per variable
+  (`{stem}_{varname}.vrt`, no data copied — tile files must stay put);
+  with `file_fmt = "h5"` it's a single HDF5 virtual dataset.
+
+Non-tiled pipeline outputs:
+
 - Climate: `{study_area}_Climate_{period_label}.RDS`
 - Veg: `{study_area}_VegPara_{period_label}.RDS`
 - Soil: `{study_area}_SoilPara_{period_label}.RDS`
 - Period labels: `YYYYMMDD_to_YYYYMMDD`
 - AORC dirs: `aorc_dir/study_area/year/month/`
 - AORC files: `AORC_{study_area}_{YEAR}_{MM}_{VARNAME}.nc`
+
+If `study_area` is `NULL`, every `{study_area}_` prefix above is simply
+dropped — e.g. Stage 1 becomes `Tile_{NNN}_{hgt_lbl}_MicropointModel_{period_label}.RDS`,
+and Stage 3 becomes `Model_AbvGrd_MicroclimModel_{period_label}.{h5,nc}`
+(`"Model"` is the fallback prefix). Exception: the snow-model fallback
+prefix is itself `"SnowModel"`, so a `NULL` `study_area` produces
+`Tile_{NNN}_SnowModel_SnowModel_{period_label}.{h5,nc}` — a pre-existing
+redundancy in the naming, not a typo.
 
 ## Critical technical constraints
 
