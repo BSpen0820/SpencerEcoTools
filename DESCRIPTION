@@ -23,7 +23,8 @@ Imports:
     solaR,
     zoo,
     readr,
-    microclimfPara
+    microclimfPara,
+    ggplot2
 Suggests:
     rhdf5,
     ncdf4,
