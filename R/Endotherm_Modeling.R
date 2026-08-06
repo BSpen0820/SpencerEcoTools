@@ -332,3 +332,199 @@ run_endotherm_model <- function(workspace_dir, exe_name = "Endo2022a.exe",
   dim_table[6, 1] <- "6th Appendage (Tail/Proboscis)"
   dim_table
 }
+
+#' Run NicheMapR Endotherm metabolic chamber calibration scenarios
+#'
+#' Exposes an animal model built from \code{endo_inputs} to a synthetic,
+#' hand-crafted temperature ramp (\code{\link{metchamber_metout}}/
+#' \code{\link{metchamber_soil}}) across up to 4 canonical scenarios -
+#' \{standing, curled\} x \{variable, constant core temperature\} - the way a
+#' real metabolic chamber experiment would, and returns the resulting
+#' metabolic-rate-vs-temperature data. Each scenario is built independently
+#' in its own temporary directory via \code{\link{write_endotherm_inputs}}/
+#' \code{\link{write_juldays_dat}}/\code{\link{run_endotherm_model}} - unlike
+#' the source script this is ported from, it never reads or overwrites any
+#' real \code{endo.dat}/\code{alomvars.dat} already on disk.
+#'
+#' @param endo_inputs Named list in the same 9-group shape
+#'   \code{\link{write_endotherm_inputs}}/\code{\link{get_endotherm_defaults}}
+#'   use (\code{model_settings, animal, fur, physiology, diet, thermoreg,
+#'   flying_digging, nest_shelter, allometry}) - the animal's real parameters.
+#'   \code{model_settings$julnum}/\code{juldays} are always overridden to
+#'   \code{12}/the bundled ramp's julian days, regardless of what's supplied
+#'   here.
+#' @param exe_path Full path to the Endotherm model executable (any
+#'   version/filename).
+#' @param scenarios Character vector, subset/reorder of
+#'   \code{c("standing_variable", "curled_variable", "curled_constant",
+#'   "standing_constant")}. Default runs all 4.
+#' @param mc_overrides Optional named list, same 9-group shape, merged over
+#'   the fixed metabolic-chamber override table (disabled sweating/panting/
+#'   diving/burrowing/flying, etc. - see \code{@details}) before each
+#'   scenario's own overrides are applied. Changing these changes what
+#'   "metabolic chamber simulation" means scientifically for this run.
+#' @param save_dir Optional directory. If given, each scenario's
+#'   \code{endo.dat}/\code{alomvars.dat} (as actually run) is copied there as
+#'   \code{{scenario}_endo.dat}/\code{{scenario}_alomvars.dat}.
+#' @param sysname Passed through to \code{\link{run_endotherm_model}}
+#'   (Windows vs. Wine invocation). Default detects the current OS.
+#'
+#' @return An object of class \code{"metchamber_result"}: a list with
+#'   \code{hourplot} (named list of data frames, one per scenario that
+#'   actually succeeded - the relevant hours of \code{HOURPLOT.csv}),
+#'   \code{dimensions} (data frame, body-part dimensions parsed from one
+#'   successful scenario's \code{OUTPUT} file - scenario-invariant),
+#'   \code{target_rmr} (list with \code{trgt} and \code{err}, for plotting
+#'   reference lines), and \code{log} (data frame: \code{scenario, success,
+#'   message, timestamp}, one row per requested scenario).
+#'
+#' @details
+#' Every scenario always applies this fixed override table on top of
+#' \code{endo_inputs} (before \code{mc_overrides} or scenario-specific
+#' fields): \code{model_settings} \code{outout/microin/outfile = "Y"/"CSV"/"CSV"},
+#' \code{strht = "N"}; \code{physiology} \code{sweat/pilo = "N"};
+#' \code{diet} \code{act = rep(1.0, 12)}, \code{repro = rep(0.0, 12)};
+#' \code{thermoreg} \code{burrow/nest/climb/shdseek/dive/wind/niteshd/dive2 =
+#' "N"}, \code{shdact = "Y"}, \code{shdpost = "S"}, \code{treeslp/hudl/
+#' tcconcur/tcconcur2 = "N"}; \code{flying_digging}
+#' \code{flight/foss/dig/arb = "N"}. If a scenario's exe run fails, a
+#' \code{warning()} is issued and that scenario is omitted from
+#' \code{$hourplot} (recorded as a failure in \code{$log}); the function only
+#' \code{stop()}s if every requested scenario fails.
+#'
+#' @seealso \code{\link{write_endotherm_inputs}}, \code{\link{get_endotherm_defaults}},
+#'   \code{\link{run_endotherm_model}}, \code{\link{plot.metchamber_result}}
+#' @export
+run_metabolic_chamber <- function(endo_inputs, exe_path,
+                                   scenarios = .mc_scenario_ids,
+                                   mc_overrides = list(),
+                                   save_dir = NULL,
+                                   sysname = Sys.info()[["sysname"]]) {
+
+  if (!all(scenarios %in% .mc_scenario_ids))
+    stop(sprintf("'scenarios' must be from: %s", paste(.mc_scenario_ids, collapse = ", ")))
+  if (!file.exists(exe_path))
+    stop(sprintf("'exe_path' does not exist:\n  %s", exe_path))
+  if (!is.null(save_dir) && !dir.exists(save_dir))
+    stop(sprintf("'save_dir' does not exist:\n  %s", save_dir))
+
+  exe_name <- basename(exe_path)
+  fixed_overrides <- utils::modifyList(.default_mc_overrides(), mc_overrides)
+
+  hourplot <- list()
+  log_rows <- list()
+  dimensions <- NULL
+
+  for (scenario_id in scenarios) {
+    scenario_dir <- tempfile(paste0("mc_", scenario_id, "_"))
+    dir.create(scenario_dir)
+    on.exit(unlink(scenario_dir, recursive = TRUE), add = TRUE)
+
+    scen_overrides <- .mc_scenario_overrides(scenario_id, endo_inputs)
+
+    merged <- endo_inputs
+    for (grp in names(fixed_overrides))
+      merged[[grp]] <- utils::modifyList(merged[[grp]], fixed_overrides[[grp]])
+    for (grp in names(scen_overrides))
+      merged[[grp]] <- utils::modifyList(merged[[grp]], scen_overrides[[grp]])
+    merged$model_settings <- utils::modifyList(
+      merged$model_settings, list(julnum = 12, juldays = .mc_ramp_juldays)
+    )
+
+    write_endotherm_inputs(
+      output_dir     = scenario_dir,
+      model_settings = merged$model_settings,
+      animal         = merged$animal,
+      fur            = merged$fur,
+      physiology     = merged$physiology,
+      diet           = merged$diet,
+      thermoreg      = merged$thermoreg,
+      flying_digging = merged$flying_digging,
+      nest_shelter   = merged$nest_shelter,
+      allometry      = merged$allometry
+    )
+
+    write_juldays_dat(
+      scenario_dir,
+      model_settings   = list(julnum = 12, juldays = .mc_ramp_juldays),
+      habitat_settings = list(startday = 1, endday = 365,
+                               absorp = rep(0.8, 12), shade_min = rep(0, 12),
+                               shade_max = rep(100, 12), surfwet = rep(5, 12),
+                               multihab = "N")
+    )
+
+    utils::write.csv(metchamber_metout, file.path(scenario_dir, "metout.csv"), row.names = FALSE)
+    utils::write.csv(metchamber_metout, file.path(scenario_dir, "shadmet.csv"), row.names = FALSE)
+    utils::write.csv(metchamber_soil, file.path(scenario_dir, "soil.csv"), row.names = FALSE)
+    utils::write.csv(metchamber_soil, file.path(scenario_dir, "shadsoil.csv"), row.names = FALSE)
+
+    if (!is.null(save_dir)) {
+      file.copy(file.path(scenario_dir, "endo.dat"),
+                file.path(save_dir, sprintf("%s_endo.dat", scenario_id)), overwrite = TRUE)
+      file.copy(file.path(scenario_dir, "alomvars.dat"),
+                file.path(save_dir, sprintf("%s_alomvars.dat", scenario_id)), overwrite = TRUE)
+    }
+
+    file.copy(exe_path, file.path(scenario_dir, exe_name))
+
+    run_result <- run_endotherm_model(scenario_dir, exe_name = exe_name, sysname = sysname)
+
+    log_rows[[scenario_id]] <- data.frame(
+      scenario  = scenario_id,
+      success   = run_result$success,
+      message   = run_result$message,
+      timestamp = format(Sys.time(), "%Y-%m-%dT%H:%M:%S"),
+      stringsAsFactors = FALSE
+    )
+
+    if (!run_result$success) {
+      warning(sprintf("run_metabolic_chamber: scenario '%s' failed: %s", scenario_id, run_result$message))
+      next
+    }
+
+    hourplot_path <- file.path(scenario_dir, "HOURPLOT.csv")
+    if (!file.exists(hourplot_path)) {
+      warning(sprintf(
+        "run_metabolic_chamber: scenario '%s' succeeded but HOURPLOT.csv was not produced", scenario_id
+      ))
+      next
+    }
+    hp <- utils::read.csv(hourplot_path, skip = 1)
+    hourplot[[scenario_id]] <- hp[c(2:23, 27:48, 52:73, 77:96), ]
+
+    if (is.null(dimensions)) {
+      dim_result <- tryCatch(
+        .mc_parse_dimensions(file.path(scenario_dir, "OUTPUT")),
+        error = function(e) {
+          warning(sprintf(
+            "run_metabolic_chamber: could not parse body-part dimensions from scenario '%s': %s",
+            scenario_id, conditionMessage(e)
+          ))
+          NULL
+        }
+      )
+      if (!is.null(dim_result)) dimensions <- dim_result
+    }
+  }
+
+  if (length(hourplot) == 0) {
+    failures <- vapply(log_rows, function(r) sprintf("%s: %s", r$scenario, r$message), character(1))
+    stop(sprintf(
+      "run_metabolic_chamber: every requested scenario failed:\n  %s",
+      paste(failures, collapse = "\n  ")
+    ))
+  }
+
+  log_df <- do.call(rbind, log_rows)
+  rownames(log_df) <- NULL
+
+  structure(
+    list(
+      hourplot   = hourplot,
+      dimensions = dimensions,
+      target_rmr = list(trgt = .mc_target_rmr(endo_inputs), err = endo_inputs$model_settings$err),
+      log        = log_df
+    ),
+    class = "metchamber_result"
+  )
+}
