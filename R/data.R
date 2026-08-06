@@ -96,6 +96,66 @@
 #' \code{\link{AORC_meterodf}}
 "Microclim_meterodf"
 
+#' Metabolic Chamber Calibration: Microclimate (metout)
+#'
+#' Hand-crafted synthetic microclimate driver data simulating a metabolic
+#' chamber temperature ramp, for use with \code{\link{run_metabolic_chamber}}.
+#' Air, ground, and sky temperature all increase by approximately 1 degC each
+#' hour across the ramp (see \code{@details}); wind speed, relative humidity,
+#' and solar input are held constant to isolate the animal's thermal
+#' physiology, the way a real metabolic chamber experiment would.
+#'
+#' @format A data frame with 288 rows (12 nominal "days" x 24 hourly rows)
+#'   and 13 columns:
+#' \describe{
+#'   \item{JULDAY}{Nominal julian day of the ramp (not a real calendar day -
+#'     each of the 12 values represents a distinct ramp segment).}
+#'   \item{TIME}{Minutes since midnight (0-1380 in 60-minute steps).}
+#'   \item{TALOC, TALOC.1, TALOC.2}{Air temperature (degC) at three heights;
+#'     identical in this synthetic dataset. Column names are R's
+#'     \code{read.csv()} auto-deduplication of the source file's three
+#'     literal \code{TALOC} headers - preserved as-is, not renamed, so
+#'     writing this data frame back out reproduces the source file's byte
+#'     layout (verified against \code{endo_alomvars_auto_V5.R}'s own
+#'     read-then-write round trip of the same file).}
+#'   \item{RHLOC, RH}{Relative humidity (percent), held at 5.}
+#'   \item{VLOC, VREF}{Wind speed (m/s), held at 0.1 (negligible).}
+#'   \item{ZEN}{Zenith angle (degrees).}
+#'   \item{SOLR}{Solar radiation (W/m^2), held at 0 (no solar input).}
+#'   \item{ELEV}{Elevation (m).}
+#'   \item{TANNUL}{Annual mean temperature (degC).}
+#' }
+#'
+#' @details
+#' Not observational data - a manually constructed calibration input. See
+#' \code{Metabolic Chamber Instructions.docx} (supplied by the NicheMapR
+#' maintainers alongside \code{endo_alomvars_auto_V5.R}) for the full
+#' rationale. Used alongside \code{\link{metchamber_soil}}.
+#'
+#' @seealso \code{\link{metchamber_soil}}, \code{\link{run_metabolic_chamber}}
+#' @source NicheMapR maintainers, distributed with \code{endo_alomvars_auto_V5.R}.
+"metchamber_metout"
+
+#' Metabolic Chamber Calibration: Soil Temperature (soil)
+#'
+#' Hand-crafted synthetic soil temperature profile paired with
+#' \code{\link{metchamber_metout}} for use with
+#' \code{\link{run_metabolic_chamber}}. Row order aligns 1:1 with
+#' \code{metchamber_metout} (no shared julian-day/time key column - both
+#' files are read and consumed in lockstep by the Endotherm model exe).
+#'
+#' @format A data frame with 288 rows and 11 columns:
+#' \describe{
+#'   \item{TIME}{Minutes since midnight (0-1380 in 60-minute steps).}
+#'   \item{D0cm, D1.5cm, D5cm, D10cm, D15cm, D20cm, D30cm, D50cm, D100cm, D200cm}{
+#'     Soil temperature (degC) at each depth, tracking the same ramp as
+#'     \code{metchamber_metout}'s air temperature.}
+#' }
+#'
+#' @seealso \code{\link{metchamber_metout}}, \code{\link{run_metabolic_chamber}}
+#' @source NicheMapR maintainers, distributed with \code{endo_alomvars_auto_V5.R}.
+"metchamber_soil"
+
 #' Remotely Sourced Data in the Microclimate Modeling Pipeline
 #'
 #' This is a documentation-only page (no associated data object) summarizing
