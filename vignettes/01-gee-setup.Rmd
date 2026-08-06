@@ -1,0 +1,131 @@
+---
+title: "Setting Up Google Earth Engine"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Setting Up Google Earth Engine}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  eval = FALSE
+)
+```
+
+## What this package uses Google Earth Engine for
+
+SpencerEcoTools pulls several of its raw inputs directly from Google Earth
+Engine (GEE):
+
+- `download_dem()` — Copernicus GLO-30 elevation
+- `download_hls()` / `download_s2()` — Harmonized Landsat Sentinel-2 or
+  Sentinel-2 surface reflectance imagery (red/green/blue/NIR), with
+  Cloud Score+ cloud masking
+- `download_modis_lai()` — MODIS MCD15A3H Leaf Area Index
+- `download_albedo()` — MODIS MCD43A3 broadband albedo
+- `microclimdata::lcover_download()` / `microclimdata::vegheight_download()`
+  — ESA WorldCover land cover and ETH Global Canopy Height, as alternatives
+  to this package's own NLCD/LANDFIRE preprocessing (see the
+  `02-data-pipeline` vignette)
+
+Everything else in the pipeline is **not** GEE: `download_aorc()` pulls
+hourly climate data directly from NOAA's AORC Zarr store on S3, and
+`download_soil()`/`microclimdata::soildata_download()` pull SoilGrids data
+through their own API.
+
+## 1. Get a Google Cloud project with Earth Engine enabled
+
+1. Sign in at <https://console.cloud.google.com/> with the Google account
+   you want to use for Earth Engine.
+2. Create a new Cloud project (or pick an existing one) and note its
+   **project ID** — you'll pass this to `ee$Initialize()` below.
+3. Enable the Earth Engine API for that project at
+   <https://console.cloud.google.com/apis/library/earthengine.googleapis.com>.
+4. Register the project for Earth Engine access at
+   <https://code.earthengine.google.com/register> if you haven't used Earth
+   Engine with this Google account before.
+
+## 2. Set up a Python environment with the Earth Engine API
+
+SpencerEcoTools calls Earth Engine through `reticulate`, which drives a
+Python environment containing the `earthengine-api` package. A conda/
+miniforge environment keeps this isolated from your system Python:
+
+```bash
+conda create -n rgee python=3.10
+conda activate rgee
+conda install -c conda-forge earthengine-api
+```
+
+`download_aorc()` additionally needs `xarray`, `s3fs`, `zarr`, and
+`netCDF4` in the same environment (it will attempt to `reticulate::py_install()`
+them automatically if missing, but installing up front avoids a mid-run
+pause):
+
+```bash
+conda install -c conda-forge xarray s3fs zarr netCDF4
+```
+
+## 3. Point R at that environment and initialize Earth Engine
+
+Every session that calls a GEE-backed SpencerEcoTools function needs this
+done once, before any package function is called:
+
+```r
+library(reticulate)
+
+reticulate::use_python("C:/Users/you/miniforge3/envs/rgee", required = TRUE)
+
+ee <- reticulate::import("ee")
+ee$Authenticate()                              # first time only, opens a browser
+ee$Initialize(project = "your-gcp-project-id")
+
+# Smoke test
+ee$Number(1)$getInfo()
+#> [1] 1
+```
+
+`ee$Authenticate()` only needs to run once per machine (it caches
+credentials); after that, `ee$Initialize()` alone is enough at the start of
+each session.
+
+**Why this works without a package-level init function**: SpencerEcoTools
+itself never calls `ee$Initialize()`. Internally, `R/zzz.R` lazily imports
+Earth Engine once when the package loads:
+
+```r
+ee <- NULL
+.onLoad <- function(libname, pkgname) {
+  ee <<- reticulate::import("ee", delay_load = TRUE)
+}
+```
+
+Because `reticulate` runs a single Python process per R session, this
+lazy-loaded internal `ee` binding shares the exact same Python `ee` module
+your own `ee$Initialize()` call configured above. Initializing Earth Engine
+yourself, as shown above, is what makes every SpencerEcoTools GEE function
+work — there is no separate SpencerEcoTools-specific setup call.
+
+## 4. Google Drive authentication (for polling GEE exports)
+
+GEE image exports land in a Google Drive folder before SpencerEcoTools
+downloads them locally (`poll_drive()`, called internally by every
+`download_*()` GEE function). This needs its own, separate authentication:
+
+```r
+library(googledrive)
+googledrive::drive_auth()
+```
+
+This opens a browser OAuth flow the first time; tokens are cached for
+subsequent sessions.
+
+## Next steps
+
+With GEE and Drive both authenticated, continue to the
+`02-data-pipeline` vignette for a full worked example on a small dummy
+site, or `03-running-microclimf` to see how the final packaged data feeds
+into `microclimf` model runs.
