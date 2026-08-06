@@ -403,22 +403,40 @@ run_metabolic_chamber <- function(endo_inputs, exe_path,
 
   if (!all(scenarios %in% .mc_scenario_ids))
     stop(sprintf("'scenarios' must be from: %s", paste(.mc_scenario_ids, collapse = ", ")))
+  if (length(scenarios) == 0)
+    stop(sprintf("'scenarios' must name at least one of: %s", paste(.mc_scenario_ids, collapse = ", ")))
   if (!file.exists(exe_path))
     stop(sprintf("'exe_path' does not exist:\n  %s", exe_path))
   if (!is.null(save_dir) && !dir.exists(save_dir))
     stop(sprintf("'save_dir' does not exist:\n  %s", save_dir))
 
+  required_groups <- c("model_settings", "animal", "fur", "physiology", "diet",
+                        "thermoreg", "flying_digging", "nest_shelter", "allometry")
+  missing_groups <- setdiff(required_groups, names(endo_inputs))
+  if (length(missing_groups) > 0)
+    stop(sprintf("'endo_inputs' is missing required group(s): %s", paste(missing_groups, collapse = ", ")))
+
+  if (!is.null(endo_inputs$model_settings$julnum) && endo_inputs$model_settings$julnum != 12) {
+    message(sprintf(
+      "run_metabolic_chamber() always uses julnum = 12 (tied to the bundled temperature-ramp data) - overriding endo_inputs$model_settings$julnum (%d). If endo_inputs' other per-julnum vectors (e.g. animal$mass2) were sized to a different julnum, rebuild endo_inputs with julnum = 12 (e.g. get_endotherm_defaults(julnum = 12)) to avoid a length-mismatch error below.",
+      endo_inputs$model_settings$julnum
+    ))
+  }
+
   exe_name <- basename(exe_path)
   fixed_overrides <- utils::modifyList(.default_mc_overrides(), mc_overrides)
+  target_rmr_trgt <- .mc_target_rmr(endo_inputs)  # compute once, before the loop - warns early if class isn't MAMMAL
 
   hourplot <- list()
   log_rows <- list()
   dimensions <- NULL
+  scenario_dirs <- character(0)
+  on.exit(unlink(scenario_dirs, recursive = TRUE), add = TRUE)
 
   for (scenario_id in scenarios) {
     scenario_dir <- tempfile(paste0("mc_", scenario_id, "_"))
     dir.create(scenario_dir)
-    on.exit(unlink(scenario_dir, recursive = TRUE), add = TRUE)
+    scenario_dirs <- c(scenario_dirs, scenario_dir)
 
     scen_overrides <- .mc_scenario_overrides(scenario_id, endo_inputs)
 
@@ -522,7 +540,7 @@ run_metabolic_chamber <- function(endo_inputs, exe_path,
     list(
       hourplot   = hourplot,
       dimensions = dimensions,
-      target_rmr = list(trgt = .mc_target_rmr(endo_inputs), err = endo_inputs$model_settings$err),
+      target_rmr = list(trgt = target_rmr_trgt, err = endo_inputs$model_settings$err),
       log        = log_df
     ),
     class = "metchamber_result"
