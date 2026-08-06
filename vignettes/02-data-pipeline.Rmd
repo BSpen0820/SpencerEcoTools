@@ -1,0 +1,353 @@
+---
+title: "Data Download & Preprocessing Walkthrough"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Data Download & Preprocessing Walkthrough}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  eval = FALSE
+)
+```
+
+This vignette walks the full data-prep pipeline (`CLAUDE.md`'s pipeline
+order) end to end on a small dummy site, so every function's real inputs
+and outputs are visible in one place. See `01-gee-setup` first for GEE/Drive
+authentication — every code chunk below assumes that's already done.
+
+The dummy site is a ~1.2 km square near the University of Idaho Arboretum
+in Moscow, ID, over two summer months (July-August 2023) — small and
+snow-free enough to keep the walkthrough fast if you were to run it for
+real, while exercising every step of the pipeline.
+
+```{r}
+library(sf)
+library(terra)
+library(SpencerEcoTools)
+
+study_area <- "UI_Arboretum"
+
+dates.v <- seq(as.Date("2023-07-01"), as.Date("2023-08-01"), by = "month")
+#> [1] "2023-07-01" "2023-08-01"
+```
+
+## 1. Define the area of interest
+
+```{r}
+pt <- sf::st_sfc(sf::st_point(c(-117.0166, 46.7197)), crs = 4326)
+pt <- sf::st_sf(id = 1, geometry = pt)
+
+ee_aoi <- define_aoi(
+  aoi         = pt,
+  buffer_dist = 600,           # meters -> ~1.2 x 1.2 km AOI
+  crs_epsg    = "EPSG:32611"   # UTM zone 11N
+)
+```
+
+`ee_aoi` is a named list (`geometry`, `crs`, `bbox_wgs84`) that every
+`download_*()` function below expects as its `aoi` argument.
+
+## 2. Download the DEM
+
+```{r}
+download_dem(
+  aoi     = ee_aoi,
+  out_dir = "./Data/DEM",
+  scale   = 30
+)
+
+dtm <- terra::rast("./Data/DEM/DEM_GLO30.tif")
+```
+
+`download_dem()` doesn't take a `study_area` argument — the output is
+always named `DEM_GLO30.tif` in `out_dir`, since a study area typically has
+just one DEM shared across every period modeled.
+
+## 3. Download multispectral imagery (HLS or Sentinel-2)
+
+```{r}
+download_hls(
+  aoi        = ee_aoi,
+  dates      = dates.v,
+  out_dir    = "./Data/Imagery",
+  study_area = study_area
+)
+```
+
+`download_hls()` blends Harmonized Landsat Sentinel-2 (S30 + L30), which
+covers years before 2019. For a study window entirely after ~2019,
+`download_s2()` is a simpler Sentinel-2-only alternative with the same
+0-1 scaled 4-band output:
+
+```{r}
+download_s2(
+  aoi        = ee_aoi,
+  dates      = dates.v,
+  out_dir    = "./Data/Imagery",
+  study_area = study_area
+)
+```
+
+Only one of the two is needed — both write the same `red`/`green`/`blue`/
+`nir` band layout that every downstream function below expects.
+
+## 4. Download and downscale LAI
+
+```{r}
+download_modis_lai(
+  aoi        = ee_aoi,
+  dates      = dates.v,
+  out_dir    = "./Data/LAI/Coarse",
+  study_area = study_area
+)
+
+downscale_lai(
+  dates      = dates.v,
+  img_dir    = "./Data/Imagery",
+  lai_dir    = "./Data/LAI/Coarse",
+  out_dir    = "./Data/LAI/Fine",
+  study_area = study_area
+)
+```
+
+`downscale_lai()` calls `microclimdata::lai_fromndvi()` internally,
+fusing the coarse (500 m) MODIS LAI with NDVI computed from the fine (30 m)
+imagery downloaded in step 3 — this is the package's first direct use of
+`microclimdata`.
+
+## 5. Download and compute albedo
+
+```{r}
+download_albedo(
+  aoi        = ee_aoi,
+  dates      = dates.v,
+  out_dir    = "./Data/Albedo/Modis",
+  study_area = study_area
+)
+
+compute_albedo(
+  dates      = dates.v,
+  modis_dir  = "./Data/Albedo/Modis",
+  img_dir    = "./Data/Imagery",
+  out_dir    = "./Data/Albedo/Fine",
+  study_area = study_area
+)
+```
+
+`compute_albedo()` calls `microclimdata::albedo_fromaerial()` to compute
+photographic albedo from the imagery, then `microclimdata::albedo_adjust()`
+to rescale it to match the coarse MODIS broadband albedo.
+
+## 6. Land cover, vegetation height, and soil
+
+Land cover and vegetation height each have two sources: this package's own
+NLCD/LANDFIRE preprocessing (what you'd already have if you work with
+those products), or pulling ready-to-use rasters directly from
+`microclimdata`'s own Earth Engine downloads. Both paths feed the same
+downstream arguments — pick whichever source you have. Only ESA + ETH is
+shown running end-to-end below; the NLCD/LANDFIRE side is included so both
+are visible.
+
+### Land cover
+
+```{r}
+# (a) Primary: your own NLCD raster, converted to CORINE classes
+corine_lc <- NLCD_2_CORINE(
+  lc            = terra::rast("./Data/LandCover/NLCD_2021.tif"),
+  crop_template = dtm
+)
+
+# (b) Alternative: ESA WorldCover pulled directly via microclimdata (no
+#     conversion step needed)
+esa_lc <- microclimdata::lcover_download(
+  r                 = dtm,
+  type              = "ESA",
+  year              = 2020,
+  GoogleDrivefolder = "GEE_Exports",
+  pathtopython      = "C:/Users/you/miniforge3/envs/rgee"
+)
+```
+
+### Vegetation height
+
+```{r}
+# (a) Primary: your own LANDFIRE Existing Vegetation Height raster
+lf_veg_height <- LandfireVegHght_AsNumeric(
+  rast          = terra::rast("./Data/VegHeight/LF2020_EVH.tif"),
+  crop_template = dtm
+)
+
+# (b) Alternative: ETH Global Canopy Height pulled directly via microclimdata
+veg_height <- microclimdata::vegheight_download(
+  r                 = dtm,
+  GoogleDrivefolder = "GEE_Exports",
+  pathtopython      = "C:/Users/you/miniforge3/envs/rgee"
+)
+```
+
+Whichever land cover source you use determines the `lctype` argument
+downstream (`"CORINE"` for NLCD-derived, `"ESA"` for WorldCover) in
+`compute_reflectance()` and `package_veg_soil()` below — and the matching
+`water` land-cover code (512 for CORINE's water class, 80 for ESA
+WorldCover's).
+
+### Soil
+
+```{r}
+soil <- download_soil(
+  dtm        = dtm,
+  landcover  = esa_lc,
+  out_dir    = "./Data/Soil",
+  study_area = study_area,
+  water      = 80    # ESA WorldCover water class code
+)
+```
+
+`download_soil()` wraps `microclimdata::soildata_download()` (coarse
+SoilGrids pull) and `microclimdata::soildata_downscale()` (fine-resolution
+downscale using the land cover raster) into one call. Calling those two
+`microclimdata` functions directly gives more control — e.g. inspecting or
+saving the coarse raster before downscaling:
+
+```{r}
+dtm_wgs84 <- terra::project(dtm, "epsg:4326")
+
+soil_coarse <- microclimdata::soildata_download(
+  dtm_wgs84,
+  pathdir     = "./Data/Soil/tmp",
+  deletefiles = FALSE
+)
+terra::writeRaster(soil_coarse, "./Data/Soil/SoilData_Coarse.tif", overwrite = TRUE)
+
+lc_wgs84  <- terra::project(esa_lc, "epsg:4326")
+soil_fine <- microclimdata::soildata_downscale(soil_coarse, lc_wgs84, water = 80)
+soil_fine <- terra::project(soil_fine, dtm)
+```
+
+## 7. Download AORC climate data and estimate diffuse radiation
+
+```{r}
+aorc_log <- download_aorc(
+  aoi         = ee_aoi,
+  dates       = dates.v,
+  out_dir     = "./Data/Weather",
+  study_area  = study_area,
+  workers     = 2,
+  python_path = "C:/Users/you/miniforge3/envs/rgee"
+)
+
+estimate_diffuse_rad(
+  dates      = dates.v,
+  aorc_dir   = "./Data/Weather",
+  study_area = study_area,
+  workers    = 2
+)
+```
+
+Both functions keep their output in WGS84 (EPSG:4326) — reprojecting AORC
+data *before* `estimate_diffuse_rad()` introduces empty edge cells from
+projection warping that corrupt its solar geometry calculations.
+Reprojection happens later, inside `package_climate()`.
+
+## 8. Compute leaf and ground reflectance
+
+```{r}
+compute_reflectance(
+  dates        = dates.v,
+  landcover    = esa_lc,
+  lai_dir      = "./Data/LAI/Fine",
+  alb_dir      = "./Data/Albedo/Fine",
+  out_dir_lref = "./Data/Reflectance/Lref",
+  out_dir_gref = "./Data/Reflectance/Gref",
+  study_area   = study_area,
+  lctype       = "ESA"
+)
+```
+
+`compute_reflectance()` calls `microclimdata::x_calc()` (land-cover-based x
+values) and `microclimdata::reflectance_calc()` to solve for leaf (`Lref`)
+and ground (`Gref`) reflectance from LAI and albedo.
+
+## 9. (Optional) Multi-year climate normals
+
+If you have multiple years of AORC data and want long-term hourly normals
+rather than a specific period's actual weather, `summarize_climate_normals()`
+stacks each calendar hour across years:
+
+```{r}
+summarize_climate_normals(
+  dates      = dates.v,
+  aorc_dir   = "./Data/Weather",
+  out_dir    = "./Data/ClimateNormals",
+  stats      = c("mean", "sd"),
+  study_area = study_area
+)
+```
+
+This dummy example only has one summer of data, so it's skipped below —
+`package_climate()` in step 11 uses the actual AORC data directly instead.
+
+## 10. Package vegetation and soil parameters
+
+```{r}
+dates_df <- data.frame(
+  Start_Dates = as.Date("2023-07-01"),
+  End_Dates   = as.Date("2023-08-31")
+)
+
+veg_soil_log <- package_veg_soil(
+  dates            = dates_df,
+  snow_free_months = 7:8,
+  landcover        = esa_lc,
+  veg_height       = veg_height,
+  soil_path        = "./Data/Soil/SoilData_Fine_UI_Arboretum.tif",
+  lai_dir          = "./Data/LAI/Fine",
+  refl_dir         = "./Data/Reflectance",
+  vegpara_dir      = "./Data/VegPara",
+  soilpara_dir     = "./Data/SoilPara",
+  study_area       = study_area,
+  lctype           = "ESA",
+  water            = 80
+)
+```
+
+This produces `./Data/VegPara/UI_Arboretum_VegPara_20230701_to_20230831.RDS`
+and the equivalent `SoilPara` file, following the
+`{study_area}_VegPara_{period_label}.RDS` naming convention (period labels
+are always `YYYYMMDD_to_YYYYMMDD`).
+
+## 11. Package climate data
+
+`package_climate()` needs a template raster to reproject and crop AORC
+data to — the vegetation parameter grid just produced is the natural
+choice, since it's on the same grid `run_micro_big_nichemap()` expects
+downstream:
+
+```{r}
+veg_template <- terra::rast(readRDS(
+  "./Data/VegPara/UI_Arboretum_VegPara_20230701_to_20230831.RDS"
+)$hgt)
+
+package_climate(
+  dates        = dates_df,
+  aorc_dir     = "./Data/Weather",
+  out_dir      = "./Data/Weather_Pkg",
+  study_area   = study_area,
+  template     = veg_template,
+  keep_monthly = TRUE
+)
+```
+
+This produces `./Data/Weather_Pkg/UI_Arboretum_Climate_20230701_to_20230831.RDS`.
+
+## Next steps
+
+The `02-data-pipeline` outputs — the `VegPara`, `SoilPara`, and `Climate`
+RDS files, plus the fine and coarse DEMs — are exactly what
+`03-running-microclimf` uses to run the tiled `microclimf` model, locally
+or on a SLURM cluster.
