@@ -281,7 +281,7 @@ stacks each calendar hour across years:
 
 ```{r}
 summarize_climate_normals(
-  dates      = dates.v,
+  dates      = as.Date(c("2019-07-01", "2020-07-01", "2021-07-01")),
   aorc_dir   = "./Data/Weather",
   out_dir    = "./Data/ClimateNormals",
   stats      = c("mean", "sd"),
@@ -297,7 +297,7 @@ This dummy example only has one summer of data, so it's skipped below —
 ```{r}
 dates_df <- data.frame(
   Start_Dates = as.Date("2023-07-01"),
-  End_Dates   = as.Date("2023-08-31")
+  End_Dates   = as.Date("2023-08-01")
 )
 
 veg_soil_log <- package_veg_soil(
@@ -312,14 +312,27 @@ veg_soil_log <- package_veg_soil(
   soilpara_dir     = "./Data/SoilPara",
   study_area       = study_area,
   lctype           = "ESA",
-  water            = 80
+  water            = 80,
+  dtm_fine         = dtm
 )
 ```
 
-This produces `./Data/VegPara/UI_Arboretum_VegPara_20230701_to_20230831.RDS`
+Passing `dtm_fine` here is optional but cheap insurance: it surfaces any
+grid mismatch (resolution/CRS/origin) between the packaged veg/soil output
+and the fine DEM as an early warning here, rather than only as a hard
+`stop()` later inside `run_micro_big_nichemap()`'s pre-flight check.
+
+This produces `./Data/VegPara/UI_Arboretum_VegPara_20230701_to_20230801.RDS`
 and the equivalent `SoilPara` file, following the
 `{study_area}_VegPara_{period_label}.RDS` naming convention (period labels
-are always `YYYYMMDD_to_YYYYMMDD`).
+are always `YYYYMMDD_to_YYYYMMDD`). `package_veg_soil()` and
+`package_climate()` build this label directly from `Start_Dates`/
+`End_Dates` as given — that's why `End_Dates` is set to the first of the
+month (`2023-08-01`) here, rather than the month's last day: downstream,
+`run_micro_big_nichemap()` and `stitch_tiles_runmicro()` snap both dates
+to the first of their month before looking up these same files, so the
+raw dates used here need to already be on that footing for the filenames
+to match.
 
 ## 11. Package climate data
 
@@ -329,8 +342,8 @@ choice, since it's on the same grid `run_micro_big_nichemap()` expects
 downstream:
 
 ```{r}
-veg_template <- terra::rast(readRDS(
-  "./Data/VegPara/UI_Arboretum_VegPara_20230701_to_20230831.RDS"
+veg_template <- terra::unwrap(readRDS(
+  "./Data/VegPara/UI_Arboretum_VegPara_20230701_to_20230801.RDS"
 )$hgt)
 
 package_climate(
@@ -343,7 +356,7 @@ package_climate(
 )
 ```
 
-This produces `./Data/Weather_Pkg/UI_Arboretum_Climate_20230701_to_20230831.RDS`.
+This produces `./Data/Weather_Pkg/UI_Arboretum_Climate_20230701_to_20230801.RDS`.
 
 ## Next steps
 

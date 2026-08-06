@@ -32,7 +32,7 @@ library(SpencerEcoTools)
 
 dem_fine <- terra::rast("./Data/DEM/DEM_GLO30.tif")
 
-clim_rds     <- readRDS("./Data/Weather_Pkg/UI_Arboretum_Climate_20230701_to_20230831.RDS")
+clim_rds     <- readRDS("./Data/Weather_Pkg/UI_Arboretum_Climate_20230701_to_20230801.RDS")
 clim_template <- terra::unwrap(clim_rds[[1]])
 
 dem_coarse <- terra::resample(dem_fine, clim_template)
@@ -47,23 +47,31 @@ required before use, matching how `package_climate()` writes them.)
 ```{r}
 dates_df <- data.frame(
   Start_Dates = as.Date("2023-07-01"),
-  End_Dates   = as.Date("2023-08-31")
+  End_Dates   = as.Date("2023-08-01")
 )
 
 tiles <- create_tiles(
   coarse_dem        = dem_coarse,
   fine_dem          = dem_fine,
-  dates             = as.Date(c("2023-07-01", "2023-08-31")),
-  tile_dims         = c(1, 1),
+  dates             = as.Date(c("2023-07-01", "2023-08-01")),
+  tile_dims         = c(3, 3),
   snow_modeling     = FALSE,
   return_tiles_rast = TRUE
 )
 ```
 
-The dummy site is small enough to fit in a single tile
-(`tile_dims = c(1, 1)`). On a real, larger study area, either pass bigger
-`tile_dims` or omit `tile_dims` entirely (`NULL`, the default) to let
-`create_tiles()` pick the largest tile size that fits within
+`tile_dims` sets the SIZE of each tile in coarse-DEM cells (rows, columns
+per tile) — not the number of tiles produced. `create_tiles()` derives the
+tile count by dividing the coarse DEM's dimensions by `tile_dims`
+(`n_tiles_r <- ceiling(nrow(coarse_dem) / tile_nrow)`, and likewise for
+columns). With the default `buffer_size = 1`, the smallest valid tile size
+is `c(3, 3)` — `create_tiles()` requires `tile_nrow`/`tile_ncol >=
+2 * buffer_size + 1`, so `c(1, 1)` errors out immediately. `c(3, 3)`
+happens to be large enough to cover this dummy site's roughly 2 x 2
+coarse (climate-resolution) grid in a single tile
+(`ceiling(2 / 3) = 1` in each dimension). On a real, larger study area,
+either pass a bigger `tile_dims` or omit it entirely (`NULL`, the default)
+to let `create_tiles()` pick the largest tile size that fits within
 `mem_fraction` (default 70%) of available system RAM — this is what keeps
 `run_micro_big_nichemap()` memory-safe on large domains.
 
@@ -125,19 +133,24 @@ get_arg <- function(name, default = NA) {
 }
 clust_array_arg  <- get_arg("clust_array_arg")
 clust_array_size <- get_arg("clust_array_size")
+if (is.na(clust_array_arg) || is.na(clust_array_size)) {
+  stop("Both --clust_array_arg and --clust_array_size are required (missing or ",
+       "misspelled flag?). Got clust_array_arg=", clust_array_arg,
+       ", clust_array_size=", clust_array_size)
+}
 
 dem_fine   <- rast("./Data/DEM/DEM_GLO30.tif")
 dem_coarse <- rast("./Data/DEM/DEM_Coarse_UI_Arboretum.tif")
 
 dates_df <- data.frame(
   Start_Dates = as.Date("2023-07-01"),
-  End_Dates   = as.Date("2023-08-31")
+  End_Dates   = as.Date("2023-08-01")
 )
 
 tiles <- create_tiles(
   coarse_dem = dem_coarse, fine_dem = dem_fine,
-  dates      = as.Date(c("2023-07-01", "2023-08-31")),
-  tile_dims  = c(1, 1), return_tiles_rast = TRUE
+  dates      = as.Date(c("2023-07-01", "2023-08-01")),
+  tile_dims  = c(3, 3), return_tiles_rast = TRUE
 )
 
 log <- run_micro_big_nichemap(
@@ -157,8 +170,9 @@ cat(sprintf("Task %s/%s complete.\n", clust_array_arg, clust_array_size))
 ```
 
 And a companion SBATCH script that drives it as an array job. Suppose a
-real (non-dummy) run of this study area produces 4 tiles over 1 period —
-4 total `(tile, period)` tasks, so the array is sized to 4:
+larger real study area produces 4 tiles over 1 period — 4 total
+`(tile, period)` tasks, so the array is sized to 4 (the dummy site above,
+with its `c(3, 3)` `tile_dims`, would still produce a single tile):
 
 `run_microclimf.sbatch`:
 ```bash
@@ -190,7 +204,10 @@ running multiple combinations per node.
 Whether the run was local or a completed SLURM array, each `(tile, period)`
 combination is written as a separate file under `output_dir`.
 `stitch_tiles_runmicro()` assembles them into one full-domain file per
-period and data type:
+period and data type — internally it calls the lower-level `stitch_tiles()`
+once per period/data-type combination, which is also useful directly if
+you want to stitch a single tile directory (rather than a full
+`run_micro_big_nichemap()` output tree):
 
 ```{r}
 stitch_tiles_runmicro(
@@ -215,8 +232,8 @@ to point-model workflows downstream of this package's scope:
 
 ```{r}
 pt_series <- micro_to_csv(
-  abvgrd_input    = "./Microclim_out/UI_Arboretum/Stitched/20230701_to_20230831/UI_Arboretum_AbvGrd_MicroclimModel_20230701_to_20230831",
-  blwgrd_input    = "./Microclim_out/UI_Arboretum/Stitched/20230701_to_20230831/UI_Arboretum_BlwGrd_MicroclimModel_20230701_to_20230831",
+  abvgrd_input    = "./Microclim_out/UI_Arboretum/Stitched/20230701_to_20230801/UI_Arboretum_AbvGrd_MicroclimModel_20230701_to_20230801",
+  blwgrd_input    = "./Microclim_out/UI_Arboretum/Stitched/20230701_to_20230801/UI_Arboretum_BlwGrd_MicroclimModel_20230701_to_20230801",
   cell            = 1,
   cell_input_type = "cellnumber",
   dates           = as.Date(c("2023-07-01", "2023-07-07")),
@@ -228,3 +245,15 @@ Note the `.vrt`-mode inputs above are the shared *stem* path — no
 extension, no variable suffix — since `stitch_tiles_runmicro(file_fmt =
 "nc")` writes one `{stem}_{varname}.vrt` file per variable rather than one
 combined file.
+
+## Next steps
+
+That completes the pipeline arc across all three vignettes: `01-gee-setup`
+authenticated GEE and Drive, `02-data-pipeline` turned raw GEE/AORC/soil
+sources into packaged climate, vegetation, and soil parameter grids, and
+this vignette tiled those grids, ran the `microclimf`/NicheMapR model
+locally or across a SLURM array, stitched the per-tile outputs back into
+full-domain files, and extracted an inspectable point time series from the
+result. From here, `pt_series` (or the stitched `.nc`/`.h5` files directly)
+is ready for whatever downstream analysis — habitat modeling, energetics,
+NicheMapR point workflows — motivated the run.
