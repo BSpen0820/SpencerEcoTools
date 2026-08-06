@@ -31,7 +31,7 @@ Source reference materials (read during design, not modified):
 
 ## Goal
 
-Add `run_metabolic_chamber(defaults, exe_path, scenarios, mc_overrides,
+Add `run_metabolic_chamber(endo_inputs, exe_path, scenarios, mc_overrides,
 save_dir, sysname)` which runs some/all of the 4 canonical mc scenarios for
 a given animal and returns a list of result data frames (`metchamber_result`
 object), plus `plot.metchamber_result()` to visualize them.
@@ -42,10 +42,10 @@ V5 runs the 4 scenarios sequentially, mutating shared `rowb*` variables in
 place and overwriting the user's real `endo.dat`/`alomvars.dat` on disk
 (backed up first, restored at the end). This function instead builds each
 requested scenario **independently** in its own temp directory: for every
-scenario, take `defaults` (a 9-group list in the same shape
+scenario, take `endo_inputs` (a 9-group list in the same shape
 `write_endotherm_inputs()`/`get_endotherm_defaults()` use), `modifyList()` it
 with the fixed mc-override table below plus that scenario's specific
-overrides, and call `write_endotherm_inputs()` fresh. The real `defaults`
+overrides, and call `write_endotherm_inputs()` fresh. The real `endo_inputs`
 list - and any real `endo.dat`/`alomvars.dat` already on disk elsewhere -
 is never read or touched. This also makes partial scenario selection trivial
 (no dependency on run order, unlike V5).
@@ -81,7 +81,7 @@ exactly, cross-checked field by field).
 
 ```r
 run_metabolic_chamber(
-  defaults,
+  endo_inputs,
   exe_path,
   scenarios  = c("standing_variable", "curled_variable",
                  "curled_constant", "standing_constant"),
@@ -91,7 +91,7 @@ run_metabolic_chamber(
 )
 ```
 
-- `defaults`: required, 9-group list (`model_settings, animal, fur,
+- `endo_inputs`: required, 9-group list (`model_settings, animal, fur,
   physiology, diet, thermoreg, flying_digging, nest_shelter, allometry`) -
   typically `get_endotherm_defaults()`'s output, edited by the caller.
 - `exe_path`: required, full path to the Endotherm exe (any version/name -
@@ -118,10 +118,10 @@ ramp's row structure.
 
 | Scenario ID | `diet$diurn/noct/crep` | `physiology$tcmax`/`tcmin` | `allometry` posture |
 |---|---|---|---|
-| `standing_variable` | `rep("Y", 12)` (active always) | real `defaults$physiology$tcmax`/`tcmin` | real `defaults$allometry` (unchanged - inactive posture never triggers since the animal is always active) |
-| `curled_variable` | `rep("N", 12)` (never active) | real `defaults$physiology$tcmax`/`tcmin` | `post3 = "Y"`, `post4 = "N"`, `slpstrt = shdstrt = endpost = 3` (forces posture 3 = "legs lumped into torso, head/neck on ground"); `post1`/`post2` stay at real values (irrelevant once `slpstrt=shdstrt=endpost=3` pins the model to posture 3 only) |
+| `standing_variable` | `rep("Y", 12)` (active always) | real `endo_inputs$physiology$tcmax`/`tcmin` | real `endo_inputs$allometry` (unchanged - inactive posture never triggers since the animal is always active) |
+| `curled_variable` | `rep("N", 12)` (never active) | real `endo_inputs$physiology$tcmax`/`tcmin` | `post3 = "Y"`, `post4 = "N"`, `slpstrt = shdstrt = endpost = 3` (forces posture 3 = "legs lumped into torso, head/neck on ground"); `post1`/`post2` stay at real values (irrelevant once `slpstrt=shdstrt=endpost=3` pins the model to posture 3 only) |
 | `curled_constant` | `rep("N", 12)` | `tcmax = tcreg + 0.1`, `tcmin = tcreg - 0.1` (near-constant core temp) | same forced posture as `curled_variable` |
-| `standing_constant` | `rep("Y", 12)` | `tcmax = tcreg + 0.1`, `tcmin = tcreg - 0.1` | real `defaults$allometry` (unchanged, same reasoning as `standing_variable`) |
+| `standing_constant` | `rep("Y", 12)` | `tcmax = tcreg + 0.1`, `tcmin = tcreg - 0.1` | real `endo_inputs$allometry` (unchanged, same reasoning as `standing_variable`) |
 
 These four rows were verified against V5's actual "Replace the lines that
 need to standardized..." patch block (V5 lines 1251-1268 for the endo.dat
@@ -151,7 +151,7 @@ list(
 )
 ```
 
-Everything else in `defaults` (animal, fur, remaining physiology/thermoreg/
+Everything else in `endo_inputs` (animal, fur, remaining physiology/thermoreg/
 flying_digging/nest_shelter/allometry fields) passes through unchanged -
 this is what makes the 4 runs a genuine test of the *caller's* animal
 model, not a generic canned animal.
@@ -160,7 +160,7 @@ model, not a generic canned animal.
 
 For each requested scenario, in its own `tempfile()` directory:
 
-1. Build the merged 9-group list (`defaults` → fixed mc overrides →
+1. Build the merged 9-group list (`endo_inputs` → fixed mc overrides →
    `mc_overrides` → scenario-specific fields, each layer via `modifyList()`).
 2. Call `write_endotherm_inputs(output_dir = scenario_dir, ...)` with the
    merged groups.
@@ -193,8 +193,8 @@ Dimension parsing ports V5 lines 1517-1530 verbatim: `readLines('./OUTPUT')`,
 `read.table(textConnection(...))` parses, same column renames
 (`Front Legs`, `Rear Legs`, `6th Appendage (Tail/Proboscis)`).
 
-Compute `target_rmr`: if `defaults$animal$usrmet == "Y"`, `trgt <-
-defaults$animal$met`; else if `defaults$animal$class == "MAMMAL"`,
+Compute `target_rmr`: if `endo_inputs$animal$usrmet == "Y"`, `trgt <-
+endo_inputs$animal$met`; else if `endo_inputs$animal$class == "MAMMAL"`,
 `trgt <- if (marsup == "N") (70 * mass^0.75) * (4.185/(24*3.6)) else
 (2187 * mass^0.737) * (4.185/3600)` (V5's formula, mammal-only - ported
 verbatim, not generalized to bird/reptile/other classes since V5 itself
@@ -209,7 +209,7 @@ structure(
     hourplot    = list(),  # named by scenario ID actually run+succeeded; each
                             # element is the full-column HOURPLOT.csv subset
     dimensions  = data.frame(),  # body-part dimensions, one parse
-    target_rmr  = list(trgt = numeric(), err = numeric()),  # err = defaults$model_settings$err
+    target_rmr  = list(trgt = numeric(), err = numeric()),  # err = endo_inputs$model_settings$err
     log         = data.frame()  # scenario, success, message, timestamp
   ),
   class = "metchamber_result"
@@ -264,9 +264,9 @@ method (`@method plot metchamber_result`, `@export`).
    function's output is parsed CSV/OUTPUT data, not a fixed-format file
    it writes) - instead, verify against a real exe run: run V5's actual mc
    section (with `shell()` calls intact) once in a scratch dir with the
-   Female Bighorn Sheep defaults, capturing its 4 `output1..4` data frames,
+   Female Bighorn Sheep parameters, capturing its 4 `output1..4` data frames,
    `Animal Model Dimensions.csv`, and `trgt`. Then call
-   `run_metabolic_chamber()` with equivalent `defaults` + the real exe and
+   `run_metabolic_chamber()` with equivalent `endo_inputs` + the real exe and
    confirm each scenario's `$hourplot[[...]]` matches V5's corresponding
    `outputN` data frame row-for-row (same TAIR/MET values), matching
    [[feedback-verbatim-port-verification]]'s "verify against real output,
