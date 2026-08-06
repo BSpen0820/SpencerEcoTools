@@ -528,3 +528,71 @@ run_metabolic_chamber <- function(endo_inputs, exe_path,
     class = "metchamber_result"
   )
 }
+
+.mc_comparison_plot <- function(standing_hp, curled_hp, target_rmr, title) {
+  standing_hp$Posture <- "Standing"
+  curled_hp$Posture <- "Curled"
+  combined <- rbind(standing_hp, curled_hp)
+
+  ymax <- max(combined[["MET.W."]], na.rm = TRUE) * 1.05
+
+  ggplot2::ggplot(
+    combined,
+    ggplot2::aes(x = .data[["TAIR"]], y = .data[["MET.W."]], linetype = .data[["Posture"]])
+  ) +
+    ggplot2::geom_line(linewidth = 1) +
+    ggplot2::geom_hline(yintercept = target_rmr$trgt * (1 + target_rmr$err),
+                         color = "red", linetype = "dashed") +
+    ggplot2::geom_hline(yintercept = target_rmr$trgt * (1 - target_rmr$err),
+                         color = "blue", linetype = "dashed") +
+    ggplot2::coord_cartesian(ylim = c(0, ymax)) +
+    ggplot2::labs(title = title, x = "Temperature (C)", y = "Metabolic Rate (W)") +
+    ggplot2::theme_minimal()
+}
+
+#' Plot metabolic chamber calibration results
+#'
+#' Builds up to two comparison charts (predicted metabolic rate vs. air
+#' temperature, standing vs. curled posture) from a
+#' \code{\link{run_metabolic_chamber}} result: one for the variable-core-temp
+#' scenarios, one for the constant-core-temp scenarios. Each includes
+#' reference lines at the animal's target resting metabolic rate +/- its
+#' error margin. A chart is only built if both scenarios in its pair are
+#' present in \code{x$hourplot}.
+#'
+#' @param x A \code{"metchamber_result"} object, as returned by
+#'   \code{\link{run_metabolic_chamber}}.
+#' @param ... Unused, present for S3 generic compatibility.
+#'
+#' @return Invisibly, a named list of the ggplot2 objects actually built
+#'   (\code{variable_temp}, \code{constant_temp} - only the ones with a
+#'   complete scenario pair), so they can be further modified or saved with
+#'   \code{ggplot2::ggsave()}. Returns \code{invisible(NULL)} (with a
+#'   \code{message()}) if no complete pair is available.
+#'
+#' @method plot metchamber_result
+#' @export
+plot.metchamber_result <- function(x, ...) {
+  plots <- list()
+
+  if (all(c("standing_variable", "curled_variable") %in% names(x$hourplot))) {
+    plots$variable_temp <- .mc_comparison_plot(
+      x$hourplot$standing_variable, x$hourplot$curled_variable,
+      x$target_rmr, "Metabolic Chamber: Variable Core Temperature"
+    )
+  }
+  if (all(c("standing_constant", "curled_constant") %in% names(x$hourplot))) {
+    plots$constant_temp <- .mc_comparison_plot(
+      x$hourplot$standing_constant, x$hourplot$curled_constant,
+      x$target_rmr, "Metabolic Chamber: Constant Core Temperature"
+    )
+  }
+
+  if (length(plots) == 0) {
+    message("plot.metchamber_result: no complete standing/curled scenario pair available to plot")
+    return(invisible(NULL))
+  }
+
+  for (p in plots) print(p)
+  invisible(plots)
+}
