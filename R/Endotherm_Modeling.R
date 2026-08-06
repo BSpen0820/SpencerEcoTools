@@ -253,3 +253,82 @@ run_endotherm_model <- function(workspace_dir, exe_name = "Endo2022a.exe",
     message = paste(error_msgs, collapse = " | ")
   )
 }
+
+# Internal helpers for run_metabolic_chamber() --------------------------------
+
+.mc_scenario_ids <- c("standing_variable", "curled_variable",
+                       "curled_constant", "standing_constant")
+
+.mc_ramp_juldays <- c(15, 46, 74, 105, 135, 166, 196, 227, 258, 288, 319, 349)
+
+.default_mc_overrides <- function() {
+  list(
+    model_settings = list(outout = "Y", microin = "CSV", outfile = "CSV", strht = "N"),
+    physiology     = list(sweat = "N", pilo = "N"),
+    diet           = list(act = rep(1.0, 12), repro = rep(0.0, 12)),
+    thermoreg      = list(burrow = "N", nest = "N", climb = "N", shdseek = "N",
+                           dive = "N", wind = "N", niteshd = "N", dive2 = "N",
+                           shdact = "Y", shdpost = "S", treeslp = "N", hudl = "N",
+                           tcconcur = "N", tcconcur2 = "N"),
+    flying_digging = list(flight = "N", foss = "N", dig = "N", arb = "N")
+  )
+}
+
+.mc_scenario_overrides <- function(scenario_id, endo_inputs) {
+  active <- if (grepl("^standing", scenario_id)) "Y" else "N"
+
+  posture <- if (grepl("^curled", scenario_id)) {
+    list(post3 = "Y", post4 = "N", slpstrt = 3, shdstrt = 3, endpost = 3)
+  } else {
+    list()
+  }
+
+  temp <- if (grepl("constant$", scenario_id)) {
+    tcreg <- endo_inputs$physiology$tcreg
+    list(tcmax = tcreg + 0.1, tcmin = tcreg - 0.1)
+  } else {
+    list()
+  }
+
+  list(
+    diet       = list(diurn = rep(active, 12), noct = rep(active, 12), crep = rep(active, 12)),
+    physiology = temp,
+    allometry  = posture
+  )
+}
+
+.mc_target_rmr <- function(endo_inputs) {
+  an <- endo_inputs$animal
+  if (identical(an$usrmet, "Y")) {
+    return(an$met)
+  }
+  if (!identical(an$class, "MAMMAL")) {
+    warning(sprintf(
+      "target RMR formula is only implemented for class 'MAMMAL' (got '%s'); target_rmr$trgt will be NA",
+      an$class
+    ))
+    return(NA_real_)
+  }
+  if (identical(an$marsup, "Y")) {
+    (2187 * an$mass ^ 0.737) * (4.185 / 3600)
+  } else {
+    (70 * an$mass ^ 0.75) * (4.185 / (24 * 3.6))
+  }
+}
+
+.mc_parse_dimensions <- function(output_path) {
+  out <- readLines(output_path, warn = FALSE)
+  dimensions <- out[131:136]
+  dim_table <- utils::read.table(textConnection(dimensions), header = FALSE)
+  masses <- out[129]
+  mass_table <- utils::read.table(textConnection(masses), header = FALSE)
+  mass_table <- t(mass_table[11:16])
+  dim_table <- dim_table[, c(1, 6:8)]
+  dim_table$mass <- mass_table[, 1]
+  colnames(dim_table) <- c("Body Part", "Vertical or Side-to-Side Diameter (m)",
+                            "Horizontal or Front-to-Back Diameter (m)", "Length (m)", "Mass (kg)")
+  dim_table[4, 1] <- "Front Legs"
+  dim_table[5, 1] <- "Rear Legs"
+  dim_table[6, 1] <- "6th Appendage (Tail/Proboscis)"
+  dim_table
+}
