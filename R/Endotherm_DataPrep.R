@@ -1490,3 +1490,91 @@ micro_to_csv <- function(abvgrd_input, blwgrd_input, cell, cell_input_type,
 
   list(metout = metout, shadmet = metout, soil = soil, shadsoil = soil)
 }
+
+.trapz_proportion <- function(x, y) {
+  n <- length(x)
+  sum(diff(x) * (y[-n] + y[-1]) / 2)
+}
+
+#' Compute mean pelt reflectance from a hand-held spectrometer file
+#'
+#' Reads a single PSR-3500 spectrometer \code{.sed} output file -- or accepts
+#' an already-parsed data.frame of the same shape -- converts its
+#' \code{Reflect. \%} column to a 0-1 proportion, and trapezoidally
+#' integrates it over wavelength to get a single mean reflectance value --
+#' the input expected by \code{\link{write_endotherm_inputs}}'s
+#' \code{fur$refld}/\code{fur$reflv} (dorsal/ventral pelt reflectance)
+#' fields.
+#'
+#' @param sed_input Either a path (character) to a single \code{.sed}
+#'   spectrometer output file, or a \code{data.frame} already containing the
+#'   spectral data: a \code{Wvl} column plus a column matching
+#'   \code{"Reflect"} (on the same 0-100 percent scale as a \code{.sed}
+#'   file's \code{Reflect. \%} column). The \code{data.frame} form lets
+#'   callers who already have the data in memory skip file parsing.
+#'
+#' @return A named list: \code{mean_reflectance} (numeric, 0-1, the
+#'   integrated reflectance divided by the data's actual wavelength span),
+#'   \code{wvl_min}, \code{wvl_max} (numeric, nm, the actual range of
+#'   wavelengths present in the data), \code{n_points} (integer, number of
+#'   spectral data rows), and \code{file} (the input \code{sed_input} if it
+#'   was a character path, else \code{NA_character_}).
+#'
+#' @details
+#' Ported from \code{RefleCalc_NicheMap.r}. The reflectance column is located
+#' by matching \code{"Reflect"} against the table's (\code{make.names()}-
+#' mangled, for the file-path input) column headers rather than hardcoding
+#' the exact mangled name, so minor header-format differences across
+#' instrument software versions -- or a caller's own column naming for the
+#' data.frame input -- don't break parsing. Integration uses the trapezoidal
+#' rule, implemented directly (numerically equivalent to
+#' \code{pracma::trapz(x, y)}) rather than depending on \code{pracma} for a
+#' single formula. Unlike the source script, which divided by a hardcoded
+#' nominal instrument range of \code{2500 - 350} nm, this function divides by
+#' the actual \code{max(Wvl) - min(Wvl)} present in the data, so the result
+#' is correct even when the data doesn't span the full nominal range.
+#'
+#' @seealso \code{\link{write_endotherm_inputs}}
+#' @export
+compute_pelt_reflectance <- function(sed_input) {
+  if (is.character(sed_input)) {
+    if (!file.exists(sed_input))
+      stop(sprintf("'sed_input' does not exist:\n  %s", sed_input))
+
+    lines <- readLines(sed_input, warn = FALSE)
+    data_marker <- grep("^Data:", lines)
+    if (length(data_marker) == 0)
+      stop(sprintf("Could not find 'Data:' marker in:\n  %s", sed_input))
+
+    df <- utils::read.table(sed_input, skip = data_marker, header = TRUE,
+                             sep = "\t", fill = TRUE, check.names = TRUE)
+    file_label <- sed_input
+  } else if (is.data.frame(sed_input)) {
+    df <- sed_input
+    file_label <- NA_character_
+  } else {
+    stop("'sed_input' must be either a character file path to a .sed file or a data.frame")
+  }
+
+  if (!"Wvl" %in% names(df))
+    stop("'sed_input' must contain a 'Wvl' column")
+
+  reflect_col <- grep("Reflect", names(df), value = TRUE)
+  if (length(reflect_col) == 0)
+    stop("No column matching 'Reflect' found in 'sed_input'")
+
+  refl_prop <- df[[reflect_col[1]]] / 100
+  wvl <- df$Wvl
+
+  integrated <- .trapz_proportion(wvl, refl_prop)
+  wvl_min <- min(wvl)
+  wvl_max <- max(wvl)
+
+  list(
+    mean_reflectance = integrated / (wvl_max - wvl_min),
+    wvl_min          = wvl_min,
+    wvl_max          = wvl_max,
+    n_points         = length(wvl),
+    file             = file_label
+  )
+}
