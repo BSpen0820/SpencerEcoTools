@@ -5,3 +5,6 @@ CLAUDE.md
 Example/
 docs/
 .worktrees/
+data-raw/
+._*
+.claude/settings.local.json
