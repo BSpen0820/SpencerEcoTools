@@ -1537,6 +1537,9 @@ micro_to_csv <- function(abvgrd_input, blwgrd_input, cell, cell_input_type,
 #' @seealso \code{\link{write_endotherm_inputs}}
 #' @export
 compute_pelt_reflectance <- function(sed_input) {
+  if (is.character(sed_input) && length(sed_input) != 1)
+    stop("'sed_input' must be a single file path or a single data.frame")
+
   if (is.character(sed_input)) {
     if (!file.exists(sed_input))
       stop(sprintf("'sed_input' does not exist:\n  %s", sed_input))
@@ -1545,6 +1548,7 @@ compute_pelt_reflectance <- function(sed_input) {
     data_marker <- grep("^Data:", lines)
     if (length(data_marker) == 0)
       stop(sprintf("Could not find 'Data:' marker in:\n  %s", sed_input))
+    data_marker <- data_marker[1]
 
     df <- utils::read.table(sed_input, skip = data_marker, header = TRUE,
                              sep = "\t", fill = TRUE, check.names = TRUE)
@@ -1558,6 +1562,9 @@ compute_pelt_reflectance <- function(sed_input) {
 
   if (!"Wvl" %in% names(df))
     stop("'sed_input' must contain a 'Wvl' column")
+
+  if (nrow(df) < 2)
+    stop("'sed_input' must contain at least 2 spectral rows")
 
   reflect_col <- grep("Reflect", names(df), value = TRUE)
   if (length(reflect_col) == 0)
