@@ -1447,8 +1447,9 @@ micro_to_csv_clamp_defaults <- function() {
     if (!is.data.frame(clamp_bounds) ||
         !identical(sort(names(clamp_bounds)), sort(c("variable", "lower", "upper"))))
       stop("'clamp_bounds' must be a data.frame with columns 'variable', 'lower', 'upper'")
-    if (!is.numeric(clamp_bounds$lower) || !is.numeric(clamp_bounds$upper))
-      stop("'clamp_bounds' columns 'lower' and 'upper' must be numeric")
+    is_numeric_or_all_na <- function(x) is.numeric(x) || all(is.na(x))
+    if (!is_numeric_or_all_na(clamp_bounds$lower) || !is_numeric_or_all_na(clamp_bounds$upper))
+      stop("'clamp_bounds' columns 'lower' and 'upper' must be numeric (NA allowed for unbounded)")
     if (anyNA(clamp_bounds$variable) || anyDuplicated(clamp_bounds$variable))
       stop("'clamp_bounds$variable' must be non-NA and contain no duplicates")
 
