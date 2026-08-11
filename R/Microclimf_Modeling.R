@@ -2081,7 +2081,7 @@ run_micro_big_nichemap <- function(tiles,        # tile object from create_tiles
   cat("  All input grids match.\n")
 
   # --- heights -----------------------------------------------------------------
-  sdepth     <- c(0, 1.5, 5, 10, 15, 20, 30, 50, 100, 200) / -100
+  sdepth     <- c(0, 2.5, 5, 10, 15, 20, 30, 50, 100, 200) / -100
   allheights <- c(reqhgt, sdepth)
 
   out_ext <- if (file_fmt == "h5") ".h5" else ".nc"
