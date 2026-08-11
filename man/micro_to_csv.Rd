@@ -12,7 +12,9 @@ micro_to_csv(
   dates,
   elev,
   tannul = NULL,
-  tz = "America/Denver"
+  tz = "America/Denver",
+  clamp = FALSE,
+  clamp_bounds = NULL
 )
 }
 \arguments{
@@ -49,6 +51,19 @@ time axis of \code{abvgrd_input} at this cell.}
 \item{tz}{Optional IANA timezone string for the cell's local clock.
 Default \code{"America/Denver"}; override for other sites (e.g.
 \code{"America/Anchorage"}).}
+
+\item{clamp}{Logical. If \code{TRUE}, clamp every column present in the
+resolved clamp-bounds table (see \code{clamp_bounds}) to its
+\code{[lower, upper]} range in all 4 returned data frames, using
+\code{\link{micro_to_csv_clamp_defaults}} unless overridden. Default
+\code{FALSE}: output is unchanged from prior behavior.}
+
+\item{clamp_bounds}{Optional \code{data.frame} with columns
+\code{variable}, \code{lower}, \code{upper} (see
+\code{\link{micro_to_csv_clamp_defaults}}). Rows here patch the
+package defaults: a listed \code{variable} overrides that default's
+bounds (or is added if new), any \code{variable} not listed keeps its
+default bounds. Ignored when \code{clamp = FALSE}.}
 }
 \value{
 A named list of 4 data frames: \code{metout}, \code{shadmet},
@@ -88,7 +103,8 @@ already-open \code{SpatRaster} inputs go through \code{terra} and may be
 slower, especially a VRT mosaicking many tiles.
 }
 \seealso{
-\code{\link{write_tile}}, \code{\link{stitch_tiles}}, and
+\code{\link{write_tile}}, \code{\link{stitch_tiles}},
+\code{\link{micro_to_csv_clamp_defaults}}, and
 \code{\link{write_endotherm_inputs}} (writes \code{endo.dat}/
 \code{alomvars.dat} -- CSV export of this function's output and running
 \code{Endo2022a.exe} are handled by later, separate functions).
