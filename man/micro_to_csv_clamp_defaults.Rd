@@ -10,7 +10,7 @@ micro_to_csv_clamp_defaults()
 A \code{data.frame} with columns \code{variable} (character),
 \code{lower}, \code{upper} (numeric, \code{NA} meaning unbounded on
 that side). One row per clampable \code{metout}/\code{soil} column
-(21 rows). A fresh, independent copy is returned on every call.
+(22 rows). A fresh, independent copy is returned on every call.
 }
 \description{
 Returns the package's default physically-valid-range table used by
@@ -21,10 +21,16 @@ Returns the package's default physically-valid-range table used by
 Bounds are set at Earth's physical extremes, not typical values, so
 clamping only catches genuinely invalid data (e.g. numerical noise
 pushing \code{SOLR} slightly negative or \code{RH} fractionally over
-100) rather than trimming plausible weather. The 10 soil depth rows
-(\code{D0cm} ... \code{D200cm}) match \code{\link{micro_to_csv}}'s
-fixed, hard-required NicheMapR depth set (0, 2.5, 5, 10, 15, 20, 30, 50,
-100, 200 cm). \code{DOY}/\code{TIME} are index columns and are never
+100) rather than trimming plausible weather. The 11 soil depth rows
+(\code{D0cm} ... \code{D200cm}) cover both \code{run_micro_big_nichemap}'s
+depth set (0, 1.5, 5, 10, 15, 20, 30, 50, 100, 200 cm) and NicheMapR's
+stock 2.5 cm depth, since a \code{blwgrd_input} tile can be built with
+either. Any \code{soil} depth column not listed here (e.g. from a tile
+built with a custom depth set) passes through unclamped -- \code{ELEV} is
+a structural sentinel (elevation on row 1, \code{0} elsewhere per
+NicheMapR convention, see \code{\link{micro_to_csv}}) rather than a real
+measurement; patching its \code{lower} bound above \code{0} would corrupt
+that sentinel. \code{DOY}/\code{TIME} are index columns and are never
 clamped, so they have no row here.
 }
 \seealso{

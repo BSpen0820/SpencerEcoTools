@@ -44,7 +44,8 @@ Returns a fresh copy of this `data.frame` (columns `variable`, `lower`,
 | TSKYC | -100 | 60 | effective sky temp reads colder than air temp under clear skies |
 | ELEV | -500 | 9000 | Earth elevation extremes (Dead Sea -430 m, Everest 8849 m) |
 | D0cm | -90 | 70 | soil surface temp; ground can exceed air-temp records (~70°C recorded desert soil surface) |
-| D2.5cm | -90 | 70 | same rationale as D0cm |
+| D1.5cm | -90 | 70 | `run_micro_big_nichemap()`'s actual second depth (`sdepth`, `R/Microclimf_Modeling.R`) — see correction below |
+| D2.5cm | -90 | 70 | NicheMapR's stock second depth; kept alongside D1.5cm since either can appear depending on how the tile was built |
 | D5cm | -90 | 70 | same rationale as D0cm |
 | D10cm | -90 | 70 | same rationale as D0cm |
 | D15cm | -90 | 70 | same rationale as D0cm |
@@ -54,13 +55,23 @@ Returns a fresh copy of this `data.frame` (columns `variable`, `lower`,
 | D100cm | -90 | 70 | same rationale as D0cm |
 | D200cm | -90 | 70 | same rationale as D0cm |
 
-The 10 soil depth rows (`0, 2.5, 5, 10, 15, 20, 30, 50, 100, 200` cm) are
-NicheMapR's fixed, hard-required depth set — `.mtc_build_soil()` always
-produces exactly these columns via
-`sprintf("D%scm", format(depth_cm, trim = TRUE, drop0trailing = TRUE))`, so
-listing them by exact name (rather than a regex/glob pattern) is reliable
-and keeps the defaults table a plain, readable `data.frame` with no matching
-logic of its own.
+**Correction (found in final review, applied post-implementation):** this
+table originally listed only `D2.5cm` as the second depth and called the
+10-row set NicheMapR's "fixed, hard-required" depth set. That was wrong for
+this package's own data: `run_micro_big_nichemap()` models soil at `sdepth
+<- c(0, 1.5, 5, 10, 15, 20, 30, 50, 100, 200) / -100` (`R/Microclimf_Modeling.R`),
+so `.mtc_build_soil()` produces a **`D1.5cm`** column on this package's
+primary data path, not `D2.5cm` — confirmed by the existing test fixture
+`tests/testthat/test-micro_to_csv.R` asserting `c("TIME", "D0cm", "D1.5cm",
+"D5cm")` for a 3-depth tile. The shipped table now has 11 soil-depth rows:
+`D1.5cm` for this package's tiles and `D2.5cm` kept for tiles built with
+NicheMapR's stock depth set. `.mtc_build_soil()` derives its columns
+dynamically from whatever `Tz_BlwGrd_*` variables are present in
+`blwgrd_input` (not a fixed set enforced by `micro_to_csv()` itself), so any
+depth column not listed in this table simply passes through unclamped
+(`.mtc_apply_clamp()`'s `intersect()` makes an unmatched row/column
+combination a no-op either way — a caller with a custom depth set can add
+rows via `clamp_bounds`).
 
 `DOY` and `TIME` are index/label columns, never included in the table and
 never clamped.
@@ -134,7 +145,7 @@ Full roxygen2 blocks per `CLAUDE.md` conventions for both the new
 ## Verification plan
 
 1. `testthat`: `micro_to_csv_clamp_defaults()` returns a `data.frame` with
-   columns `variable`, `lower`, `upper` and exactly the 21 rows above.
+   columns `variable`, `lower`, `upper` and exactly the 22 rows above (post-correction).
 2. `testthat`: `micro_to_csv(..., clamp = FALSE)` (or omitted) produces
    output identical to the current (pre-change) behavior on the existing
    test fixture.

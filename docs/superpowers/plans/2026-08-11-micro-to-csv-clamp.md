@@ -8,6 +8,8 @@
 
 **Tech Stack:** R (base + `data.frame`), `roxygen2`/`devtools::document()`. No new automated tests are added for this change (explicit call — see Global Constraints); verification is by loading the package and running the existing test suite to confirm no regression, plus a one-off manual sanity call.
 
+**Post-implementation correction:** the final whole-branch review found that the default bounds table below (and the spec it was copied from) listed the soil-depth row as `D2.5cm`, but `run_micro_big_nichemap()` (`R/Microclimf_Modeling.R`) actually models its second-shallowest depth at 1.5 cm, not 2.5 cm — confirmed against `sdepth <- c(0, 1.5, 5, ...)` and the existing `test-micro_to_csv.R` fixture. The shipped code (and the spec) were corrected to a 22-row table with **both** `D1.5cm` and `D2.5cm`, plus tightened `.mtc_resolve_clamp_bounds()` validation (reject non-numeric `lower`/`upper`, reject `NA`/duplicate `variable`) that the same review flagged. The code blocks below are left as originally planned (21 rows, `D2.5cm` only, no extra validation) for historical accuracy of what was executed task-by-task; see the spec's own correction note for the corrected table.
+
 ## Global Constraints
 
 - No new `testthat` tests for this feature — user explicitly asked for the change without test additions, given its scope. Do not add files under `tests/testthat/`.
