@@ -1381,14 +1381,14 @@ write_endotherm_inputs <- function(output_dir,
   data.frame(
     variable = c("TALOC", "TAREF", "TANNUL", "RHLOC", "RH", "VLOC", "VREF",
                 "ZEN", "SOLR", "TSKYC", "ELEV",
-                "D0cm", "D2.5cm", "D5cm", "D10cm", "D15cm", "D20cm", "D30cm",
-                "D50cm", "D100cm", "D200cm"),
+                "D0cm", "D1.5cm", "D2.5cm", "D5cm", "D10cm", "D15cm", "D20cm",
+                "D30cm", "D50cm", "D100cm", "D200cm"),
     lower = c(-90, -90, -90, 0, 0, 0, 0,
              0, 0, -100, -500,
-             rep(-90, 10)),
+             rep(-90, 11)),
     upper = c(60, 60, 60, 100, 100, NA_real_, NA_real_,
              90, NA_real_, 60, 9000,
-             rep(70, 10)),
+             rep(70, 11)),
     stringsAsFactors = FALSE
   )
 }
@@ -1402,16 +1402,22 @@ write_endotherm_inputs <- function(output_dir,
 #' @return A \code{data.frame} with columns \code{variable} (character),
 #'   \code{lower}, \code{upper} (numeric, \code{NA} meaning unbounded on
 #'   that side). One row per clampable \code{metout}/\code{soil} column
-#'   (21 rows). A fresh, independent copy is returned on every call.
+#'   (22 rows). A fresh, independent copy is returned on every call.
 #'
 #' @details
 #' Bounds are set at Earth's physical extremes, not typical values, so
 #' clamping only catches genuinely invalid data (e.g. numerical noise
 #' pushing \code{SOLR} slightly negative or \code{RH} fractionally over
-#' 100) rather than trimming plausible weather. The 10 soil depth rows
-#' (\code{D0cm} ... \code{D200cm}) match \code{\link{micro_to_csv}}'s
-#' fixed, hard-required NicheMapR depth set (0, 2.5, 5, 10, 15, 20, 30, 50,
-#' 100, 200 cm). \code{DOY}/\code{TIME} are index columns and are never
+#' 100) rather than trimming plausible weather. The 11 soil depth rows
+#' (\code{D0cm} ... \code{D200cm}) cover both \code{run_micro_big_nichemap}'s
+#' depth set (0, 1.5, 5, 10, 15, 20, 30, 50, 100, 200 cm) and NicheMapR's
+#' stock 2.5 cm depth, since a \code{blwgrd_input} tile can be built with
+#' either. Any \code{soil} depth column not listed here (e.g. from a tile
+#' built with a custom depth set) passes through unclamped -- \code{ELEV} is
+#' a structural sentinel (elevation on row 1, \code{0} elsewhere per
+#' NicheMapR convention, see \code{\link{micro_to_csv}}) rather than a real
+#' measurement; patching its \code{lower} bound above \code{0} would corrupt
+#' that sentinel. \code{DOY}/\code{TIME} are index columns and are never
 #' clamped, so they have no row here.
 #'
 #' @seealso \code{\link{micro_to_csv}}
@@ -1441,6 +1447,10 @@ micro_to_csv_clamp_defaults <- function() {
     if (!is.data.frame(clamp_bounds) ||
         !identical(sort(names(clamp_bounds)), sort(c("variable", "lower", "upper"))))
       stop("'clamp_bounds' must be a data.frame with columns 'variable', 'lower', 'upper'")
+    if (!is.numeric(clamp_bounds$lower) || !is.numeric(clamp_bounds$upper))
+      stop("'clamp_bounds' columns 'lower' and 'upper' must be numeric")
+    if (anyNA(clamp_bounds$variable) || anyDuplicated(clamp_bounds$variable))
+      stop("'clamp_bounds$variable' must be non-NA and contain no duplicates")
 
     bounds <- defaults[!defaults$variable %in% clamp_bounds$variable, ]
     bounds <- rbind(bounds, clamp_bounds[, c("variable", "lower", "upper")])
@@ -1449,7 +1459,7 @@ micro_to_csv_clamp_defaults <- function() {
 
   bad <- !is.na(bounds$lower) & !is.na(bounds$upper) & bounds$lower > bounds$upper
   if (any(bad))
-    stop(sprintf("'clamp_bounds' has lower > upper for variable(s): %s",
+    stop(sprintf("resolved clamp bounds have lower > upper for variable(s): %s",
                 paste(bounds$variable[bad], collapse = ", ")))
 
   bounds
