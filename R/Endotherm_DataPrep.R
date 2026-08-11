@@ -1374,6 +1374,88 @@ write_endotherm_inputs <- function(output_dir,
 }
 
 # --------------------------------------------------------------------------- #
+#  micro_to_csv(): value clamping
+# --------------------------------------------------------------------------- #
+
+.mtc_clamp_defaults <- function() {
+  data.frame(
+    variable = c("TALOC", "TAREF", "TANNUL", "RHLOC", "RH", "VLOC", "VREF",
+                "ZEN", "SOLR", "TSKYC", "ELEV",
+                "D0cm", "D2.5cm", "D5cm", "D10cm", "D15cm", "D20cm", "D30cm",
+                "D50cm", "D100cm", "D200cm"),
+    lower = c(-90, -90, -90, 0, 0, 0, 0,
+             0, 0, -100, -500,
+             rep(-90, 10)),
+    upper = c(60, 60, 60, 100, 100, NA_real_, NA_real_,
+             90, NA_real_, 60, 9000,
+             rep(70, 10)),
+    stringsAsFactors = FALSE
+  )
+}
+
+#' Default Clamp Bounds for micro_to_csv()
+#'
+#' Returns the package's default physically-valid-range table used by
+#' \code{\link{micro_to_csv}} to clamp its output columns when
+#' \code{clamp = TRUE}.
+#'
+#' @return A \code{data.frame} with columns \code{variable} (character),
+#'   \code{lower}, \code{upper} (numeric, \code{NA} meaning unbounded on
+#'   that side). One row per clampable \code{metout}/\code{soil} column
+#'   (21 rows). A fresh, independent copy is returned on every call.
+#'
+#' @details
+#' Bounds are set at Earth's physical extremes, not typical values, so
+#' clamping only catches genuinely invalid data (e.g. numerical noise
+#' pushing \code{SOLR} slightly negative or \code{RH} fractionally over
+#' 100) rather than trimming plausible weather. The 10 soil depth rows
+#' (\code{D0cm} ... \code{D200cm}) match \code{\link{micro_to_csv}}'s
+#' fixed, hard-required NicheMapR depth set (0, 2.5, 5, 10, 15, 20, 30, 50,
+#' 100, 200 cm). \code{DOY}/\code{TIME} are index columns and are never
+#' clamped, so they have no row here.
+#'
+#' @seealso \code{\link{micro_to_csv}}
+#' @export
+micro_to_csv_clamp_defaults <- function() {
+  .mtc_clamp_defaults()
+}
+
+.mtc_apply_clamp <- function(df, bounds) {
+  match_cols <- intersect(names(df), bounds$variable)
+  for (col in match_cols) {
+    b <- bounds[bounds$variable == col, ]
+    x <- df[[col]]
+    if (!is.na(b$lower)) x <- pmax(x, b$lower)
+    if (!is.na(b$upper)) x <- pmin(x, b$upper)
+    df[[col]] <- x
+  }
+  df
+}
+
+.mtc_resolve_clamp_bounds <- function(clamp_bounds) {
+  defaults <- .mtc_clamp_defaults()
+
+  if (is.null(clamp_bounds)) {
+    bounds <- defaults
+  } else {
+    if (!is.data.frame(clamp_bounds) ||
+        !identical(sort(names(clamp_bounds)), sort(c("variable", "lower", "upper"))))
+      stop("'clamp_bounds' must be a data.frame with columns 'variable', 'lower', 'upper'")
+
+    bounds <- defaults[!defaults$variable %in% clamp_bounds$variable, ]
+    bounds <- rbind(bounds, clamp_bounds[, c("variable", "lower", "upper")])
+    rownames(bounds) <- NULL
+  }
+
+  bad <- !is.na(bounds$lower) & !is.na(bounds$upper) & bounds$lower > bounds$upper
+  if (any(bad))
+    stop(sprintf("'clamp_bounds' has lower > upper for variable(s): %s",
+                paste(bounds$variable[bad], collapse = ", ")))
+
+  bounds
+}
+
+# --------------------------------------------------------------------------- #
 #  micro_to_csv(): top-level export
 # --------------------------------------------------------------------------- #
 
