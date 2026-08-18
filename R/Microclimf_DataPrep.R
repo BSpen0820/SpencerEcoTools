@@ -2606,6 +2606,162 @@ estimate_diffuse_rad <- function(dates,
   return(invisible(log))
 }
 
+.raster_has_na <- function(r) {
+  # terra::app() vectorizes across cells (not per-cell) when nlyr == 1, so an
+  # any(is.na(v)) reducer only behaves correctly for nlyr > 1 -- handle the
+  # single-layer case directly instead.
+  m <- if (terra::nlyr(r) == 1) {
+    is.na(r) * 1
+  } else {
+    terra::app(r, fun = function(v) as.numeric(any(is.na(v))))
+  }
+  names(m) <- "na"
+  m
+}
+
+#' Check for unexpected NA values in a list of packed SpatRasters
+#'
+#' Iterates over every packed SpatRaster in a list (and every layer within
+#' each one), flags NA cells, and cross-references them against a landcover
+#' raster's water class so you can tell NAs caused by water from NAs caused
+#' by something else (truncated I/O, a failed model cell, edge effects, etc).
+#'
+#' NA cells are split into three buckets per raster/layer:
+#'   - n_na_water          : NA in the layer, and landcover == water_value there
+#'   - n_na_landcover_na   : NA in the layer, but landcover itself is NA there
+#'                           (ambiguous -- can't confirm water, flagged separately
+#'                           so it isn't silently swept into "unexplained")
+#'   - n_na_unexplained    : NA in the layer, landcover is known and != water
+#'                           (this is the "real problem" bucket)
+#'
+#' @param packed_list list of PackedSpatRaster (output of terra::wrap()).
+#'   Plain SpatRaster elements are tolerated too. Optionally named -- those
+#'   names are used in the report.
+#' @param landcover SpatRaster or PackedSpatRaster of landcover classes.
+#' @param water_value numeric. Landcover class value representing water.
+#'   Default 80.
+#' @param names_list optional character vector of names for packed_list,
+#'   used if packed_list itself isn't named.
+#' @param check_geom logical. If TRUE (default), checks each raster shares
+#'   the landcover's grid (extent/res/crs) before comparing, and resamples
+#'   the water mask (nearest neighbor) if it doesn't -- with a message.
+#' @param verbose logical. Print progress as it goes.
+#'
+#' @return a list with:
+#'   summary  - data.frame, one row per raster x layer with NA counts/pct
+#'   flagged  - named list (raster :: layer) of cell numbers for combos with
+#'              unexplained NA cells, for follow-up (e.g. terra::xyFromCell())
+#'
+#' @examples
+#' \dontrun{
+#' out <- check_na_vs_water(packed_results, landcover, water_value = 80)
+#' out$summary
+#' subset(out$summary, n_na_unexplained > 0)
+#' out$flagged[["run_04 :: Tmin"]]
+#' }
+#' @export
+check_na_vs_water <- function(packed_list,
+                              landcover,
+                              water_value = 80,
+                              names_list = NULL,
+                              check_geom = TRUE,
+                              verbose = TRUE) {
+
+  stopifnot(is.list(packed_list), length(packed_list) > 0)
+
+  if (inherits(landcover, "PackedSpatRaster")) {
+    landcover <- terra::unwrap(landcover)
+  }
+  stopifnot(inherits(landcover, "SpatRaster"))
+
+  water_mask <- landcover == water_value
+  names(water_mask) <- "water"
+
+  if (is.null(names_list)) {
+    names_list <- names(packed_list)
+    if (is.null(names_list)) names_list <- paste0("raster_", seq_along(packed_list))
+  }
+  names_list[names_list == ""] <- paste0("raster_", seq_along(packed_list))[names_list == ""]
+  stopifnot(length(names_list) == length(packed_list))
+
+  summary_rows <- list()
+  flagged <- list()
+
+  for (i in seq_along(packed_list)) {
+
+    item <- packed_list[[i]]
+    r <- if (inherits(item, "PackedSpatRaster")) terra::unwrap(item) else item
+    stopifnot(inherits(r, "SpatRaster"))
+
+    item_name <- names_list[i]
+    nl <- terra::nlyr(r)
+
+    if (verbose) {
+      message(sprintf("[%d/%d] %s -- %d layer(s)", i, length(packed_list), item_name, nl))
+    }
+
+    wm <- water_mask
+    if (check_geom && !isTRUE(terra::compareGeom(r, wm, stopOnError = FALSE))) {
+      if (verbose) {
+        message(sprintf("  grid mismatch for %s -- resampling water mask to match (nearest neighbor)", item_name))
+      }
+      wm <- terra::resample(wm, r, method = "near")
+    }
+
+    lyr_names <- names(r)
+    if (is.null(lyr_names) || any(lyr_names == "")) lyr_names <- paste0("layer_", seq_len(nl))
+
+    for (j in seq_len(nl)) {
+
+      lyr <- r[[j]]
+      lyr_name <- lyr_names[j]
+
+      na_mask <- is.na(lyr)                    # TRUE/FALSE, never NA itself
+      water_na_mask <- na_mask & wm             # NA in layer AND water
+      unk_lc_mask <- na_mask & is.na(wm)         # NA in layer, landcover unknown there
+      unexplained_mask <- na_mask & !wm          # NA in layer, landcover known & != water
+
+      n_cells <- terra::ncell(lyr)
+      n_na <- as.numeric(terra::global(na_mask, "sum", na.rm = TRUE)[1, 1])
+      n_na_water <- as.numeric(terra::global(water_na_mask, "sum", na.rm = TRUE)[1, 1])
+      n_na_lc_unk <- as.numeric(terra::global(unk_lc_mask, "sum", na.rm = TRUE)[1, 1])
+      n_na_unexplained <- as.numeric(terra::global(unexplained_mask, "sum", na.rm = TRUE)[1, 1])
+
+      summary_rows[[length(summary_rows) + 1]] <- data.frame(
+        raster = item_name,
+        layer = lyr_name,
+        n_cells = n_cells,
+        n_na = n_na,
+        n_na_water = n_na_water,
+        n_na_landcover_na = n_na_lc_unk,
+        n_na_unexplained = n_na_unexplained,
+        pct_unexplained = if (n_cells > 0) 100 * n_na_unexplained / n_cells else NA_real_,
+        stringsAsFactors = FALSE
+      )
+
+      if (n_na_unexplained > 0) {
+        key <- paste(item_name, lyr_name, sep = " :: ")
+        vals <- terra::values(unexplained_mask, mat = FALSE)
+        flagged[[key]] <- which(vals == 1)
+        if (verbose) {
+          message(sprintf("  ! %s -- %d unexplained NA cell(s)", lyr_name, n_na_unexplained))
+        }
+      }
+    }
+  }
+
+  summary_df <- do.call(rbind, summary_rows)
+  rownames(summary_df) <- NULL
+
+  if (verbose) {
+    n_flagged_combos <- sum(summary_df$n_na_unexplained > 0)
+    message(sprintf("Done. %d of %d raster/layer combination(s) have unexplained NA cells.",
+                    n_flagged_combos, nrow(summary_df)))
+  }
+
+  list(summary = summary_df, flagged = flagged)
+}
+
 #' Package Vegetation and Soil Parameters for Microclimate Modeling
 #'
 #' Iterates over date ranges, assembling land cover, vegetation height, LAI, soil
@@ -2613,6 +2769,17 @@ estimate_diffuse_rad <- function(dates,
 #' \code{microclimdata::create_veggrid()} and
 #' \code{microclimdata::create_soilgrid()}. Reflectance data is averaged
 #' across user specified snow free months. Outputs are saved as RDS files.
+#'
+#' @details After the inputs are aligned to a common grid, any outer ring of
+#'   NA cells present in \emph{any} of the aligned inputs (land cover, veg
+#'   height, soil, ground/leaf reflectance, LAI) is trimmed via
+#'   \code{\link[terra]{trim}} before building the vegetation/soil grids --
+#'   otherwise \code{create_veggrid()}/\code{create_soilgrid()} mask to the
+#'   intersection of all inputs and that edge NA would propagate into every
+#'   output layer. After each grid is built, \code{\link{check_na_vs_water}}
+#'   cross-references its NA cells against \code{landcover == water} and
+#'   issues a \code{warning()} if any are unexplained by water; the counts
+#'   are also recorded in the returned log (see \code{@return}).
 #'
 #' @param dates A data.frame with columns \code{Start_Dates} and \code{End_Dates},
 #'   where each row defines a date range to process. Alternatively, a vector of
@@ -2652,8 +2819,11 @@ estimate_diffuse_rad <- function(dates,
 #'   vegetation/soil grid's resolution, CRS, or origin does not match it. Default
 #'   \code{NULL} skips this check.
 #'
-#' @return Invisibly returns a data frame logging the status of each
-#'   date range processed
+#' @return Invisibly returns a data frame logging the status of each date
+#'   range processed, with columns \code{period}, \code{status},
+#'   \code{na_unexplained_veg}, and \code{na_unexplained_soil} (the last two
+#'   are \code{NA} for failed periods; see \code{@details})
+#' @seealso \code{\link{check_na_vs_water}}
 #' @export
 package_veg_soil <- function(dates,
                              snow_free_months,
@@ -2714,6 +2884,8 @@ package_veg_soil <- function(dates,
   log <- data.frame(
     period = character(0),
     status = character(0),
+    na_unexplained_veg = integer(0),
+    na_unexplained_soil = integer(0),
     stringsAsFactors = FALSE
   )
 
@@ -2855,6 +3027,30 @@ package_veg_soil <- function(dates,
 
       gc()
 
+      # --- Trim NA edge cells ---
+      # Even when geometries already match, individual inputs can carry their
+      # own edge no-data ring (e.g. from GEE export tiling or a slightly
+      # smaller source extent). create_veggrid()/create_soilgrid() mask to the
+      # intersection of all inputs, so any edge NA propagates into every
+      # output layer unless it's cropped away first.
+      cat("  Trimming NA edge cells...\n")
+
+      combined_na <- .raster_has_na(lc_rs) + .raster_has_na(vght_rs) +
+        .raster_has_na(SD_rs) + .raster_has_na(refldata_rs$gref) +
+        .raster_has_na(refldata_rs$lref) + .raster_has_na(lai_rs)
+
+      valid_mask <- terra::ifel(combined_na > 0, NA, 1)
+      trim_ext   <- terra::ext(terra::trim(valid_mask))
+
+      lai_rs      <- terra::crop(lai_rs,  trim_ext)
+      vght_rs     <- terra::crop(vght_rs, trim_ext)
+      SD_rs       <- terra::crop(SD_rs,   trim_ext)
+      lc_rs       <- terra::crop(lc_rs,   trim_ext)
+      refldata_rs <- lapply(refldata_rs, terra::crop, y = trim_ext)
+
+      rm(combined_na, valid_mask)
+      gc()
+
       # --- Name LAI layers by month ---
       names(lai_rs) <- sprintf("month_%04d%02d", month_seq$year, month_seq$month)
 
@@ -2884,6 +3080,16 @@ package_veg_soil <- function(dates,
 
       gc()
 
+      # --- QC: check vegetation parameters for unexplained NA ---
+      veg_na_check <- check_na_vs_water(vegp, landcover = lc_rs,
+                                        water_value = water, verbose = FALSE)
+      n_na_veg <- sum(veg_na_check$summary$n_na_unexplained)
+      if (n_na_veg > 0) {
+        warning(sprintf(
+          "Period %s: %d unexplained NA cell(s) in vegetation parameters (not water) -- see check_na_vs_water() for details",
+          period_label, n_na_veg))
+      }
+
       # --- Save vegetation parameters ---
       veg_out <- file.path(vegpara_dir, if (!is.null(study_area)) {
         sprintf("%s_VegPara_%s.RDS", study_area, period_label)
@@ -2905,6 +3111,16 @@ package_veg_soil <- function(dates,
         water     = water
       )
 
+      # --- QC: check soil parameters for unexplained NA ---
+      soil_na_check <- check_na_vs_water(soilc, landcover = lc_rs,
+                                         water_value = water, verbose = FALSE)
+      n_na_soil <- sum(soil_na_check$summary$n_na_unexplained)
+      if (n_na_soil > 0) {
+        warning(sprintf(
+          "Period %s: %d unexplained NA cell(s) in soil parameters (not water) -- see check_na_vs_water() for details",
+          period_label, n_na_soil))
+      }
+
       soil_out <- file.path(soilpara_dir, if (!is.null(study_area)) {
         sprintf("%s_SoilPara_%s.RDS", study_area, period_label)
       } else {
@@ -2913,11 +3129,18 @@ package_veg_soil <- function(dates,
       readr::write_rds(soilc, file = soil_out)
       cat(sprintf("  Saved: %s\n", basename(soil_out)))
 
-      log <- rbind(log, data.frame(period = period_label, status = "success", stringsAsFactors = FALSE))
+      log <- rbind(log, data.frame(period = period_label, status = "success",
+                                   na_unexplained_veg = n_na_veg,
+                                   na_unexplained_soil = n_na_soil,
+                                   stringsAsFactors = FALSE))
 
     }, error = function(e) {
       warning(sprintf("Failed period %s: %s", period_label, e$message))
-      log <<- rbind(log, data.frame(period = period_label, status = paste("failed -", e$message), stringsAsFactors = FALSE))
+      log <<- rbind(log, data.frame(period = period_label,
+                                    status = paste("failed -", e$message),
+                                    na_unexplained_veg = NA_integer_,
+                                    na_unexplained_soil = NA_integer_,
+                                    stringsAsFactors = FALSE))
     })
 
     gc()
