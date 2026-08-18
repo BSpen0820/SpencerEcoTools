@@ -72,8 +72,10 @@ vegetation/soil grid's resolution, CRS, or origin does not match it. Default
 \code{NULL} skips this check.}
 }
 \value{
-Invisibly returns a data frame logging the status of each
-date range processed
+Invisibly returns a data frame logging the status of each date
+range processed, with columns \code{period}, \code{status},
+\code{na_unexplained_veg}, and \code{na_unexplained_soil} (the last two
+are \code{NA} for failed periods; see \code{@details})
 }
 \description{
 Iterates over date ranges, assembling land cover, vegetation height, LAI, soil
@@ -81,4 +83,19 @@ data and reflectance into vegetation and soil parameter grids using
 \code{microclimdata::create_veggrid()} and
 \code{microclimdata::create_soilgrid()}. Reflectance data is averaged
 across user specified snow free months. Outputs are saved as RDS files.
+}
+\details{
+After the inputs are aligned to a common grid, any outer ring of
+NA cells present in \emph{any} of the aligned inputs (land cover, veg
+height, soil, ground/leaf reflectance, LAI) is trimmed via
+\code{\link[terra]{trim}} before building the vegetation/soil grids --
+otherwise \code{create_veggrid()}/\code{create_soilgrid()} mask to the
+intersection of all inputs and that edge NA would propagate into every
+output layer. After each grid is built, \code{\link{check_na_vs_water}}
+cross-references its NA cells against \code{landcover == water} and
+issues a \code{warning()} if any are unexplained by water; the counts
+are also recorded in the returned log (see \code{@return}).
+}
+\seealso{
+\code{\link{check_na_vs_water}}
 }
