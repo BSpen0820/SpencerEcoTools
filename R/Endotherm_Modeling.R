@@ -261,9 +261,9 @@ run_endotherm_model <- function(workspace_dir, exe_name = "Endo2022a.exe",
 
     # Quote paths so spaces/special characters don't break the shell command
     cmd <- paste0(
-      "printf 'alomvars.dat\\nendo.dat\\n' |",
-      "WINEPREFIX=", shQuote(wineprefix),
-      "wine", shQuote(exe_path)
+      "printf 'alomvars.dat\\nendo.dat\\n' | ",
+      "WINEPREFIX=", shQuote(wineprefix), " ",
+      "wine ", shQuote(exe_path)
     )
 
     wine_output <- system(
