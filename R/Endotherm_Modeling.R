@@ -212,47 +212,81 @@ cells_for_array_task <- function(valid_cell_indices, clust_array_arg = NULL, clu
 #'
 #' @export
 run_endotherm_model <- function(workspace_dir, exe_name = "Endo2022a.exe",
-                                 sysname = Sys.info()[["sysname"]]) {
+                                sysname = Sys.info()[["sysname"]]) {
+
+  # Resolve workspace before changing working directory
+  workspace_dir <- normalizePath(workspace_dir, mustWork = TRUE)
   exe_path <- file.path(workspace_dir, exe_name)
+
   if (!file.exists(exe_path)) {
-    return(list(success = FALSE, message = sprintf("exe not found at %s", exe_path)))
+    return(list(
+      success = FALSE,
+      message = sprintf("exe not found at %s", exe_path)
+    ))
   }
 
+  # The model expects all input/output files in its working directory
   old_wd <- getwd()
   on.exit(setwd(old_wd), add = TRUE)
   setwd(workspace_dir)
 
+  # Remove stale output from a previous run
+  error_msgs_path <- file.path(workspace_dir, "ErrorMsgs.dat")
+  if (file.exists(error_msgs_path)) {
+    unlink(error_msgs_path)
+  }
+
   if (identical(sysname, "Windows")) {
-    system2(exe_name, input = c("alomvars.dat", "endo.dat"), stdout = TRUE, stderr = TRUE)
+
+    system2(
+      exe_path,
+      input = c("alomvars.dat", "endo.dat"),
+      stdout = TRUE,
+      stderr = TRUE
+    )
+
   } else {
-    # Wine refuses to create its config dir under a prefix whose nearest
-    # existing ancestor it doesn't own - true for bare "/tmp" in non-root
-    # containers (Docker/Apptainer commonly run as an unprivileged user
-    # while /tmp itself stays root-owned). tempdir() is created by this R
-    # session and so is always owned by the current user; pre-creating the
-    # prefix dir under it (rather than letting Wine discover "/tmp" as the
-    # nearest existing ancestor) avoids the ownership check entirely.
-    wineprefix <- file.path(tempdir(), paste0("wineprefix_", Sys.getpid()))
+
+    wineprefix <- tempfile(
+      pattern = "wineprefix_",
+      tmpdir = tempdir()
+    )
+
     dir.create(wineprefix, recursive = TRUE, showWarnings = FALSE)
-    system(
-      paste0(
-        "printf 'alomvars.dat\\nendo.dat\\n' | ",
-        "WINEPREFIX=", wineprefix, " wine ", exe_name
-      ),
+
+    on.exit(
+      unlink(wineprefix, recursive = TRUE, force = TRUE),
+      add = TRUE
+    )
+
+    # Quote paths so spaces/special characters don't break the shell command
+    cmd <- paste(
+      "printf 'alomvars.dat\\nendo.dat\\n' |",
+      "WINEPREFIX=", shQuote(wineprefix),
+      "wine", shQuote(exe_path)
+    )
+
+    wine_output <- system(
+      cmd,
       intern = TRUE
     )
   }
 
-  error_msgs_path <- file.path(workspace_dir, "ErrorMsgs.dat")
   if (!file.exists(error_msgs_path)) {
-    return(list(success = FALSE, message = "ErrorMsgs.dat was not produced"))
+    return(list(
+      success = FALSE,
+      message = "ErrorMsgs.dat was not produced"
+    ))
   }
+
   error_msgs <- readLines(error_msgs_path, warn = FALSE)
+
   list(
     success = any(grepl("Calculations completed\\.", error_msgs)),
     message = paste(error_msgs, collapse = " | ")
   )
 }
+
 
 # Internal helpers for run_metabolic_chamber() --------------------------------
 
