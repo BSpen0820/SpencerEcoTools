@@ -311,6 +311,58 @@ run_endotherm_model <- function(workspace_dir, exe_path,
   )
 }
 
+#' Initialize a shared Wine prefix for the Endotherm model
+#'
+#' Runs \code{wineboot -u} (optionally under \code{xvfb-run}) to
+#' materialize/update a Wine prefix, then blocks (\code{wineserver -w}) until
+#' the server has fully quiesced. Intended to be called \strong{once} per
+#' node/job, before any parallel workers start - \code{wineboot -u} can
+#' return exit status 0 while the registry is still being flushed in the
+#' background, so a worker that starts immediately afterward could race that
+#' flush without the \code{wineserver -w} wait.
+#'
+#' @param wineprefix Character. Path to the Wine prefix to initialize.
+#'   Created if it does not already exist.
+#' @param headless Logical. If \code{TRUE} (default), the initialization is
+#'   wrapped in \code{xvfb-run}, for compute nodes with no display server.
+#'
+#' @return Invisibly, \code{TRUE} on success. \code{stop()}s otherwise.
+#'
+#' @seealso \code{\link{run_endotherm_model}}, \code{\link{run_endo_big_nichemap}}
+#' @export
+init_wine_prefix <- function(wineprefix, headless = TRUE) {
+  wine <- Sys.which("wine")
+  xvfb <- Sys.which("xvfb-run")
+  if (!nzchar(wine)) stop("'wine' is not available on PATH")
+  if (headless && !nzchar(xvfb)) stop("'xvfb-run' is not available on PATH")
+
+  dir.create(wineprefix, recursive = TRUE, showWarnings = FALSE)
+
+  boot_status <- if (headless) {
+    suppressWarnings(system2(
+      xvfb,
+      c("-a", "-e", "/dev/null", "env", paste0("WINEPREFIX=", wineprefix), "WINEDEBUG=-all", "wineboot", "-u"),
+      stdout = FALSE, stderr = FALSE
+    ))
+  } else {
+    suppressWarnings(system2(
+      "env",
+      c(paste0("WINEPREFIX=", wineprefix), "WINEDEBUG=-all", "wineboot", "-u"),
+      stdout = FALSE, stderr = FALSE
+    ))
+  }
+  if (boot_status != 0L) stop("wineboot failed while initializing the shared Wine prefix")
+
+  wait_status <- suppressWarnings(system2(
+    "env",
+    c(paste0("WINEPREFIX=", wineprefix), "wineserver", "-w"),
+    stdout = FALSE, stderr = FALSE
+  ))
+  if (wait_status != 0L) stop("wineserver -w failed while waiting for the prefix to quiesce")
+
+  invisible(TRUE)
+}
+
 
 # Internal helpers for run_metabolic_chamber() --------------------------------
 

@@ -111,3 +111,19 @@ test_that("run_endotherm_model stops when a shared wineprefix is not initialized
     "init_wine_prefix"
   )
 })
+
+test_that("init_wine_prefix stops when wine is unavailable", {
+  skip_on_os("windows")
+  testthat::local_mocked_bindings(
+    Sys.which = function(x) stats::setNames("", x)
+  )
+  expect_error(init_wine_prefix(tempfile("prefix_")), "wine")
+})
+
+test_that("init_wine_prefix stops when xvfb-run is unavailable but headless = TRUE", {
+  skip_on_os("windows")
+  testthat::local_mocked_bindings(
+    Sys.which = function(x) if (identical(x, "wine")) "/usr/bin/wine" else stats::setNames("", x)
+  )
+  expect_error(init_wine_prefix(tempfile("prefix_"), headless = TRUE), "xvfb-run")
+})
