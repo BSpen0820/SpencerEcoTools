@@ -42,6 +42,22 @@ test_that(".endo_apply_timevar backfills the other three torso-fur fields and se
   expect_equal(result$fur$tordepv, rep(static_depv, 3))
 })
 
+test_that(".endo_apply_timevar backfills when two of four torso-fur fields are supplied", {
+  endo_inputs <- get_endotherm_defaults(julnum = 4, juldays = 1:4)
+  static_lenv <- endo_inputs$fur$torlenv[1]
+  static_depv <- endo_inputs$fur$tordepv[1]
+  tv <- endo_timevar_template()
+  tv$tordepd <- c(8, 7, 6, 5, 4, 3, 2, 1)  # 8-day full window
+  tv$torlend <- c(2.5, 2.4, 2.3, 2.2, 2.1, 2.0, 1.9, 1.8)
+  result <- SpencerEcoTools:::.endo_apply_timevar(endo_inputs, tv, chunk_idx = 3:6)
+
+  expect_equal(result$fur$tmdptorfur, 1)
+  expect_equal(result$fur$tordepd, c(6, 5, 4, 3))
+  expect_equal(result$fur$torlend, c(2.3, 2.2, 2.1, 2.0))
+  expect_equal(result$fur$torlenv, rep(static_lenv, 4))
+  expect_equal(result$fur$tordepv, rep(static_depv, 4))
+})
+
 test_that(".endo_apply_timevar overwrites an always-vector diet field directly, no flag involved", {
   endo_inputs <- get_endotherm_defaults(julnum = 2, juldays = 1:2)
   tv <- endo_timevar_template()

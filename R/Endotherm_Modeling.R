@@ -760,9 +760,10 @@ plot.metchamber_result <- function(x, ...) {
     endo_inputs$physiology$tcreg2 <- time_varying$tcreg2[chunk_idx]
   }
 
-  if (any(!vapply(time_varying[.endo_torfur_fields], is.null, logical(1)))) {
+  is_torfur_supplied <- !vapply(time_varying[.endo_torfur_fields], is.null, logical(1))
+  if (any(is_torfur_supplied)) {
     endo_inputs$fur$tmdptorfur <- 1
-    n_days <- length(time_varying[[.endo_torfur_fields[which(!vapply(time_varying[.endo_torfur_fields], is.null, logical(1)))[1]]]])
+    n_days <- length(time_varying[[.endo_torfur_fields[which(is_torfur_supplied)[1]]]])
     for (fld in .endo_torfur_fields) {
       if (!is.null(time_varying[[fld]])) {
         endo_inputs$fur[[fld]] <- time_varying[[fld]][chunk_idx]
