@@ -58,3 +58,15 @@ test_that(".endo_chunk_bounds splits an uneven day count into <= chunk_size chun
   expect_equal(unlist(bounds), 1:128)
   expect_true(all(vapply(bounds, length, integer(1)) <= 52))
 })
+
+test_that(".endo_resize_static_fields resizes statics without flattening time-varying fields", {
+  endo_inputs <- get_endotherm_defaults()          # julnum = 12
+  tv <- endo_timevar_template()
+  tv$act <- seq(1.00, 1.29, by = 0.01)             # 30-day full window
+  julnum <- 15; idx <- 16:30
+  prepped <- SpencerEcoTools:::.endo_resize_static_fields(endo_inputs, julnum)
+  prepped <- SpencerEcoTools:::.endo_apply_timevar(prepped, tv, idx)
+  expect_equal(prepped$diet$act, tv$act[idx])      # fails if order is reversed
+  expect_length(prepped$diet$digef, julnum)        # static field resized
+  expect_length(prepped$animal$mass2, julnum)
+})
