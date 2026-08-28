@@ -783,6 +783,30 @@ plot.metchamber_result <- function(x, ...) {
   endo_inputs
 }
 
+# Static (non-time-varying) julnum-length fields carry whatever julnum the
+# caller originally built endo_inputs with (e.g. get_endotherm_defaults()'s
+# default of 12); a chunk's actual julnum (its day count) is only known once
+# run_endo_big_nichemap() is inside its per-chunk loop. This re-derives each
+# such field's constant value at the chunk's julnum, from its first element,
+# before .endo_apply_timevar() runs - it must run first so a genuinely
+# time-varying field (already sliced to length julnum by .endo_apply_timevar)
+# never gets flattened back to a constant here.
+.endo_resize_static_field <- function(v, julnum) {
+  if (!is.null(v) && length(v) != julnum) v <- rep(v[1], julnum)
+  v
+}
+
+.endo_resize_static_fields <- function(endo_inputs, julnum) {
+  endo_inputs$animal$mass2      <- .endo_resize_static_field(endo_inputs$animal$mass2, julnum)
+  endo_inputs$animal$fatpct2    <- .endo_resize_static_field(endo_inputs$animal$fatpct2, julnum)
+  endo_inputs$physiology$tcreg2 <- .endo_resize_static_field(endo_inputs$physiology$tcreg2, julnum)
+  for (fld in .endo_torfur_fields)
+    endo_inputs$fur[[fld]] <- .endo_resize_static_field(endo_inputs$fur[[fld]], julnum)
+  for (fld in .endo_diet_timevar_fields)
+    endo_inputs$diet[[fld]] <- .endo_resize_static_field(endo_inputs$diet[[fld]], julnum)
+  endo_inputs
+}
+
 .endo_gref_path <- function(refl_dir, study_area, year_month) {
   ym_parts <- strsplit(year_month, "_")[[1]]
   fname <- if (!is.null(study_area)) {
@@ -896,6 +920,12 @@ plot.metchamber_result <- function(x, ...) {
 #'   same prefix. Ignored on Windows.
 #' @param endo_inputs Named list in \code{\link{get_endotherm_defaults}}'s
 #'   9-group shape - the animal model. Default \code{get_endotherm_defaults()}.
+#'   Its julnum-length fields not overridden via \code{time_varying}
+#'   (\code{animal$mass2}/\code{fatpct2}, \code{physiology$tcreg2}, the four
+#'   torso-fur fields, and every \code{diet} vector field) are re-sized to
+#'   each chunk's own julnum (from their first element) before
+#'   \code{\link{write_endotherm_inputs}} is called, so \code{endo_inputs}
+#'   need not be pre-built at any particular julnum.
 #' @param time_varying Named list from \code{\link{endo_timevar_template}},
 #'   with whichever fields should vary over the sim window overwritten with a
 #'   vector of length equal to the sim window's day count. Default (all
@@ -990,6 +1020,193 @@ run_endo_big_nichemap <- function(tile_map, valid_cells_mask, dates, microclim_d
   cat(sprintf("Tasks this node: %d of %d total (tile x period combinations)\n",
               nrow(task_combos), nrow(all_combos)))
 
-  ## per-tile loop - implemented in Task 7
-  invisible(NULL)
+  node_exe_dir <- tempfile("endo_node_exe_")
+  dir.create(node_exe_dir)
+  on.exit(unlink(node_exe_dir, recursive = TRUE), add = TRUE)
+  node_exe_path <- file.path(node_exe_dir, basename(exe_path))
+  file.copy(exe_path, node_exe_path)
+
+  all_logs <- list()
+
+  for (k in seq_len(nrow(task_combos))) {
+    tile_id <- task_combos$tile_id[k]
+    d_idx   <- task_combos$date_idx[k]
+
+    period_label <- sprintf("%s_to_%s",
+                            format(date_ranges$Start_Dates[d_idx], "%Y%m%d"),
+                            format(date_ranges$End_Dates[d_idx], "%Y%m%d"))
+    sim_dates <- seq(date_ranges$Sim_Start[d_idx], date_ranges$Sim_End[d_idx], by = "day")
+    n_days <- length(sim_dates)
+    .endo_validate_timevar_lengths(time_varying, n_days)
+
+    cat(sprintf("\n=== Task %d/%d | Tile %d | Period: %s ===\n",
+                k, nrow(task_combos), tile_id, period_label))
+
+    base_dir <- if (!is.null(study_area)) file.path(output_dir, study_area) else output_dir
+    period_dir <- file.path(base_dir, period_label)
+    tile_dir   <- file.path(period_dir, sprintf("Tile_%03d", tile_id))
+    dir.create(tile_dir, recursive = TRUE, showWarnings = FALSE)
+
+    abv_path <- .endo_microclim_path(microclim_dir, study_area, period_label, tile_id, "AbvGrd", file_fmt)
+    blw_path <- .endo_microclim_path(microclim_dir, study_area, period_label, tile_id, "BlwGrd", file_fmt)
+    if (!file.exists(abv_path)) stop(sprintf("AbvGrd microclimate tile not found:\n  %s", abv_path))
+    if (!file.exists(blw_path)) stop(sprintf("BlwGrd microclimate tile not found:\n  %s", blw_path))
+
+    snow_path <- NULL
+    if (snow) {
+      snow_path <- .endo_snow_path(microclim_dir, study_area, period_label, tile_id, file_fmt)
+      if (!file.exists(snow_path)) stop(sprintf("Snow tile not found (snow = TRUE):\n  %s", snow_path))
+    }
+
+    abv_r <- terra::rast(abv_path, subds = "Tz")[[1]]
+    dem_r <- terra::rast(dem)
+    tile_map_r <- terra::rast(tile_map)
+    valid_mask_r <- terra::rast(valid_cells_mask)
+
+    tile_extent_mask <- terra::crop(tile_map_r, abv_r) == tile_id
+    valid_crop <- terra::crop(valid_mask_r, abv_r)
+    valid_crop[valid_crop != 1] <- NA
+    valid <- abv_r
+    terra::values(valid) <- NA
+    valid[tile_extent_mask & !is.na(valid_crop)] <- 1
+
+    valid_cells <- which(!is.na(terra::values(valid, mat = FALSE)))
+    xy <- terra::xyFromCell(valid, valid_cells)
+    rc <- terra::rowColFromCell(valid, valid_cells)
+    elevation <- terra::extract(dem_r, xy)[, 1]
+
+    manifest <- data.frame(cell_id = valid_cells, x_idx = xy[, 1], y_idx = xy[, 2],
+                           r_idx = rc[, 1], c_idx = rc[, 2], elevation = elevation,
+                           stringsAsFactors = FALSE)
+    utils::write.csv(manifest, file.path(period_dir, sprintf("Tile_%03d_manifest.csv", tile_id)),
+                     row.names = FALSE)
+
+    nc_abv <- ncdf4::nc_open(abv_path)
+    tz_full <- aperm(ncdf4::ncvar_get(nc_abv, "Tz"), c(2, 1, 3))
+    ncdf4::nc_close(nc_abv)
+    tannul_mat <- apply(tz_full, c(1, 2), mean, na.rm = TRUE)
+    rm(tz_full); gc()
+
+    absorp_lookup <- .endo_absorp_lookup(refl_dir, study_area, sim_dates, xy)
+
+    chunk_bounds <- .endo_chunk_bounds(n_days, chunk_size)
+
+    cell_fn <- function(ci) {
+      cell <- manifest[ci, ]
+      cell_dir <- file.path(tile_dir, sprintf("Cell_%06d", cell$cell_id))
+      tannul <- tannul_mat[cell$r_idx, cell$c_idx]
+      rows <- list()
+
+      for (kk in seq_along(chunk_bounds)) {
+        idx <- chunk_bounds[[kk]]
+        chunk_dates <- sim_dates[idx]
+        ws <- tempfile("endo_cell_")
+        dir.create(ws)
+        row <- tryCatch({
+          csvs <- micro_to_csv(
+            abvgrd_input = abv_path, blwgrd_input = blw_path,
+            cell = c(cell$c_idx, cell$r_idx), cell_input_type = "index",
+            dates = chunk_dates, elev = cell$elevation, tannul = tannul,
+            clamp = clamp, clamp_bounds = clamp_bounds
+          )
+          utils::write.csv(csvs$metout, file.path(ws, "metout.csv"), row.names = FALSE)
+          utils::write.csv(csvs$shadmet, file.path(ws, "shadmet.csv"), row.names = FALSE)
+          utils::write.csv(csvs$soil, file.path(ws, "soil.csv"), row.names = FALSE)
+          utils::write.csv(csvs$shadsoil, file.path(ws, "shadsoil.csv"), row.names = FALSE)
+
+          surfwet <- rep(surfwet_dry, length(chunk_dates))
+          if (snow) {
+            nc_snow <- ncdf4::nc_open(snow_path)
+            snow_origin_str <- sub("\\s+UTC$", "", trimws(sub("hours since\\s+", "", nc_snow$dim$time$units)))
+            snow_origin <- as.POSIXct(snow_origin_str, tz = "UTC", format = "%Y-%m-%dT%H:%M:%S")
+            tme_snow <- snow_origin + nc_snow$dim$time$vals * 3600
+            s_idx <- which(as.Date(tme_snow) >= min(chunk_dates) & as.Date(tme_snow) <= max(chunk_dates))
+            swe <- ncdf4::ncvar_get(nc_snow, "totalSWE", start = c(cell$c_idx, cell$r_idx, s_idx[1]),
+                                    count = c(1, 1, length(s_idx)))
+            ncdf4::nc_close(nc_snow)
+            day_of_swe <- as.Date(tme_snow[s_idx])
+            surfwet <- vapply(chunk_dates, function(d) {
+              hrs <- swe[day_of_swe == d]
+              if (length(hrs) > 0 && any(hrs > 0, na.rm = TRUE)) 100 else surfwet_dry
+            }, numeric(1))
+          }
+
+          absorp <- vapply(chunk_dates, function(d) {
+            absorp_lookup$values[which(valid_cells == cell$cell_id), format(d, "%Y_%m")]
+          }, numeric(1))
+
+          julnum  <- length(chunk_dates)
+          juldays <- seq_len(julnum)
+          write_juldays_dat(
+            output_dir = ws, model_settings = list(julnum = julnum, juldays = juldays),
+            habitat_settings = list(startday = 1, endday = julnum, absorp = absorp, surfwet = surfwet)
+          )
+
+          chunk_endo_inputs <- endo_inputs
+          chunk_endo_inputs$model_settings$julnum <- julnum
+          chunk_endo_inputs$model_settings$juldays <- juldays
+          chunk_endo_inputs <- .endo_resize_static_fields(chunk_endo_inputs, julnum)
+          chunk_endo_inputs <- .endo_apply_timevar(chunk_endo_inputs, time_varying, idx)
+          do.call(write_endotherm_inputs, c(list(output_dir = ws), chunk_endo_inputs))
+
+          exe_result <- run_endotherm_model(ws, exe_path = node_exe_path, wineprefix = wineprefix, headless = headless)
+
+          if (!exe_result$success) {
+            debug_dir <- file.path(output_dir, "Debug_CSVs",
+                                   sprintf("%s_Tile_%03d_Cell_%06d_chunk%d", period_label, tile_id, cell$cell_id, kk))
+            dir.create(debug_dir, recursive = TRUE, showWarnings = FALSE)
+            file.copy(list.files(ws, full.names = TRUE), debug_dir, overwrite = TRUE)
+          }
+
+          out_csv <- NA_character_
+          if (exe_result$success && file.exists(file.path(ws, "HOURPLOT.csv"))) {
+            dir.create(cell_dir, recursive = TRUE, showWarnings = FALSE)
+            hp <- utils::read.csv(file.path(ws, "HOURPLOT.csv"), skip = 1)
+            hp_trim <- hp[, 1:8]
+            out_csv <- file.path(cell_dir, sprintf("HOURPLOT_chunk%d_%s_%s.csv", kk,
+                                                   format(min(chunk_dates), "%Y%m%d"),
+                                                   format(max(chunk_dates), "%Y%m%d")))
+            utils::write.csv(hp_trim, out_csv, row.names = FALSE)
+          }
+
+          unlink(ws, recursive = TRUE)
+          data.frame(cell_id = cell$cell_id, chunk_index = kk,
+                    chunk_start = min(chunk_dates), chunk_end = max(chunk_dates),
+                    status = if (exe_result$success) "success" else "error",
+                    message = exe_result$message, output_path = out_csv, stringsAsFactors = FALSE)
+        }, error = function(e) {
+          debug_dir <- file.path(output_dir, "Debug_CSVs",
+                                 sprintf("%s_Tile_%03d_Cell_%06d_chunk%d", period_label, tile_id, cell$cell_id, kk))
+          dir.create(debug_dir, recursive = TRUE, showWarnings = FALSE)
+          if (dir.exists(ws)) {
+            file.copy(list.files(ws, full.names = TRUE), debug_dir, overwrite = TRUE)
+            unlink(ws, recursive = TRUE)
+          }
+          data.frame(cell_id = cell$cell_id, chunk_index = kk,
+                    chunk_start = min(chunk_dates), chunk_end = max(chunk_dates),
+                    status = "error", message = conditionMessage(e),
+                    output_path = NA_character_, stringsAsFactors = FALSE)
+        })
+        rows[[kk]] <- row
+        if (ci %% 50 == 0) cat(sprintf("  Tile %d | %s: %d/%d cells done\n", tile_id, period_label, ci, nrow(manifest)))
+      }
+      do.call(rbind, rows)
+    }
+
+    cell_results <- if (parallel) {
+      future::plan(future::multisession, workers = ncores)
+      on.exit(future::plan(future::sequential), add = TRUE)
+      future.apply::future_lapply(seq_len(nrow(manifest)), cell_fn, future.seed = TRUE)
+    } else {
+      lapply(seq_len(nrow(manifest)), cell_fn)
+    }
+
+    tile_log <- do.call(rbind, cell_results)
+    utils::write.csv(tile_log, file.path(period_dir, sprintf("Tile_%03d_log.csv", tile_id)), row.names = FALSE)
+    all_logs[[k]] <- tile_log
+
+    rm(manifest, tannul_mat, absorp_lookup, cell_results, tile_log); gc()
+  }
+
+  invisible(do.call(rbind, all_logs))
 }
