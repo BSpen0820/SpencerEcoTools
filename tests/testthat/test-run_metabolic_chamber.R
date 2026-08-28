@@ -50,7 +50,7 @@ test_that("run_metabolic_chamber messages when endo_inputs$model_settings$julnum
   on.exit(unlink(fake_exe))
 
   testthat::local_mocked_bindings(
-    run_endotherm_model = function(workspace_dir, exe_name, sysname) {
+    run_endotherm_model = function(workspace_dir, exe_path, sysname) {
       list(success = FALSE, message = "simulated failure")
     }
   )
@@ -73,7 +73,7 @@ test_that("run_metabolic_chamber computes target_rmr before running any scenario
 
   events <- character(0)
   testthat::local_mocked_bindings(
-    run_endotherm_model = function(workspace_dir, exe_name, sysname) {
+    run_endotherm_model = function(workspace_dir, exe_path, sysname) {
       events <<- c(events, "exe_invoked")
       list(success = FALSE, message = "simulated failure")
     }
@@ -127,7 +127,7 @@ test_that("run_metabolic_chamber stops when every requested scenario fails", {
   on.exit(unlink(fake_exe))
 
   testthat::local_mocked_bindings(
-    run_endotherm_model = function(workspace_dir, exe_name, sysname) {
+    run_endotherm_model = function(workspace_dir, exe_path, sysname) {
       list(success = FALSE, message = "simulated failure")
     }
   )
@@ -146,7 +146,7 @@ test_that("run_metabolic_chamber warns and continues when one scenario fails but
 
   call_count <- 0
   testthat::local_mocked_bindings(
-    run_endotherm_model = function(workspace_dir, exe_name, sysname) {
+    run_endotherm_model = function(workspace_dir, exe_path, sysname) {
       call_count <<- call_count + 1
       if (call_count == 1) {
         return(list(success = FALSE, message = "simulated failure"))
@@ -180,7 +180,7 @@ test_that("run_metabolic_chamber's save_dir option copies each scenario's endo.d
   on.exit(unlink(save_dir, recursive = TRUE), add = TRUE)
 
   testthat::local_mocked_bindings(
-    run_endotherm_model = function(workspace_dir, exe_name, sysname) {
+    run_endotherm_model = function(workspace_dir, exe_path, sysname) {
       .write_fake_hourplot(file.path(workspace_dir, "HOURPLOT.csv"))
       .write_fake_output(file.path(workspace_dir, "OUTPUT"))
       list(success = TRUE, message = "Calculations completed.")
@@ -200,7 +200,7 @@ test_that("run_metabolic_chamber cleans up all scenario temp directories, not ju
   on.exit(unlink(fake_exe))
 
   testthat::local_mocked_bindings(
-    run_endotherm_model = function(workspace_dir, exe_name, sysname) {
+    run_endotherm_model = function(workspace_dir, exe_path, sysname) {
       .write_fake_hourplot(file.path(workspace_dir, "HOURPLOT.csv"))
       .write_fake_output(file.path(workspace_dir, "OUTPUT"))
       list(success = TRUE, message = "Calculations completed.")

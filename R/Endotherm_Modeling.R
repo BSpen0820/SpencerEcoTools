@@ -191,99 +191,123 @@ cells_for_array_task <- function(valid_cell_indices, clust_array_arg = NULL, clu
 
 #' Run the NicheMapR Endotherm model executable
 #'
-#' Invokes the compiled Endotherm model exe in \code{workspace_dir}, which
-#' must already contain \code{alomvars.dat}, \code{endo.dat}, \code{JULDAYS.DAT},
-#' and the microclimate driver CSVs (\code{metout.csv}, \code{shadmet.csv},
-#' \code{soil.csv}, \code{shadsoil.csv}) it expects to read from its working
-#' directory. On Windows the exe is run natively; elsewhere it is run under
-#' Wine with a per-process \code{WINEPREFIX} (required because Wine prefixes
-#' are not safe to share across concurrent processes).
+#' Invokes the compiled Endotherm model exe, which must be pointed at by
+#' \code{exe_path} and reads its fixed-format inputs
+#' (\code{alomvars.dat}, \code{endo.dat}, \code{JULDAYS.DAT},
+#' \code{metout.csv}, \code{shadmet.csv}, \code{soil.csv}, \code{shadsoil.csv})
+#' from its current working directory - the exe itself need not live in
+#' \code{workspace_dir}. On Windows the exe is run natively. Elsewhere it is
+#' run under Wine, either with a private, unshared prefix
+#' (\code{wineprefix = NULL}, the default) or against an already-initialized
+#' shared prefix (\code{wineprefix} set - see \code{\link{init_wine_prefix}}).
 #'
-#' @param workspace_dir Directory containing the exe and its input files.
-#' @param exe_name Character. Executable filename, expected to already be
-#'   present in \code{workspace_dir}. Default \code{"Endo2022a.exe"}.
+#' @param workspace_dir Directory containing the exe's input files
+#'   (\code{alomvars.dat}, \code{endo.dat}, \code{JULDAYS.DAT},
+#'   \code{metout.csv}, \code{shadmet.csv}, \code{soil.csv},
+#'   \code{shadsoil.csv}). The exe is invoked with this as its working
+#'   directory, so its outputs (\code{ErrorMsgs.dat}, \code{HOURPLOT.csv},
+#'   etc.) also land here.
+#' @param exe_path Character. Full path to the Endotherm model executable -
+#'   it does not need to be inside \code{workspace_dir}.
 #' @param sysname Character, one of \code{Sys.info()[["sysname"]]}'s possible
 #'   values. Determines native vs Wine invocation. Default detects the
 #'   current OS.
+#' @param wineprefix Character or \code{NULL} (default). \code{NULL} means a
+#'   private, unshared Wine prefix is created (via \code{\link{init_wine_prefix}})
+#'   just for this call - safe for a single unshared process. A path means a
+#'   \emph{shared} prefix (the HPC/parallel case): it must already be
+#'   initialized via \code{\link{init_wine_prefix}} - this function
+#'   \code{stop()}s if it is not, rather than silently booting it itself
+#'   (concurrent first-time boots of the same prefix are what corrupts it;
+#'   concurrent use of an already-booted prefix is safe). Ignored on Windows.
+#' @param headless Logical. If \code{TRUE}, the Wine invocation (and, for the
+#'   \code{wineprefix = NULL} case, its own \code{\link{init_wine_prefix}}
+#'   call) is wrapped in \code{xvfb-run}, for compute nodes with no display
+#'   server. Default \code{FALSE}. On non-Windows with \code{headless =
+#'   FALSE}, this function \code{stop()}s if \code{Sys.getenv("DISPLAY")} is
+#'   empty, rather than attempting the call and failing obscurely later.
+#'   Ignored on Windows.
 #'
 #' @return A list with elements \code{success} (logical) and \code{message}
-#'   (character, the contents of \code{ErrorMsgs.dat}, or a description of
-#'   why the run could not be evaluated).
+#'   (character, the contents of \code{ErrorMsgs.dat} plus the process exit
+#'   status, or a description of why the run could not be evaluated).
 #'
+#' @details
+#' A Wine prefix that is booted once (via \code{\link{init_wine_prefix}}) and
+#' then only read by concurrent \code{wine} invocations is safe to share
+#' across many worker processes - what is unsafe is concurrent \emph{first-time
+#' creation} of the same prefix, which is why the shared-prefix branch here
+#' requires initialization to have already happened.
+#'
+#' @seealso \code{\link{init_wine_prefix}}, \code{\link{run_metabolic_chamber}},
+#'   \code{\link{run_endo_big_nichemap}}
 #' @export
-run_endotherm_model <- function(workspace_dir, exe_name = "Endo2022a.exe",
-                                sysname = Sys.info()[["sysname"]]) {
-
-  # Resolve workspace before changing working directory
-  workspace_dir <- normalizePath(workspace_dir, mustWork = TRUE)
-  exe_path <- file.path(workspace_dir, exe_name)
-
+run_endotherm_model <- function(workspace_dir, exe_path,
+                                 sysname = Sys.info()[["sysname"]],
+                                 wineprefix = NULL, headless = FALSE) {
   if (!file.exists(exe_path)) {
-    return(list(
-      success = FALSE,
-      message = sprintf("exe not found at %s", exe_path)
-    ))
+    return(list(success = FALSE, message = sprintf("exe not found at %s", exe_path)))
   }
+  exe_path <- normalizePath(exe_path, mustWork = TRUE)
 
-  # The model expects all input/output files in its working directory
+  unlink(file.path(workspace_dir, c("ErrorMsgs.dat", "HOURPLOT.csv")))
+
   old_wd <- getwd()
   on.exit(setwd(old_wd), add = TRUE)
   setwd(workspace_dir)
 
-  # Remove stale output from a previous run
-  error_msgs_path <- file.path(workspace_dir, "ErrorMsgs.dat")
-  if (file.exists(error_msgs_path)) {
-    unlink(error_msgs_path)
-  }
-
   if (identical(sysname, "Windows")) {
-
-    system2(
-      exe_path,
-      input = c("alomvars.dat", "endo.dat"),
-      stdout = TRUE,
-      stderr = TRUE
-    )
-
+    system2(exe_path, input = c("alomvars.dat", "endo.dat"), stdout = TRUE, stderr = TRUE)
+    status <- 0L
   } else {
+    wine <- Sys.which("wine")
+    xvfb <- Sys.which("xvfb-run")
+    if (!nzchar(wine)) stop("'wine' is not available on PATH")
+    if (headless && !nzchar(xvfb)) stop("'xvfb-run' is not available on PATH")
+    if (!headless && !nzchar(Sys.getenv("DISPLAY"))) {
+      stop("run_endotherm_model: non-Windows, headless = FALSE, but DISPLAY is unset. ",
+           "Pass headless = TRUE on a compute node with no display server.")
+    }
 
-    wineprefix <- tempfile(
-      pattern = "wineprefix_",
-      tmpdir = tempdir()
-    )
+    if (is.null(wineprefix)) {
+      wineprefix <- tempfile(pattern = "wineprefix_", tmpdir = tempdir())
+      init_wine_prefix(wineprefix, headless = headless)
+      on.exit(unlink(wineprefix, recursive = TRUE, force = TRUE), add = TRUE)
+    } else if (!file.exists(file.path(wineprefix, ".update-timestamp"))) {
+      stop(sprintf(
+        "wineprefix '%s' does not look initialized (no .update-timestamp). ",
+        wineprefix),
+        "Call init_wine_prefix(wineprefix) once, before any parallel workers start.")
+    }
 
-    dir.create(wineprefix, recursive = TRUE, showWarnings = FALSE)
-
-    on.exit(
-      unlink(wineprefix, recursive = TRUE, force = TRUE),
-      add = TRUE
-    )
-
-    # Quote paths so spaces/special characters don't break the shell command
-    cmd <- paste0(
-      "printf 'alomvars.dat\\nendo.dat\\n' | ",
-      "WINEPREFIX=", shQuote(wineprefix), " ",
-      "wine ", shQuote(exe_path)
-    )
-
-    wine_output <- system(
-      cmd,
-      intern = TRUE
-    )
+    stderr_log <- file.path(workspace_dir, "wine_stderr.log")
+    command <- if (headless) {
+      paste(
+        "printf 'alomvars.dat\\nendo.dat\\n' |",
+        shQuote(xvfb), "-a -e /dev/null",
+        "env", paste0("WINEPREFIX=", shQuote(wineprefix)), "WINEDEBUG=-all",
+        shQuote(wine), shQuote(exe_path),
+        "2>", shQuote(stderr_log)
+      )
+    } else {
+      paste(
+        "printf 'alomvars.dat\\nendo.dat\\n' |",
+        "env", paste0("WINEPREFIX=", shQuote(wineprefix)), "WINEDEBUG=-all",
+        shQuote(wine), shQuote(exe_path),
+        "2>", shQuote(stderr_log)
+      )
+    }
+    status <- suppressWarnings(system(command))
   }
 
+  error_msgs_path <- file.path(workspace_dir, "ErrorMsgs.dat")
   if (!file.exists(error_msgs_path)) {
-    return(list(
-      success = FALSE,
-      message = "ErrorMsgs.dat was not produced"
-    ))
+    return(list(success = FALSE, message = sprintf("exit status %s; ErrorMsgs.dat was not produced", status)))
   }
-
   error_msgs <- readLines(error_msgs_path, warn = FALSE)
-
   list(
     success = any(grepl("Calculations completed\\.", error_msgs)),
-    message = paste(error_msgs, collapse = " | ")
+    message = paste(c(sprintf("exit status %s", status), error_msgs), collapse = " | ")
   )
 }
 
@@ -517,9 +541,7 @@ run_metabolic_chamber <- function(endo_inputs, exe_path,
                 file.path(save_dir, sprintf("%s_alomvars.dat", scenario_id)), overwrite = TRUE)
     }
 
-    file.copy(exe_path, file.path(scenario_dir, exe_name))
-
-    run_result <- run_endotherm_model(scenario_dir, exe_name = exe_name, sysname = sysname)
+    run_result <- run_endotherm_model(scenario_dir, exe_path = exe_path, sysname = sysname)
 
     log_rows[[scenario_id]] <- data.frame(
       scenario  = scenario_id,

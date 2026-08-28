@@ -6,7 +6,7 @@ test_that("select native invocation on Windows via sysname works as expected", {
   dir.create(workspace)
   on.exit(unlink(workspace, recursive = TRUE))
 
-  result <- run_endotherm_model(workspace, sysname = "Windows")
+  result <- run_endotherm_model(workspace, exe_path = file.path(workspace, "Endo2022a.exe"), sysname = "Windows")
 
   expect_false(result$success)
   expect_match(result$message, "exe not found")
@@ -20,14 +20,14 @@ test_that("write_endotherm_inputs + write_juldays_dat + run_endotherm_model work
   on.exit(unlink(workspace, recursive = TRUE))
 
   file.copy(
-    file.path(fixtures_dir, c("Endo2022a.exe", "metout.csv", "shadmet.csv", "soil.csv", "shadsoil.csv")),
+    file.path(fixtures_dir, c("metout.csv", "shadmet.csv", "soil.csv", "shadsoil.csv")),
     workspace
   )
 
   write_endotherm_inputs(output_dir = workspace)
   write_juldays_dat(output_dir = workspace)
 
-  result <- run_endotherm_model(workspace, exe_name = "Endo2022a.exe", sysname = "Windows")
+  result <- run_endotherm_model(workspace, exe_path = file.path(fixtures_dir, "Endo2022a.exe"), sysname = "Windows")
 
   expect_true(result$success)
   expect_match(result$message, "Calculations completed")
@@ -52,14 +52,62 @@ test_that("a chunked sequence (varying juldays per chunk) runs successfully for 
     on.exit(unlink(workspace, recursive = TRUE), add = TRUE)
 
     file.copy(
-      file.path(fixtures_dir, c("Endo2022a.exe", "metout.csv", "shadmet.csv", "soil.csv", "shadsoil.csv")),
+      file.path(fixtures_dir, c("metout.csv", "shadmet.csv", "soil.csv", "shadsoil.csv")),
       workspace
     )
 
     write_endotherm_inputs(output_dir = workspace, model_settings = list(julnum = 12, juldays = chunk))
     write_juldays_dat(output_dir = workspace, model_settings = list(julnum = 12, juldays = chunk))
 
-    result <- run_endotherm_model(workspace, exe_name = "Endo2022a.exe", sysname = "Windows")
+    result <- run_endotherm_model(workspace, exe_path = file.path(fixtures_dir, "Endo2022a.exe"), sysname = "Windows")
     expect_true(result$success)
   }
+})
+
+test_that("run_endotherm_model stops on non-Windows when headless = FALSE and DISPLAY is unset", {
+  skip_on_os("windows")
+  # exe_path must point at a file that exists, or run_endotherm_model()
+  # returns early at its file.exists() check and this test's DISPLAY logic
+  # never runs. Sys.which is mocked so the test doesn't depend on wine/
+  # xvfb-run actually being installed on whatever machine runs it.
+  testthat::local_mocked_bindings(
+    Sys.which = function(x) stats::setNames(paste0("/usr/bin/", x), x)
+  )
+  old_display <- Sys.getenv("DISPLAY", unset = NA)
+  Sys.unsetenv("DISPLAY")
+  on.exit(if (!is.na(old_display)) Sys.setenv(DISPLAY = old_display), add = TRUE)
+
+  workspace <- tempfile("endo_ws_nodisp_")
+  dir.create(workspace)
+  on.exit(unlink(workspace, recursive = TRUE), add = TRUE)
+  fake_exe <- tempfile(fileext = ".exe")
+  writeLines("not a real exe", fake_exe)
+  on.exit(unlink(fake_exe), add = TRUE)
+
+  expect_error(
+    run_endotherm_model(workspace, exe_path = fake_exe, sysname = "Linux", headless = FALSE),
+    "DISPLAY"
+  )
+})
+
+test_that("run_endotherm_model stops when a shared wineprefix is not initialized", {
+  skip_on_os("windows")
+  testthat::local_mocked_bindings(
+    Sys.which = function(x) stats::setNames(paste0("/usr/bin/", x), x)
+  )
+  workspace <- tempfile("endo_ws_uninit_")
+  dir.create(workspace)
+  on.exit(unlink(workspace, recursive = TRUE), add = TRUE)
+  fake_exe <- tempfile(fileext = ".exe")
+  writeLines("not a real exe", fake_exe)
+  on.exit(unlink(fake_exe), add = TRUE)
+  bad_prefix <- tempfile("uninit_prefix_")
+  dir.create(bad_prefix)
+  on.exit(unlink(bad_prefix, recursive = TRUE), add = TRUE)
+
+  expect_error(
+    run_endotherm_model(workspace, exe_path = fake_exe, sysname = "Linux",
+                        wineprefix = bad_prefix, headless = TRUE),
+    "init_wine_prefix"
+  )
 })
