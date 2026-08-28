@@ -722,3 +722,62 @@ plot.metchamber_result <- function(x, ...) {
   for (p in plots) print(p)
   invisible(plots)
 }
+
+# --------------------------------------------------------------------------- #
+#  Internal helpers for run_endo_big_nichemap
+# --------------------------------------------------------------------------- #
+
+# Fields sharing fur$tmdptorfur - supplying any one forces all four to vector mode.
+.endo_torfur_fields <- c("torlend", "torlenv", "tordepd", "tordepv")
+
+# Always-vector diet fields with no toggle - name matches endo_inputs$diet[[name]] directly.
+.endo_diet_timevar_fields <- c("digef", "act", "repro", "prtn", "fat", "carb",
+                               "dry", "diurn", "noct", "crep", "hibrn", "hibfrac",
+                               "land", "land2")
+
+.endo_validate_timevar_lengths <- function(time_varying, n_days) {
+  for (nm in names(time_varying)) {
+    v <- time_varying[[nm]]
+    if (!is.null(v) && length(v) != n_days) {
+      stop(sprintf("time_varying$%s must have length %d (the sim window's day count), got %d",
+                   nm, n_days, length(v)))
+    }
+  }
+  invisible(TRUE)
+}
+
+.endo_apply_timevar <- function(endo_inputs, time_varying, chunk_idx) {
+  if (!is.null(time_varying$mass2)) {
+    endo_inputs$animal$timdepmass <- 1
+    endo_inputs$animal$mass2 <- time_varying$mass2[chunk_idx]
+  }
+  if (!is.null(time_varying$fatpct2)) {
+    endo_inputs$animal$timdepfat <- 1
+    endo_inputs$animal$fatpct2 <- time_varying$fatpct2[chunk_idx]
+  }
+  if (!is.null(time_varying$tcreg2)) {
+    endo_inputs$physiology$tmdptc <- 1
+    endo_inputs$physiology$tcreg2 <- time_varying$tcreg2[chunk_idx]
+  }
+
+  if (any(!vapply(time_varying[.endo_torfur_fields], is.null, logical(1)))) {
+    endo_inputs$fur$tmdptorfur <- 1
+    n_days <- length(time_varying[[.endo_torfur_fields[which(!vapply(time_varying[.endo_torfur_fields], is.null, logical(1)))[1]]]])
+    for (fld in .endo_torfur_fields) {
+      if (!is.null(time_varying[[fld]])) {
+        endo_inputs$fur[[fld]] <- time_varying[[fld]][chunk_idx]
+      } else {
+        static_val <- endo_inputs$fur[[fld]][1]
+        endo_inputs$fur[[fld]] <- rep(static_val, n_days)[chunk_idx]
+      }
+    }
+  }
+
+  for (fld in .endo_diet_timevar_fields) {
+    if (!is.null(time_varying[[fld]])) {
+      endo_inputs$diet[[fld]] <- time_varying[[fld]][chunk_idx]
+    }
+  }
+
+  endo_inputs
+}
