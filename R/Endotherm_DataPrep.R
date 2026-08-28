@@ -325,6 +325,46 @@ get_endotherm_defaults <- function(julnum = 12,
   )
 }
 
+#' Template for time-varying Endotherm model inputs
+#'
+#' Returns a named list covering every field the NicheMapR Endotherm model
+#' exe supports as a "vary over the run" input, all defaulting to
+#' \code{NULL}. Pass the result (with whichever fields you need overwritten
+#' with a vector) as \code{\link{run_endo_big_nichemap}}'s \code{time_varying}
+#' argument.
+#'
+#' @return A named list of 21 elements, all \code{NULL}:
+#'   \describe{
+#'     \item{Toggle-gated}{\code{mass2}, \code{fatpct2}, \code{tcreg2}
+#'       (each backed by a static scalar + a \code{timdep*}/\code{tmdp*} flag
+#'       elsewhere in \code{\link{get_endotherm_defaults}}'s output - see
+#'       \code{\link{write_endotherm_inputs}}); \code{torlend}, \code{torlenv},
+#'       \code{tordepd}, \code{tordepv} (torso hair length/fur depth,
+#'       dorsal/ventral - these four share a single flag,
+#'       \code{fur$tmdptorfur}: supplying any one of them makes
+#'       \code{\link{run_endo_big_nichemap}} treat all four as vectors,
+#'       backfilling the ones you didn't supply with their static value).}
+#'     \item{Always-vector}{\code{digef}, \code{act}, \code{repro},
+#'       \code{prtn}, \code{fat}, \code{carb}, \code{dry}, \code{diurn},
+#'       \code{noct}, \code{crep}, \code{hibrn}, \code{hibfrac}, \code{land},
+#'       \code{land2} - already per-julday vectors by design in
+#'       \code{\link{get_endotherm_defaults}}'s \code{diet} group; no flag
+#'       is involved, a supplied vector simply overwrites the default
+#'       repeated-constant vector.}
+#'   }
+#'
+#' @seealso \code{\link{run_endo_big_nichemap}}, \code{\link{get_endotherm_defaults}}
+#' @export
+endo_timevar_template <- function() {
+  list(
+    mass2 = NULL, fatpct2 = NULL, tcreg2 = NULL,
+    torlend = NULL, torlenv = NULL, tordepd = NULL, tordepv = NULL,
+    digef = NULL, act = NULL, repro = NULL, prtn = NULL, fat = NULL,
+    carb = NULL, dry = NULL, diurn = NULL, noct = NULL, crep = NULL,
+    hibrn = NULL, hibfrac = NULL, land = NULL, land2 = NULL
+  )
+}
+
 #' Write NicheMapR Endotherm model input files (endo.dat, alomvars.dat)
 #'
 #' Builds the fixed-format \code{endo.dat} and \code{alomvars.dat} input files
