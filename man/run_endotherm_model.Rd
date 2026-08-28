@@ -6,31 +6,68 @@
 \usage{
 run_endotherm_model(
   workspace_dir,
-  exe_name = "Endo2022a.exe",
-  sysname = Sys.info()[["sysname"]]
+  exe_path,
+  sysname = Sys.info()[["sysname"]],
+  wineprefix = NULL,
+  headless = FALSE
 )
 }
 \arguments{
-\item{workspace_dir}{Directory containing the exe and its input files.}
+\item{workspace_dir}{Directory containing the exe's input files
+(\code{alomvars.dat}, \code{endo.dat}, \code{JULDAYS.DAT},
+\code{metout.csv}, \code{shadmet.csv}, \code{soil.csv},
+\code{shadsoil.csv}). The exe is invoked with this as its working
+directory, so its outputs (\code{ErrorMsgs.dat}, \code{HOURPLOT.csv},
+etc.) also land here.}
 
-\item{exe_name}{Character. Executable filename, expected to already be
-present in \code{workspace_dir}. Default \code{"Endo2022a.exe"}.}
+\item{exe_path}{Character. Full path to the Endotherm model executable -
+it does not need to be inside \code{workspace_dir}.}
 
 \item{sysname}{Character, one of \code{Sys.info()[["sysname"]]}'s possible
 values. Determines native vs Wine invocation. Default detects the
 current OS.}
+
+\item{wineprefix}{Character or \code{NULL} (default). \code{NULL} means a
+private, unshared Wine prefix is created (via \code{\link{init_wine_prefix}})
+just for this call - safe for a single unshared process. A path means a
+\emph{shared} prefix (the HPC/parallel case): it must already be
+initialized via \code{\link{init_wine_prefix}} - this function
+\code{stop()}s if it is not, rather than silently booting it itself
+(concurrent first-time boots of the same prefix are what corrupts it;
+concurrent use of an already-booted prefix is safe). Ignored on Windows.}
+
+\item{headless}{Logical. If \code{TRUE}, the Wine invocation (and, for the
+\code{wineprefix = NULL} case, its own \code{\link{init_wine_prefix}}
+call) is wrapped in \code{xvfb-run}, for compute nodes with no display
+server. Default \code{FALSE}. On non-Windows with \code{headless =
+FALSE}, this function \code{stop()}s if \code{Sys.getenv("DISPLAY")} is
+empty, rather than attempting the call and failing obscurely later.
+Ignored on Windows.}
 }
 \value{
 A list with elements \code{success} (logical) and \code{message}
-(character, the contents of \code{ErrorMsgs.dat}, or a description of
-why the run could not be evaluated).
+(character, the contents of \code{ErrorMsgs.dat} plus the process exit
+status, or a description of why the run could not be evaluated).
 }
 \description{
-Invokes the compiled Endotherm model exe in \code{workspace_dir}, which
-must already contain \code{alomvars.dat}, \code{endo.dat}, \code{JULDAYS.DAT},
-and the microclimate driver CSVs (\code{metout.csv}, \code{shadmet.csv},
-\code{soil.csv}, \code{shadsoil.csv}) it expects to read from its working
-directory. On Windows the exe is run natively; elsewhere it is run under
-Wine with a per-process \code{WINEPREFIX} (required because Wine prefixes
-are not safe to share across concurrent processes).
+Invokes the compiled Endotherm model exe, which must be pointed at by
+\code{exe_path} and reads its fixed-format inputs
+(\code{alomvars.dat}, \code{endo.dat}, \code{JULDAYS.DAT},
+\code{metout.csv}, \code{shadmet.csv}, \code{soil.csv}, \code{shadsoil.csv})
+from its current working directory - the exe itself need not live in
+\code{workspace_dir}. On Windows the exe is run natively. Elsewhere it is
+run under Wine, either with a private, unshared prefix
+(\code{wineprefix = NULL}, the default) or against an already-initialized
+shared prefix (\code{wineprefix} set - see \code{\link{init_wine_prefix}}).
+}
+\details{
+A Wine prefix that is booted once (via \code{\link{init_wine_prefix}}) and
+then only read by concurrent \code{wine} invocations is safe to share
+across many worker processes - what is unsafe is concurrent \emph{first-time
+creation} of the same prefix, which is why the shared-prefix branch here
+requires initialization to have already happened.
+}
+\seealso{
+\code{\link{init_wine_prefix}}, \code{\link{run_metabolic_chamber}},
+\code{\link{run_endo_big_nichemap}}
 }
