@@ -808,3 +808,188 @@ plot.metchamber_result <- function(x, ...) {
 
   list(values = values, year_month = year_months)
 }
+
+.normalize_dates_with_sim_window <- function(dates) {
+  if (is.data.frame(dates)) {
+    if (!all(c("Start_Dates", "End_Dates") %in% names(dates)))
+      stop("dates data.frame must contain columns 'Start_Dates' and 'End_Dates'")
+    d <- dates
+  } else if (inherits(dates, "Date") && length(dates) == 2) {
+    d <- data.frame(Start_Dates = as.Date(dates[1]), End_Dates = as.Date(dates[2]),
+                    stringsAsFactors = FALSE)
+  } else {
+    stop("dates must be a data.frame with Start_Dates/End_Dates columns, or a length-2 Date vector")
+  }
+  if (is.null(d$Sim_Start)) d$Sim_Start <- d$Start_Dates
+  if (is.null(d$Sim_End))   d$Sim_End   <- d$End_Dates
+  d
+}
+
+.endo_chunk_bounds <- function(n_days, chunk_size) {
+  n_chunks <- ceiling(n_days / chunk_size)
+  bounds <- floor(seq(0, n_days, length.out = n_chunks + 1))
+  lapply(seq_len(n_chunks), function(k) (bounds[k] + 1):bounds[k + 1])
+}
+
+.endo_tile_ids_in_mask <- function(tile_map, valid_cells_mask) {
+  tm <- terra::rast(tile_map)
+  vm <- terra::rast(valid_cells_mask)
+  vm[vm != 1] <- NA
+  tm_masked <- terra::mask(tm, vm)
+  sort(unique(terra::values(tm_masked, mat = FALSE, na.rm = TRUE)))
+}
+
+.endo_microclim_path <- function(microclim_dir, study_area, period_label, tile_id, hgt_lbl, file_fmt) {
+  base <- if (!is.null(study_area)) file.path(microclim_dir, study_area) else microclim_dir
+  dir  <- file.path(base, "Microclim_Models", period_label, hgt_lbl)
+  prefix <- if (!is.null(study_area)) sprintf("%s_", study_area) else ""
+  file.path(dir, sprintf("Tile_%03d_%s%s_MicroclimModel_%s.%s",
+                         tile_id, prefix, hgt_lbl, period_label, file_fmt))
+}
+
+.endo_snow_path <- function(microclim_dir, study_area, period_label, tile_id, file_fmt) {
+  base <- if (!is.null(study_area)) file.path(microclim_dir, study_area) else microclim_dir
+  dir  <- file.path(base, "Snow_Models", period_label)
+  prefix <- if (!is.null(study_area)) sprintf("%s_", study_area) else "SnowModel_"
+  file.path(dir, sprintf("Tile_%03d_%sSnowModel_%s.%s", tile_id, prefix, period_label, file_fmt))
+}
+
+#' Run the NicheMapR Endotherm model across a large tiled domain
+#'
+#' Formalizes the landscape-scale Endotherm model workflow: for every valid
+#' cell of every tile in \code{tile_map} (restricted to
+#' \code{valid_cells_mask}), for the date range(s) in \code{dates}, builds
+#' the exe's per-chunk CSV/DAT inputs from the packaged microclimate data at
+#' \code{microclim_dir} and runs \code{\link{run_endotherm_model}}, writing
+#' a trimmed \code{HOURPLOT.csv} per cell per chunk. Structured like
+#' \code{\link{run_micro_big_nichemap}}: SLURM array distribution via hidden
+#' \code{...} arguments, one call per scenario (climatology's single period,
+#' or year-specific's multi-row \code{dates}).
+#'
+#' @param tile_map Fine-resolution tile-ID \code{SpatRaster} or file path
+#'   (e.g. \code{\link{create_tiles}}'s \code{output_path}).
+#' @param valid_cells_mask 1/0 (or NA) \code{SpatRaster} or file path,
+#'   caller-combined (e.g. winter range intersected with a water mask) -
+#'   consumed via \code{\link{read_valid_cell_indices}}.
+#' @param dates Either a \code{data.frame} with columns \code{Start_Dates}/
+#'   \code{End_Dates} (resolving \code{period_label} and the
+#'   \code{microclim_dir} file paths, one row per period) - optionally with
+#'   \code{Sim_Start}/\code{Sim_End} columns giving the actual Endotherm
+#'   simulation window within that period (defaults to the full period when
+#'   absent) - or a length-2 \code{Date} vector (single period, sim window =
+#'   the period).
+#' @param microclim_dir The \code{output_dir} value passed to
+#'   \code{\link{run_micro_big_nichemap}} for this scenario's microclimate
+#'   data - \emph{not} a separate corrected/uncorrected pair of roots; any
+#'   statistical correction applied upstream is expected to be written back
+#'   into this same location/substructure.
+#' @param dem Elevation \code{SpatRaster} or file path.
+#' @param refl_dir Root reflectance directory as produced by
+#'   \code{\link{compute_reflectance}} (\code{refl_dir/Gref/GF_Refl_*.tif}).
+#' @param exe_path Full path to the Endotherm model executable.
+#' @param output_dir Root output folder.
+#' @param wineprefix Character. Required on non-Windows - a single,
+#'   already-initialized (via \code{\link{init_wine_prefix}}) shared Wine
+#'   prefix path, reused unchanged across every tile/cell/chunk in this call.
+#'   Must \strong{not} be left to default to \code{NULL} or a
+#'   \code{tempdir()}-derived path - every parallel worker must share the
+#'   same prefix. Ignored on Windows.
+#' @param endo_inputs Named list in \code{\link{get_endotherm_defaults}}'s
+#'   9-group shape - the animal model. Default \code{get_endotherm_defaults()}.
+#' @param time_varying Named list from \code{\link{endo_timevar_template}},
+#'   with whichever fields should vary over the sim window overwritten with a
+#'   vector of length equal to the sim window's day count. Default (all
+#'   \code{NULL}) applies no overrides.
+#' @param chunk_size Integer, 1-52. The exe's per-invocation day limit is 52;
+#'   longer sim windows are split into this many days per chunk (the last
+#'   chunk may be shorter). Default \code{52}.
+#' @param snow Logical. If \code{TRUE}, the corrected Snow tile is read from
+#'   \code{microclim_dir} (same convention as \code{\link{run_micro_big_nichemap}}'s
+#'   own \code{snow} argument) and any day with SWE > 0 gets
+#'   \code{surfwet = 100}; every other day gets \code{surfwet_dry}. When
+#'   \code{FALSE} (default), every day gets \code{surfwet_dry}.
+#' @param surfwet_dry Numeric. Percent surface wet on non-snow days. Default
+#'   \code{5}, matching \code{\link{write_juldays_dat}}'s own default.
+#' @param study_area Character or \code{NULL}. Prefixes resolved
+#'   \code{microclim_dir} file names and output paths. Default \code{NULL}.
+#' @param clamp,clamp_bounds Passed through to \code{\link{micro_to_csv}}.
+#'   Default \code{clamp = TRUE}, \code{clamp_bounds =
+#'   micro_to_csv_clamp_defaults()}.
+#' @param file_fmt Character, \code{"h5"} or \code{"nc"} - the format
+#'   \code{microclim_dir}'s files were written in (must match whatever
+#'   \code{\link{run_micro_big_nichemap}} used for this data). Default
+#'   \code{"h5"}.
+#' @param headless Logical, passed to \code{\link{init_wine_prefix}}/
+#'   \code{\link{run_endotherm_model}}. Default \code{FALSE}.
+#' @param parallel Logical. If \code{TRUE}, cells within a tile are processed
+#'   via \code{future_lapply()} with \code{ncores} workers. Default
+#'   \code{FALSE}.
+#' @param ncores Integer. Workers to use when \code{parallel = TRUE}; also
+#'   sets \code{terraOptions(threads = ncores)}. Default \code{2}.
+#' @param ... Hidden SLURM array arguments \code{clust_array_arg}/
+#'   \code{clust_array_size}, same convention as
+#'   \code{\link{run_micro_big_nichemap}}.
+#'
+#' @return Invisibly, the concatenated per-tile log \code{data.frame}
+#'   (\code{cell_id, chunk_index, chunk_start, chunk_end, status, message,
+#'   output_path}) across every \code{(tile, period)} task this call
+#'   processed.
+#'
+#' @seealso \code{\link{run_micro_big_nichemap}}, \code{\link{micro_to_csv}},
+#'   \code{\link{get_endotherm_defaults}}, \code{\link{endo_timevar_template}},
+#'   \code{\link{run_endotherm_model}}, \code{\link{init_wine_prefix}}
+#' @export
+run_endo_big_nichemap <- function(tile_map, valid_cells_mask, dates, microclim_dir,
+                                  dem, refl_dir, exe_path, output_dir, wineprefix,
+                                  endo_inputs   = get_endotherm_defaults(),
+                                  time_varying  = endo_timevar_template(),
+                                  chunk_size    = 52,
+                                  snow          = FALSE,
+                                  surfwet_dry   = 5,
+                                  study_area    = NULL,
+                                  clamp         = TRUE,
+                                  clamp_bounds  = micro_to_csv_clamp_defaults(),
+                                  file_fmt      = c("h5", "nc"),
+                                  headless      = FALSE,
+                                  parallel      = FALSE,
+                                  ncores        = 2,
+                                  ...) {
+  file_fmt <- match.arg(file_fmt)
+
+  dots    <- list(...)
+  allowed <- c("clust_array_arg", "clust_array_size")
+  unknown <- setdiff(names(dots), allowed)
+  if (length(unknown) > 0) stop("Unknown argument(s): ", paste(unknown, collapse = ", "))
+  clust_array_arg  <- dots$clust_array_arg
+  clust_array_size <- dots$clust_array_size
+  if (!is.null(clust_array_arg) && is.null(clust_array_size))
+    stop("clust_array_size must be provided when clust_array_arg is set")
+  if (!is.null(clust_array_arg) &&
+      (clust_array_arg < 1 || clust_array_arg > clust_array_size))
+    stop("clust_array_arg must be between 1 and clust_array_size")
+
+  if (!is.numeric(chunk_size) || length(chunk_size) != 1 || chunk_size < 1 || chunk_size > 52)
+    stop("chunk_size must be a single numeric value between 1 and 52")
+
+  date_ranges <- .normalize_dates_with_sim_window(dates)
+
+  if (Sys.info()[["sysname"]] != "Windows") {
+    init_wine_prefix(wineprefix, headless = headless)
+  }
+
+  if (parallel) terra::terraOptions(threads = ncores)
+
+  tile_ids <- .endo_tile_ids_in_mask(tile_map, valid_cells_mask)
+  all_combos <- expand.grid(tile_id = tile_ids, date_idx = seq_len(nrow(date_ranges)))
+
+  all_combos$node <- if (is.null(clust_array_size)) 1L else
+    rep(seq_len(clust_array_size), length.out = nrow(all_combos))
+  task_combos <- if (is.null(clust_array_arg)) all_combos else
+    all_combos[all_combos$node == clust_array_arg, ]
+
+  cat(sprintf("Tasks this node: %d of %d total (tile x period combinations)\n",
+              nrow(task_combos), nrow(all_combos)))
+
+  ## per-tile loop - implemented in Task 7
+  invisible(NULL)
+}
