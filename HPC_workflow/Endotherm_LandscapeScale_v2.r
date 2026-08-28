@@ -2,6 +2,12 @@
 # Test copy for validating run_endo_big_nichemap() on the real cluster before
 # switching Endotherm_LandscapeScale.r over. Run side-by-side with the
 # production script (different output_dir) for comparison.
+#
+# Prerequisite: The external correction pipeline (7_apply_corrections.R) must
+# write corrected microclimate tiles to the standard filename/location in
+# /corrected_models/{study_area}/Microclim_Models/, not a separate
+# _corrected-suffixed file. Update the correction script if needed before
+# running this workflow.
 
 library(terra)
 library(SpencerEcoTools)
@@ -29,7 +35,7 @@ run_endo_big_nichemap(
   valid_cells_mask = "/Data/Endo-Valid-Cells-Mask.tif",  # winter range x not-water, precombined
   dates = data.frame(Start_Dates = as.Date("2024-07-01"), End_Dates = as.Date("2025-06-01"),
                      Sim_Start = as.Date("2024-12-09"), Sim_End = as.Date("2025-04-15")),
-  microclim_dir = "/corrected_models/TetonsClimatology",
+  microclim_dir = "/corrected_models",
   dem = "/Data/DEM/DEM_GLO30.tif", refl_dir = "/Data/Climatology",
   exe_path = exe_path, output_dir = output_dir, wineprefix = wineprefix,
   study_area = "TetonsClimatology", snow = TRUE, headless = TRUE,
@@ -49,7 +55,7 @@ run_endo_big_nichemap(
   tile_map = "/Microclim_out/YearSpecificTileMap.tif",
   valid_cells_mask = "/Data/Endo-Valid-Cells-Mask.tif",
   dates = dates_ys,
-  microclim_dir = "/corrected_models/TetonsYearSpecific",
+  microclim_dir = "/corrected_models",
   dem = "/Data/DEM/DEM_GLO30.tif", refl_dir = "/Data/YearSpecific",
   exe_path = exe_path, output_dir = output_dir, wineprefix = wineprefix,
   study_area = "TetonsYearSpecific", snow = TRUE, headless = TRUE,
