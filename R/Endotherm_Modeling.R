@@ -782,3 +782,29 @@ plot.metchamber_result <- function(x, ...) {
 
   endo_inputs
 }
+
+.endo_gref_path <- function(refl_dir, study_area, year_month) {
+  ym_parts <- strsplit(year_month, "_")[[1]]
+  fname <- if (!is.null(study_area)) {
+    sprintf("GF_Refl_%s_%s_%s.tif", study_area, ym_parts[1], ym_parts[2])
+  } else {
+    sprintf("GF_Refl_%s_%s.tif", ym_parts[1], ym_parts[2])
+  }
+  file.path(refl_dir, "Gref", fname)
+}
+
+.endo_absorp_lookup <- function(refl_dir, study_area, sim_dates, cell_xy) {
+  year_months <- unique(format(sim_dates, "%Y_%m"))
+  values <- matrix(NA_real_, nrow = nrow(cell_xy), ncol = length(year_months),
+                   dimnames = list(NULL, year_months))
+
+  for (ym in year_months) {
+    gref_path <- .endo_gref_path(refl_dir, study_area, ym)
+    if (!file.exists(gref_path)) stop(sprintf("Gref file not found for %s:\n  %s", ym, gref_path))
+    gref_r <- terra::rast(gref_path)
+    gref_vals <- terra::extract(gref_r, cell_xy)[, 1]
+    values[, ym] <- 1 - gref_vals
+  }
+
+  list(values = values, year_month = year_months)
+}
