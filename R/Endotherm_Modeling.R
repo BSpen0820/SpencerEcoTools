@@ -787,10 +787,13 @@ plot.metchamber_result <- function(x, ...) {
 # caller originally built endo_inputs with (e.g. get_endotherm_defaults()'s
 # default of 12); a chunk's actual julnum (its day count) is only known once
 # run_endo_big_nichemap() is inside its per-chunk loop. This re-derives each
-# such field's constant value at the chunk's julnum, from its first element,
-# before .endo_apply_timevar() runs - it must run first so a genuinely
-# time-varying field (already sliced to length julnum by .endo_apply_timevar)
-# never gets flattened back to a constant here.
+# such field's constant value at the chunk's julnum, from its first element.
+# Called before .endo_apply_timevar() at every real call site in this
+# codebase, idx (and hence chunk_idx) always has length julnum, so
+# .endo_apply_timevar()'s slices are already the right length and this
+# ordering makes no observable difference there - it's used here only
+# because "prepare base field sizes, then apply selective per-chunk
+# overrides" is the clearer read.
 .endo_resize_static_field <- function(v, julnum) {
   if (!is.null(v) && length(v) != julnum) v <- rep(v[1], julnum)
   v
@@ -945,10 +948,15 @@ plot.metchamber_result <- function(x, ...) {
 #' @param clamp,clamp_bounds Passed through to \code{\link{micro_to_csv}}.
 #'   Default \code{clamp = TRUE}, \code{clamp_bounds =
 #'   micro_to_csv_clamp_defaults()}.
-#' @param file_fmt Character, \code{"h5"} or \code{"nc"} - the format
-#'   \code{microclim_dir}'s files were written in (must match whatever
-#'   \code{\link{run_micro_big_nichemap}} used for this data). Default
-#'   \code{"h5"}.
+#' @param file_fmt Character, currently only \code{"nc"} is accepted. Unlike
+#'   \code{\link{micro_to_csv}} (which dispatches generically between NetCDF
+#'   and HDF5 via an internal open/read abstraction), this function's own
+#'   tannul precompute and its \code{snow = TRUE} SWE read call
+#'   \code{ncdf4::} directly, so they only understand NetCDF tiles. HDF5
+#'   support for those two reads is a known, deferred gap - not implemented
+#'   by this function - rather than an oversight; \code{microclim_dir} must
+#'   therefore have been written with \code{\link{run_micro_big_nichemap}}'s
+#'   \code{file_fmt = "nc"}.
 #' @param headless Logical, passed to \code{\link{init_wine_prefix}}/
 #'   \code{\link{run_endotherm_model}}. Default \code{FALSE}.
 #' @param parallel Logical. If \code{TRUE}, cells within a tile are processed
@@ -979,12 +987,12 @@ run_endo_big_nichemap <- function(tile_map, valid_cells_mask, dates, microclim_d
                                   study_area    = NULL,
                                   clamp         = TRUE,
                                   clamp_bounds  = micro_to_csv_clamp_defaults(),
-                                  file_fmt      = c("h5", "nc"),
+                                  file_fmt      = "nc",
                                   headless      = FALSE,
                                   parallel      = FALSE,
                                   ncores        = 2,
                                   ...) {
-  file_fmt <- match.arg(file_fmt)
+  file_fmt <- match.arg(file_fmt, "nc")
 
   dots    <- list(...)
   allowed <- c("clust_array_arg", "clust_array_size")

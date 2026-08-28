@@ -59,14 +59,20 @@ test_that(".endo_chunk_bounds splits an uneven day count into <= chunk_size chun
   expect_true(all(vapply(bounds, length, integer(1)) <= 52))
 })
 
-test_that(".endo_resize_static_fields resizes statics without flattening time-varying fields", {
+test_that(".endo_resize_static_fields resizes statics without disturbing time-varying fields", {
+  # NOTE: at every real call site, length(idx) == julnum always holds, so
+  # .endo_resize_static_fields()'s length-mismatch guard is a no-op on any
+  # field .endo_apply_timevar() has already sliced - this test does not
+  # (and cannot, given that invariant) discriminate call order between the
+  # two functions. It verifies their combined output is correct, which is
+  # what actually matters here.
   endo_inputs <- get_endotherm_defaults()          # julnum = 12
   tv <- endo_timevar_template()
   tv$act <- seq(1.00, 1.29, by = 0.01)             # 30-day full window
   julnum <- 15; idx <- 16:30
   prepped <- SpencerEcoTools:::.endo_resize_static_fields(endo_inputs, julnum)
   prepped <- SpencerEcoTools:::.endo_apply_timevar(prepped, tv, idx)
-  expect_equal(prepped$diet$act, tv$act[idx])      # fails if order is reversed
+  expect_equal(prepped$diet$act, tv$act[idx])      # time-varying override applied correctly
   expect_length(prepped$diet$digef, julnum)        # static field resized
   expect_length(prepped$animal$mass2, julnum)
 })
