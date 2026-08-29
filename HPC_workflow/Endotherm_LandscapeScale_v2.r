@@ -3,6 +3,14 @@
 # switching Endotherm_LandscapeScale.r over. Run side-by-side with the
 # production script (different output_dir) for comparison.
 #
+# SUBSET RUN: the full production run (both scenarios, all tiles, all years)
+# takes multiple days. This copy runs climatology only, restricted to
+# `subset_n_tiles` tiles (the first N tile IDs found in the masked domain),
+# for a fast smoke test. Set subset_n_tiles <- Inf below (or pass
+# --subset_n_tiles=Inf) to fall back to the full climatology domain; add the
+# year-specific block back in (see git history) once you're ready for a full
+# run - it was removed here to keep this variant single-purpose.
+#
 # Prerequisites - all three are in the external correction pipeline
 # (7_apply_corrections.R, outside this repo), not in this script. Fix them
 # there before running this workflow:
@@ -51,6 +59,7 @@ get_arg <- function(name, default = NA) {
 clust_array_arg  <- as.integer(get_arg("clust_array_arg", default = 1))
 clust_array_size <- as.integer(get_arg("clust_array_size", default = 40))
 n_threads        <- as.integer(get_arg("n_threads", default = 1))
+subset_n_tiles   <- as.numeric(get_arg("subset_n_tiles", default = 2))  # Inf = full domain
 
 wineprefix <- Sys.getenv("ENDO_WINEPREFIX", unset = "/temp/wine/prefix")
 init_wine_prefix(wineprefix, headless = TRUE)
@@ -58,38 +67,41 @@ init_wine_prefix(wineprefix, headless = TRUE)
 exe_path   <- "/NicheMapExe/Endo2022a.exe"
 output_dir <- "/Endo_out_v2"  # separate from production's /Endo_out for comparison
 
-# --- climatology ---
+tile_map_path      <- "/Microclim_out/TetonsClimatologyTileMap.tif"
+valid_mask_path    <- "/Data/Endo-Valid-Cells-Mask.tif"  # winter range x not-water, precombined
+
+# --- restrict to the first `subset_n_tiles` tiles for a fast smoke test -----
+if (is.finite(subset_n_tiles)) {
+  tile_map_r   <- terra::rast(tile_map_path)
+  valid_mask_r <- terra::rast(valid_mask_path)
+
+  vm <- valid_mask_r
+  vm[vm != 1] <- NA
+  tile_ids_all <- sort(unique(terra::values(terra::mask(tile_map_r, vm), mat = FALSE, na.rm = TRUE)))
+  keep_ids     <- head(tile_ids_all, subset_n_tiles)
+
+  cat(sprintf("Subset run: restricting to tile ID(s) %s (of %d total in the masked domain)\n",
+              paste(keep_ids, collapse = ", "), length(tile_ids_all)))
+
+  subset_mask <- valid_mask_r
+  subset_mask[!(tile_map_r %in% keep_ids)] <- NA
+
+  valid_cells_mask_path <- file.path(tempdir(), "subset_valid_cells_mask.tif")
+  terra::writeRaster(subset_mask, valid_cells_mask_path, overwrite = TRUE)
+} else {
+  valid_cells_mask_path <- valid_mask_path
+}
+
+# --- climatology only -------------------------------------------------------
 run_endo_big_nichemap(
-  tile_map = "/Microclim_out/TetonsClimatologyTileMap.tif",
-  valid_cells_mask = "/Data/Endo-Valid-Cells-Mask.tif",  # winter range x not-water, precombined
+  tile_map = tile_map_path,
+  valid_cells_mask = valid_cells_mask_path,
   dates = data.frame(Start_Dates = as.Date("2024-07-01"), End_Dates = as.Date("2025-06-01"),
                      Sim_Start = as.Date("2024-12-09"), Sim_End = as.Date("2025-04-15")),
   microclim_dir = "/corrected_models",
   dem = "/Data/DEM/DEM_GLO30.tif", refl_dir = "/Data/Climatology",
   exe_path = exe_path, output_dir = output_dir, wineprefix = wineprefix,
   study_area = "TetonsClimatology", snow = TRUE, headless = TRUE,
-  parallel = TRUE, ncores = n_threads,
-  clust_array_arg = clust_array_arg, clust_array_size = clust_array_size
-)
-
-# --- year-specific ---
-dates_ys <- data.frame(
-  Start_Dates = as.Date(c("2022-07-01", "2023-07-01", "2021-07-01", "2017-07-01")),
-  # End on June 1 (not June 30) so the derived period_label matches the real
-  # tile names on the cluster: sprintf("%d0701_to_%d0601", ...).
-  End_Dates   = as.Date(c("2023-06-01", "2024-06-01", "2022-06-01", "2018-06-01"))
-)
-dates_ys$Sim_Start <- as.Date(sprintf("%s-12-09", format(dates_ys$Start_Dates, "%Y")))
-dates_ys$Sim_End   <- as.Date(sprintf("%s-04-15", format(dates_ys$End_Dates, "%Y")))
-
-run_endo_big_nichemap(
-  tile_map = "/Microclim_out/YearSpecificTileMap.tif",
-  valid_cells_mask = "/Data/Endo-Valid-Cells-Mask.tif",
-  dates = dates_ys,
-  microclim_dir = "/corrected_models",
-  dem = "/Data/DEM/DEM_GLO30.tif", refl_dir = "/Data/YearSpecific",
-  exe_path = exe_path, output_dir = output_dir, wineprefix = wineprefix,
-  study_area = "TetonsYearSpecific", snow = TRUE, headless = TRUE,
   parallel = TRUE, ncores = n_threads,
   clust_array_arg = clust_array_arg, clust_array_size = clust_array_size
 )
