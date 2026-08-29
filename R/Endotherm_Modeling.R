@@ -888,6 +888,33 @@ plot.metchamber_result <- function(x, ...) {
   )[[variable]]
 }
 
+.endo_read_hourplot_chunk <- function(path, chunk_start, chunk_end, variable_col) {
+  first_line <- readLines(path, n = 1)
+  # New layout's header starts with a (possibly quoted) "HR" as the first
+  # field; the old layout's line 1 is always a free-text metadata line
+  # ("Animal species = ...") that never matches this.
+  skip <- if (grepl("^\\s*\"?HR\"?\\s*,", first_line)) 0L else 1L
+
+  hp <- utils::read.csv(path, skip = skip)
+  hp <- hp[hp$HR != 24, , drop = FALSE]
+  n <- nrow(hp)
+
+  expected_n <- 24L * (as.integer(chunk_end - chunk_start) + 1L)
+  if (n != expected_n) {
+    warning(sprintf(
+      "Skipping %s: row count %d does not match the %d real hours expected for %s..%s",
+      path, n, expected_n, chunk_start, chunk_end
+    ))
+    return(data.frame(timestamp = as.POSIXct(character(0), tz = "UTC"), value = numeric(0)))
+  }
+
+  day_offset  <- (seq_len(n) - 1L) %/% 24L
+  hour_offset <- (seq_len(n) - 1L) %% 24L
+  timestamp <- as.POSIXct(chunk_start, tz = "UTC") + day_offset * 86400 + hour_offset * 3600
+
+  data.frame(timestamp = timestamp, value = hp[[variable_col]])
+}
+
 .endo_tile_ids_in_mask <- function(tile_map, valid_cells_mask) {
   tm <- terra::rast(tile_map)
   vm <- terra::rast(valid_cells_mask)
