@@ -10,7 +10,9 @@ run_metabolic_chamber(
   scenarios = .mc_scenario_ids,
   mc_overrides = list(),
   save_dir = NULL,
-  sysname = Sys.info()[["sysname"]]
+  sysname = Sys.info()[["sysname"]],
+  headless = FALSE,
+  wineprefix = NULL
 )
 }
 \arguments{
@@ -41,6 +43,20 @@ scenario's own overrides are applied. Changing these changes what
 
 \item{sysname}{Passed through to \code{\link{run_endotherm_model}}
 (Windows vs. Wine invocation). Default detects the current OS.}
+
+\item{headless}{Logical, passed through to \code{\link{run_endotherm_model}}.
+If \code{TRUE}, each scenario's Wine invocation (and its own
+\code{\link{init_wine_prefix}} call, for \code{wineprefix = NULL}) is
+wrapped in \code{xvfb-run}, for compute nodes with no display server.
+Default \code{FALSE}. On non-Windows with \code{headless = FALSE}, the run
+\code{stop()}s if \code{Sys.getenv("DISPLAY")} is empty. Ignored on
+Windows.}
+
+\item{wineprefix}{Character or \code{NULL} (default), passed through to
+\code{\link{run_endotherm_model}}. \code{NULL} means each scenario gets a
+private, unshared Wine prefix. A path means a \emph{shared} prefix that
+must already be initialized via \code{\link{init_wine_prefix}}. Ignored on
+Windows.}
 }
 \value{
 An object of class \code{"metchamber_result"}: a list with

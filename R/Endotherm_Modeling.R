@@ -249,6 +249,10 @@ run_endotherm_model <- function(workspace_dir, exe_path,
     return(list(success = FALSE, message = sprintf("exe not found at %s", exe_path)))
   }
   exe_path <- normalizePath(exe_path, mustWork = TRUE)
+  # Must be absolute: setwd() below changes the process cwd, so a relative
+  # workspace_dir would re-resolve against the new cwd in every later
+  # file.path(workspace_dir, ...) (e.g. the ErrorMsgs.dat check).
+  workspace_dir <- normalizePath(workspace_dir, mustWork = TRUE)
 
   unlink(file.path(workspace_dir, c("ErrorMsgs.dat", "HOURPLOT.csv")))
 
@@ -478,6 +482,18 @@ init_wine_prefix <- function(wineprefix, headless = TRUE) {
 #'   \code{{scenario}_endo.dat}/\code{{scenario}_alomvars.dat}.
 #' @param sysname Passed through to \code{\link{run_endotherm_model}}
 #'   (Windows vs. Wine invocation). Default detects the current OS.
+#' @param headless Logical, passed through to \code{\link{run_endotherm_model}}.
+#'   If \code{TRUE}, each scenario's Wine invocation (and its own
+#'   \code{\link{init_wine_prefix}} call, for \code{wineprefix = NULL}) is
+#'   wrapped in \code{xvfb-run}, for compute nodes with no display server.
+#'   Default \code{FALSE}. On non-Windows with \code{headless = FALSE}, the run
+#'   \code{stop()}s if \code{Sys.getenv("DISPLAY")} is empty. Ignored on
+#'   Windows.
+#' @param wineprefix Character or \code{NULL} (default), passed through to
+#'   \code{\link{run_endotherm_model}}. \code{NULL} means each scenario gets a
+#'   private, unshared Wine prefix. A path means a \emph{shared} prefix that
+#'   must already be initialized via \code{\link{init_wine_prefix}}. Ignored on
+#'   Windows.
 #'
 #' @return An object of class \code{"metchamber_result"}: a list with
 #'   \code{hourplot} (named list of data frames, one per scenario that
@@ -509,7 +525,9 @@ run_metabolic_chamber <- function(endo_inputs, exe_path,
                                    scenarios = .mc_scenario_ids,
                                    mc_overrides = list(),
                                    save_dir = NULL,
-                                   sysname = Sys.info()[["sysname"]]) {
+                                   sysname = Sys.info()[["sysname"]],
+                                   headless = FALSE,
+                                   wineprefix = NULL) {
 
   if (!all(scenarios %in% .mc_scenario_ids))
     stop(sprintf("'scenarios' must be from: %s", paste(.mc_scenario_ids, collapse = ", ")))
@@ -533,7 +551,6 @@ run_metabolic_chamber <- function(endo_inputs, exe_path,
     ))
   }
 
-  exe_name <- basename(exe_path)
   fixed_overrides <- utils::modifyList(.default_mc_overrides(), mc_overrides)
   target_rmr_trgt <- .mc_target_rmr(endo_inputs)  # compute once, before the loop - warns early if class isn't MAMMAL
 
@@ -593,7 +610,8 @@ run_metabolic_chamber <- function(endo_inputs, exe_path,
                 file.path(save_dir, sprintf("%s_alomvars.dat", scenario_id)), overwrite = TRUE)
     }
 
-    run_result <- run_endotherm_model(scenario_dir, exe_path = exe_path, sysname = sysname)
+    run_result <- run_endotherm_model(scenario_dir, exe_path = exe_path, sysname = sysname,
+                                      headless = headless, wineprefix = wineprefix)
 
     log_rows[[scenario_id]] <- data.frame(
       scenario  = scenario_id,
@@ -1032,7 +1050,9 @@ run_endo_big_nichemap <- function(tile_map, valid_cells_mask, dates, microclim_d
   dir.create(node_exe_dir)
   on.exit(unlink(node_exe_dir, recursive = TRUE), add = TRUE)
   node_exe_path <- file.path(node_exe_dir, basename(exe_path))
-  file.copy(exe_path, node_exe_path)
+  if (!file.copy(exe_path, node_exe_path)) {
+    stop(sprintf("Failed to copy exe from %s to node-local path %s", exe_path, node_exe_path))
+  }
 
   all_logs <- list()
 
@@ -1057,8 +1077,17 @@ run_endo_big_nichemap <- function(tile_map, valid_cells_mask, dates, microclim_d
 
     abv_path <- .endo_microclim_path(microclim_dir, study_area, period_label, tile_id, "AbvGrd", file_fmt)
     blw_path <- .endo_microclim_path(microclim_dir, study_area, period_label, tile_id, "BlwGrd", file_fmt)
-    if (!file.exists(abv_path)) stop(sprintf("AbvGrd microclimate tile not found:\n  %s", abv_path))
-    if (!file.exists(blw_path)) stop(sprintf("BlwGrd microclimate tile not found:\n  %s", blw_path))
+    # run_micro_big_nichemap() defaults to file_fmt = "h5", but this function
+    # only reads "nc" - point that out explicitly if an .h5 sibling is present.
+    .h5_hint <- function(p) {
+      if (file.exists(sub("\\.nc$", ".h5", p)))
+        " (found an .h5 file at that location instead - run_endo_big_nichemap() only supports file_fmt = \"nc\"; re-run the microclimate pipeline with file_fmt = \"nc\")"
+      else ""
+    }
+    if (!file.exists(abv_path))
+      stop(sprintf("AbvGrd microclimate tile not found:\n  %s%s", abv_path, .h5_hint(abv_path)))
+    if (!file.exists(blw_path))
+      stop(sprintf("BlwGrd microclimate tile not found:\n  %s%s", blw_path, .h5_hint(blw_path)))
 
     snow_path <- NULL
     if (snow) {
@@ -1090,6 +1119,43 @@ run_endo_big_nichemap <- function(tile_map, valid_cells_mask, dates, microclim_d
                      row.names = FALSE)
 
     nc_abv <- ncdf4::nc_open(abv_path)
+    # tannul (mean annual temperature) is the mean over whatever time range is
+    # actually in this file, so refuse a file that only covers part of the
+    # period (e.g. a winter-only corrected tile) rather than silently
+    # returning a season-biased "annual" mean.
+    # The corrected tile comes from an external pipeline, so don't assume
+    # write_tile()'s exact "hours since <...T...> UTC" spelling: accept the
+    # CF-style space separator too, and fail with a readable message rather
+    # than an NA comparison if neither parses.
+    abv_time_units <- if (is.null(nc_abv$dim$time)) NA_character_ else nc_abv$dim$time$units
+    abv_origin_str <- sub("\\s+UTC$", "", trimws(sub("hours since\\s+", "", abv_time_units)))
+    abv_origin <- as.POSIXct(abv_origin_str, tz = "UTC", format = "%Y-%m-%dT%H:%M:%S")
+    if (is.na(abv_origin))
+      abv_origin <- as.POSIXct(abv_origin_str, tz = "UTC", format = "%Y-%m-%d %H:%M:%S")
+    if (is.na(abv_origin)) {
+      ncdf4::nc_close(nc_abv)
+      stop(sprintf(
+        paste0("AbvGrd tile %s has no usable hourly time axis (time units: '%s'). ",
+               "Expected a 'time' dimension with units like ",
+               "'hours since YYYY-MM-DDTHH:MM:SS UTC'."),
+        abv_path, abv_time_units
+      ))
+    }
+    abv_time_range <- range(abv_origin + nc_abv$dim$time$vals * 3600)
+    expected_days <- as.numeric(difftime(date_ranges$End_Dates[d_idx],
+                                         date_ranges$Start_Dates[d_idx], units = "days")) + 1
+    actual_days <- as.numeric(difftime(abv_time_range[2], abv_time_range[1], units = "days"))
+    if (actual_days < 0.9 * expected_days) {
+      ncdf4::nc_close(nc_abv)
+      stop(sprintf(
+        paste0("AbvGrd tile %s covers only %.0f days, but period %s..%s expects %.0f days. ",
+               "tannul (mean annual temperature) requires the file to span the full period, ",
+               "not a winter-only subset - check the upstream statistical-correction ",
+               "pipeline's output."),
+        abv_path, actual_days, date_ranges$Start_Dates[d_idx],
+        date_ranges$End_Dates[d_idx], expected_days
+      ))
+    }
     tz_full <- aperm(ncdf4::ncvar_get(nc_abv, "Tz"), c(2, 1, 3))
     ncdf4::nc_close(nc_abv)
     tannul_mat <- apply(tz_full, c(1, 2), mean, na.rm = TRUE)
@@ -1125,14 +1191,29 @@ run_endo_big_nichemap <- function(tile_map, valid_cells_mask, dates, microclim_d
           surfwet <- rep(surfwet_dry, length(chunk_dates))
           if (snow) {
             nc_snow <- ncdf4::nc_open(snow_path)
-            snow_origin_str <- sub("\\s+UTC$", "", trimws(sub("hours since\\s+", "", nc_snow$dim$time$units)))
-            snow_origin <- as.POSIXct(snow_origin_str, tz = "UTC", format = "%Y-%m-%dT%H:%M:%S")
-            tme_snow <- snow_origin + nc_snow$dim$time$vals * 3600
-            s_idx <- which(as.Date(tme_snow) >= min(chunk_dates) & as.Date(tme_snow) <= max(chunk_dates))
-            swe <- ncdf4::ncvar_get(nc_snow, "totalSWE", start = c(cell$c_idx, cell$r_idx, s_idx[1]),
-                                    count = c(1, 1, length(s_idx)))
-            ncdf4::nc_close(nc_snow)
-            day_of_swe <- as.Date(tme_snow[s_idx])
+            # tryCatch(finally = ) - not on.exit() - so the handle is closed on
+            # both the success and the error path of THIS chunk. on.exit() here
+            # would register on the enclosing cell_fn frame and only fire once
+            # all chunks for the cell are done, leaking every earlier chunk's
+            # handle.
+            snow_read <- tryCatch({
+              snow_origin_str <- sub("\\s+UTC$", "", trimws(sub("hours since\\s+", "", nc_snow$dim$time$units)))
+              snow_origin <- as.POSIXct(snow_origin_str, tz = "UTC", format = "%Y-%m-%dT%H:%M:%S")
+              tme_snow <- snow_origin + nc_snow$dim$time$vals * 3600
+              s_idx <- which(as.Date(tme_snow) >= min(chunk_dates) & as.Date(tme_snow) <= max(chunk_dates))
+              if (length(s_idx) == 0) {
+                stop(sprintf("Snow tile %s has no timesteps covering %s..%s", snow_path,
+                             min(chunk_dates), max(chunk_dates)))
+              }
+              list(
+                swe = ncdf4::ncvar_get(nc_snow, "totalSWE",
+                                       start = c(cell$c_idx, cell$r_idx, s_idx[1]),
+                                       count = c(1, 1, length(s_idx))),
+                day_of_swe = as.Date(tme_snow[s_idx])
+              )
+            }, finally = ncdf4::nc_close(nc_snow))
+            swe <- snow_read$swe
+            day_of_swe <- snow_read$day_of_swe
             surfwet <- vapply(chunk_dates, function(d) {
               hrs <- swe[day_of_swe == d]
               if (length(hrs) > 0 && any(hrs > 0, na.rm = TRUE)) 100 else surfwet_dry
