@@ -876,6 +876,18 @@ plot.metchamber_result <- function(x, ...) {
   lapply(seq_len(n_chunks), function(k) (bounds[k] + 1):bounds[k + 1])
 }
 
+.endo_period_label <- function(start_date, end_date) {
+  sprintf("%s_to_%s", format(start_date, "%Y%m%d"), format(end_date, "%Y%m%d"))
+}
+
+.endo_variable_column <- function(variable) {
+  variable <- match.arg(variable, c("metabolic_rate", "water_loss"))
+  list(
+    metabolic_rate = list(column = "MET.W.",   units = "W",     long_name = "Predicted metabolic rate"),
+    water_loss     = list(column = "EVP.G.S.", units = "g s-1", long_name = "Predicted evaporative water loss")
+  )[[variable]]
+}
+
 .endo_tile_ids_in_mask <- function(tile_map, valid_cells_mask) {
   tm <- terra::rast(tile_map)
   vm <- terra::rast(valid_cells_mask)
@@ -1060,9 +1072,7 @@ run_endo_big_nichemap <- function(tile_map, valid_cells_mask, dates, microclim_d
     tile_id <- task_combos$tile_id[k]
     d_idx   <- task_combos$date_idx[k]
 
-    period_label <- sprintf("%s_to_%s",
-                            format(date_ranges$Start_Dates[d_idx], "%Y%m%d"),
-                            format(date_ranges$End_Dates[d_idx], "%Y%m%d"))
+    period_label <- .endo_period_label(date_ranges$Start_Dates[d_idx], date_ranges$End_Dates[d_idx])
     sim_dates <- seq(date_ranges$Sim_Start[d_idx], date_ranges$Sim_End[d_idx], by = "day")
     n_days <- length(sim_dates)
     .endo_validate_timevar_lengths(time_varying, n_days)
