@@ -970,6 +970,30 @@ plot.metchamber_result <- function(x, ...) {
   invisible(TRUE)
 }
 
+.endo_assemble_cell_series <- function(chunk_files_df, sim_start, sim_end, variable_col) {
+  expected_hours <- seq(as.POSIXct(sim_start, tz = "UTC"),
+                        as.POSIXct(sim_end, tz = "UTC") + 23 * 3600,
+                        by = "hour")
+  values <- rep(NA_real_, length(expected_hours))
+
+  if (nrow(chunk_files_df) > 0) {
+    chunk_files_df <- chunk_files_df[order(chunk_files_df$chunk_start), ]
+    for (i in seq_len(nrow(chunk_files_df))) {
+      chunk_data <- tryCatch(
+        .endo_read_hourplot_chunk(chunk_files_df$path[i], chunk_files_df$chunk_start[i],
+                                  chunk_files_df$chunk_end[i], variable_col),
+        error = function(e) NULL
+      )
+      if (is.null(chunk_data) || nrow(chunk_data) == 0) next
+      idx <- match(chunk_data$timestamp, expected_hours)
+      ok <- !is.na(idx)
+      values[idx[ok]] <- chunk_data$value[ok]
+    }
+  }
+
+  list(timestamps = expected_hours, values = values, has_data = any(!is.na(values)))
+}
+
 .endo_tile_ids_in_mask <- function(tile_map, valid_cells_mask) {
   tm <- terra::rast(tile_map)
   vm <- terra::rast(valid_cells_mask)
