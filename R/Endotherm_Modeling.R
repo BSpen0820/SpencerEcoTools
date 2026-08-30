@@ -1485,3 +1485,209 @@ run_endo_big_nichemap <- function(tile_map, valid_cells_mask, dates, microclim_d
 
   invisible(do.call(rbind, all_logs))
 }
+
+#' Reconstruct a raster from run_endo_big_nichemap() or the pre-existing
+#' hand-run Endotherm workflow's HOURPLOT output
+#'
+#' Concatenates each cell's \code{HOURPLOT_chunk*.csv} files into one
+#' continuous hourly time series and places every cell's series onto a
+#' \code{tile_map}-templated NetCDF raster. Robust to both the pre-existing
+#' hand-run workflow's directory layout and \code{\link{run_endo_big_nichemap}}'s
+#' layout - file discovery never depends on what sits above
+#' \code{Tile_NNN/Cell_CCCCCC/} in the directory tree.
+#'
+#' @param root_dir Directory to recursively search for manifest and
+#'   \code{HOURPLOT_chunk*.csv} files. Works with either directory layout.
+#'   Must point at a single scenario's output - if two scenario trees
+#'   sharing the same tile/cell/chunk-start are both reachable under
+#'   \code{root_dir}, this function \code{stop()}s rather than silently
+#'   picking one.
+#' @param tile_map \code{SpatRaster} or file path. Used purely as a spatial
+#'   template (extent, resolution, CRS) - placement uses each cell's
+#'   manifest-recorded \code{x_idx}/\code{y_idx}, not tile-ID values.
+#' @param dates Either a \code{data.frame} with columns \code{Start_Dates}/
+#'   \code{End_Dates} (optionally \code{Sim_Start}/\code{Sim_End}) or a
+#'   length-2 \code{Date} vector - same convention as
+#'   \code{\link{run_endo_big_nichemap}}. One row produces one output file.
+#'   \strong{Reconstructing the pre-existing hand-run workflow's output
+#'   requires passing \code{Sim_Start}/\code{Sim_End} explicitly}: its
+#'   manifests' \code{Start_Dates}/\code{End_Dates} span the full year, while
+#'   the actual chunk files only cover the real simulation window (e.g.
+#'   Dec-Apr) - omitting \code{Sim_Start}/\code{Sim_End} defaults them to
+#'   \code{Start_Dates}/\code{End_Dates} (per
+#'   \code{\link{run_endo_big_nichemap}}'s own convention), producing an
+#'   axis that is mostly NA by construction, not by data loss.
+#' @param variable Character, \code{"metabolic_rate"} or \code{"water_loss"} -
+#'   selects the trimmed HOURPLOT's \code{MET(W)} or \code{EVP(G/S)} column.
+#' @param output_dir Root output folder.
+#' @param study_area Character or \code{NULL}. Prefixes output filenames.
+#'   Default \code{NULL}.
+#' @param parallel Logical. If \code{TRUE}, cells are assembled via
+#'   \code{future_lapply()} with \code{ncores} workers; the NetCDF write
+#'   itself always happens sequentially afterward. Default \code{FALSE}.
+#' @param ncores Integer. Workers to use when \code{parallel = TRUE}.
+#'   Default \code{2}.
+#' @param compression Integer 0-9. Gzip compression level. Default \code{4L}.
+#'
+#' @return Invisibly, a \code{data.frame} with one row per requested period:
+#'   \code{period_label, output_path, cells_placed} (cells with at least one
+#'   real, non-NA hour actually written - not merely cells attempted),
+#'   \code{cells_with_gaps} (of those placed, cells with a partial NA gap).
+#'
+#' @details
+#' HOURPLOT rows with \code{HR == 24} are always dropped before
+#' timestamping - empirically verified (see the design spec) to be a
+#' duplicate of that day's own hour-0 climate inputs, re-run through the
+#' model's continued physiological state, not real new data. Every kept
+#' row's timestamp is computed from its position in the file, never from
+#' the \code{HR}/\code{MO}/\code{DEP} columns. A row-count mismatch against
+#' a chunk's own claimed date range is treated as a read failure (that
+#' chunk's hours become NA), never silently misaligned data.
+#'
+#' The two source workflows write structurally different files, not just a
+#' different directory layout - the pre-existing workflow's chunk files are
+#' raw exe output (metadata line, then header, ~89 columns);
+#' \code{\link{run_endo_big_nichemap}}'s own output has already been read,
+#' trimmed to 8 columns, and rewritten (header on line 1, no metadata line).
+#' This function detects which format a given file is automatically.
+#'
+#' A cell with no covering chunk data for a period is entirely \code{NA} in
+#' the output and is not counted in \code{cells_placed} - never fatal. Only
+#' a period with no manifests, or no HOURPLOT chunk files overlapping that
+#' period's actual simulation window, is a \code{stop()} - a stray HOURPLOT
+#' file from an unrelated period elsewhere under \code{root_dir} does not
+#' count as "something was found."
+#'
+#' @seealso \code{\link{run_endo_big_nichemap}}
+#' @export
+reconstruct_endo_raster <- function(root_dir, tile_map, dates,
+                                    variable    = c("metabolic_rate", "water_loss"),
+                                    output_dir,
+                                    study_area  = NULL,
+                                    parallel    = FALSE,
+                                    ncores      = 2,
+                                    compression = 4L) {
+  variable <- match.arg(variable)
+  var_meta <- .endo_variable_column(variable)
+  variable_col <- var_meta$column
+
+  date_ranges <- .normalize_dates_with_sim_window(dates)
+  tile_map_r  <- terra::rast(tile_map)
+
+  dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
+
+  # Set up the parallel plan ONCE for the whole call, not per period - both
+  # to avoid re-spawning multisession workers every iteration and because
+  # on.exit() inside a loop registers on the function's own frame, not per
+  # iteration, and would accumulate/leak across periods.
+  if (parallel) {
+    future::plan(future::multisession, workers = ncores)
+    on.exit(future::plan(future::sequential), add = TRUE)
+  }
+
+  log_rows <- list()
+
+  for (d_idx in seq_len(nrow(date_ranges))) {
+    period_label <- .endo_period_label(date_ranges$Start_Dates[d_idx], date_ranges$End_Dates[d_idx])
+    sim_start <- date_ranges$Sim_Start[d_idx]
+    sim_end   <- date_ranges$Sim_End[d_idx]
+
+    manifests <- .endo_discover_manifests(root_dir, period_label)
+    if (nrow(manifests) == 0) {
+      stop(sprintf("No manifests found under %s for period %s - check root_dir and dates.",
+                   root_dir, period_label))
+    }
+
+    # Period-scoped: only chunks overlapping THIS period's simulation window
+    # count - "are there any HOURPLOT files anywhere under root_dir" is not
+    # sufficient, since files from an unrelated period would otherwise mask
+    # a real "nothing found for this period" condition.
+    hourplot_files <- .endo_discover_hourplot_files(root_dir)
+    hourplot_files <- hourplot_files[
+      hourplot_files$chunk_start <= sim_end & hourplot_files$chunk_end >= sim_start,
+    ]
+    if (nrow(hourplot_files) == 0) {
+      stop(sprintf(
+        "No HOURPLOT chunk files overlapping %s..%s found under %s for period %s - check root_dir and dates.",
+        sim_start, sim_end, root_dir, period_label
+      ))
+    }
+    .endo_check_duplicate_chunks(hourplot_files)
+
+    cell_list <- do.call(rbind, lapply(seq_len(nrow(manifests)), function(i) {
+      m <- utils::read.csv(manifests$path[i])
+      m$tile_id <- manifests$tile_id[i]
+      m
+    }))
+
+    # cellFromXY() returns NA for any point outside tile_map_r's extent -
+    # reuse that single call both to detect out-of-extent cells and, for the
+    # rest, to avoid recomputing it later when placing values.
+    cell_list$cell_num <- terra::cellFromXY(tile_map_r, cbind(cell_list$x_idx, cell_list$y_idx))
+    out_of_extent <- is.na(cell_list$cell_num)
+    if (any(out_of_extent)) {
+      warning(sprintf("%d manifest cell(s) fall outside tile_map's extent for period %s - skipped.",
+                      sum(out_of_extent), period_label))
+      cell_list <- cell_list[!out_of_extent, , drop = FALSE]
+    }
+
+    expected_hours <- seq(as.POSIXct(sim_start, tz = "UTC"),
+                          as.POSIXct(sim_end, tz = "UTC") + 23 * 3600, by = "hour")
+
+    output_path <- file.path(output_dir, sprintf(
+      "%s%s_%s.nc",
+      if (!is.null(study_area)) paste0(study_area, "_") else "",
+      variable, period_label
+    ))
+
+    cell_fn <- function(i) {
+      cell <- cell_list[i, ]
+      chunks_i <- hourplot_files[
+        hourplot_files$tile_id == cell$tile_id & hourplot_files$cell_id == cell$cell_id &
+        hourplot_files$chunk_start <= sim_end & hourplot_files$chunk_end >= sim_start,
+      ]
+      series <- .endo_assemble_cell_series(chunks_i, sim_start, sim_end, variable_col)
+      list(cell_num = cell$cell_num, values = series$values, has_data = series$has_data)
+    }
+
+    cell_results <- if (parallel) {
+      future.apply::future_lapply(seq_len(nrow(cell_list)), cell_fn, future.seed = TRUE)
+    } else {
+      lapply(seq_len(nrow(cell_list)), cell_fn)
+    }
+
+    n_placed <- 0L
+    n_gapped <- 0L
+    # nc <- NULL first: `exists("nc", inherits = FALSE)` in `finally` below
+    # checks the FUNCTION's frame, not this loop iteration's - without
+    # resetting it here, a failure early in period 2's tryCatch (before its
+    # own .endo_create_raster_nc() call) would see period 1's already-closed
+    # connection object still bound to `nc` and attempt to close it again.
+    nc <- NULL
+    tryCatch({
+      nc <- .endo_create_raster_nc(output_path, tile_map_r, expected_hours, variable, var_meta, compression)
+      for (res in cell_results) {
+        rc <- terra::rowColFromCell(tile_map_r, res$cell_num)
+        .endo_write_cell_to_nc(nc, variable, rc[1, 1], rc[1, 2], res$values)
+        # cells_placed counts cells with at least one REAL hour, not merely
+        # cells attempted - a 100%-NA cell must not count as "placed", or a
+        # complete reconstruction failure would look identical to a full
+        # success in this log.
+        if (res$has_data) {
+          n_placed <- n_placed + 1L
+          if (any(is.na(res$values))) n_gapped <- n_gapped + 1L
+        }
+      }
+    }, finally = {
+      if (!is.null(nc)) tryCatch(ncdf4::nc_close(nc), error = function(e) NULL)
+    })
+
+    log_rows[[d_idx]] <- data.frame(
+      period_label = period_label, output_path = output_path,
+      cells_placed = n_placed, cells_with_gaps = n_gapped,
+      stringsAsFactors = FALSE
+    )
+  }
+
+  invisible(do.call(rbind, log_rows))
+}
