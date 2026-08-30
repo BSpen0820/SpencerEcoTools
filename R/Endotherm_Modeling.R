@@ -994,6 +994,76 @@ plot.metchamber_result <- function(x, ...) {
   list(timestamps = expected_hours, values = values, has_data = any(!is.na(values)))
 }
 
+.endo_create_raster_nc <- function(out_path, tile_map_r, time_axis, variable, variable_meta, compression) {
+  ncol_ <- terra::ncol(tile_map_r)
+  nrow_ <- terra::nrow(tile_map_r)
+
+  x_vals <- terra::xFromCol(tile_map_r, seq_len(ncol_))
+  y_vals <- terra::yFromRow(tile_map_r, seq_len(nrow_))
+  is_lonlat <- terra::is.lonlat(tile_map_r)
+
+  t_origin <- format(time_axis[1], "%Y-%m-%dT%H:%M:%S", tz = "UTC")
+  t_vals <- as.numeric(difftime(time_axis, time_axis[1], units = "hours"))
+
+  if (is_lonlat) {
+    dim_x <- ncdf4::ncdim_def("lon", "degrees_east", x_vals, longname = "longitude", create_dimvar = TRUE)
+    dim_y <- ncdf4::ncdim_def("lat", "degrees_north", y_vals, longname = "latitude", create_dimvar = TRUE)
+  } else {
+    dim_x <- ncdf4::ncdim_def("x", "m", x_vals, longname = "x coordinate", create_dimvar = TRUE)
+    dim_y <- ncdf4::ncdim_def("y", "m", y_vals, longname = "y coordinate", create_dimvar = TRUE)
+  }
+  # unlim = FALSE: the time axis length is fully known at creation time, so
+  # no record dimension is needed. An unlimited dimension here (matching
+  # write_tile()'s pattern, which is safe because it writes its whole array
+  # in one call) combined with per-cell strided writes and default chunking
+  # is catastrophically slow - benchmarked ~2335x slower (415s vs 0.2s for a
+  # 120x120 grid / 3400 hours / 300 cells) because HDF5 must
+  # read-modify-write across many storage chunks per cell write.
+  dim_time <- ncdf4::ncdim_def("time", sprintf("hours since %s UTC", t_origin), t_vals,
+                               unlim = FALSE, longname = "time", calendar = "standard")
+
+  var_crs  <- ncdf4::ncvar_def("crs", "", list(), prec = "integer", longname = "CRS definition")
+  # chunksizes = c(1, 1, ntime): each cell's full time series lives in
+  # exactly one HDF5 storage chunk, so a per-cell ncvar_put() below never
+  # touches more than one chunk. Do not omit this - it is what makes the
+  # per-cell write pattern viable at all.
+  var_data <- ncdf4::ncvar_def(variable, variable_meta$units, list(dim_x, dim_y, dim_time),
+                               missval = -9999, longname = variable_meta$long_name,
+                               compression = compression, prec = "double",
+                               chunksizes = c(1, 1, length(time_axis)))
+
+  nc <- ncdf4::nc_create(out_path, list(var_crs, var_data))
+  ncdf4::ncvar_put(nc, var_crs, 0L)
+
+  crs_wkt <- terra::crs(tile_map_r, proj = FALSE)
+  ncdf4::ncatt_put(nc, "crs", "crs_wkt", crs_wkt)
+  ncdf4::ncatt_put(nc, "crs", "grid_mapping_name",
+                   if (is_lonlat) "latitude_longitude" else "projected_coordinate_system")
+
+  if (is_lonlat) {
+    ncdf4::ncatt_put(nc, "lon", "standard_name", "longitude"); ncdf4::ncatt_put(nc, "lon", "axis", "X")
+    ncdf4::ncatt_put(nc, "lat", "standard_name", "latitude");  ncdf4::ncatt_put(nc, "lat", "axis", "Y")
+  } else {
+    ncdf4::ncatt_put(nc, "x", "standard_name", "projection_x_coordinate"); ncdf4::ncatt_put(nc, "x", "axis", "X")
+    ncdf4::ncatt_put(nc, "y", "standard_name", "projection_y_coordinate"); ncdf4::ncatt_put(nc, "y", "axis", "Y")
+  }
+
+  ncdf4::ncatt_put(nc, variable, "grid_mapping", "crs")
+  ncdf4::ncatt_put(nc, variable, "coordinates", if (is_lonlat) "lon lat" else "x y")
+  ncdf4::ncatt_put(nc, 0, "Conventions", "CF-1.8")
+  ncdf4::ncatt_put(nc, 0, "history", sprintf(
+    "Created %s by R %s / SpencerEcoTools::reconstruct_endo_raster()",
+    format(Sys.time(), "%Y-%m-%dT%H:%M:%S"), paste(R.version$major, R.version$minor, sep = ".")
+  ))
+
+  nc
+}
+
+.endo_write_cell_to_nc <- function(nc, variable, row, col, values) {
+  values[is.na(values)] <- -9999
+  ncdf4::ncvar_put(nc, variable, values, start = c(col, row, 1), count = c(1, 1, length(values)))
+}
+
 .endo_tile_ids_in_mask <- function(tile_map, valid_cells_mask) {
   tm <- terra::rast(tile_map)
   vm <- terra::rast(valid_cells_mask)
