@@ -1530,9 +1530,11 @@ run_endo_big_nichemap <- function(tile_map, valid_cells_mask, dates, microclim_d
 #' @param compression Integer 0-9. Gzip compression level. Default \code{4L}.
 #'
 #' @return Invisibly, a \code{data.frame} with one row per requested period:
-#'   \code{period_label, output_path, cells_placed} (cells with at least one
-#'   real, non-NA hour actually written - not merely cells attempted),
-#'   \code{cells_with_gaps} (of those placed, cells with a partial NA gap).
+#'   \code{period_label, output_path, cells_attempted} (manifest cells that
+#'   were in tile_map's extent and had reconstruction attempted),
+#'   \code{cells_placed} (of those, cells with at least one real, non-NA hour
+#'   actually written - not merely attempted), \code{cells_with_gaps} (of
+#'   those placed, cells with a partial NA gap).
 #'
 #' @details
 #' HOURPLOT rows with \code{HR == 24} are always dropped before
@@ -1684,7 +1686,8 @@ reconstruct_endo_raster <- function(root_dir, tile_map, dates,
 
     log_rows[[d_idx]] <- data.frame(
       period_label = period_label, output_path = output_path,
-      cells_placed = n_placed, cells_with_gaps = n_gapped,
+      cells_attempted = nrow(cell_list), cells_placed = n_placed,
+      cells_with_gaps = n_gapped,
       stringsAsFactors = FALSE
     )
   }

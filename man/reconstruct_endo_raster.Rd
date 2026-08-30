@@ -61,9 +61,11 @@ Default \code{2}.}
 }
 \value{
 Invisibly, a \code{data.frame} with one row per requested period:
-\code{period_label, output_path, cells_placed} (cells with at least one
-real, non-NA hour actually written - not merely cells attempted),
-\code{cells_with_gaps} (of those placed, cells with a partial NA gap).
+\code{period_label, output_path, cells_attempted} (manifest cells that
+were in tile_map's extent and had reconstruction attempted),
+\code{cells_placed} (of those, cells with at least one real, non-NA hour
+actually written - not merely attempted), \code{cells_with_gaps} (of
+those placed, cells with a partial NA gap).
 }
 \description{
 Concatenates each cell's \code{HOURPLOT_chunk*.csv} files into one
