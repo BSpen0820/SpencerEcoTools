@@ -1652,6 +1652,12 @@ reconstruct_endo_raster <- function(root_dir, tile_map, dates,
       list(cell_num = cell$cell_num, values = series$values, has_data = series$has_data)
     }
 
+    # Known scaling limitation (found by final review, not yet fixed): this
+    # materializes every cell's full time series in memory before the first
+    # NetCDF write (~59-155 MB/tile at production scale depending on window
+    # length, times tile count; worse under parallel=TRUE). A future revision
+    # should hoist .endo_create_raster_nc() above this block and process
+    # cells in batches, writing and discarding each batch before the next.
     cell_results <- if (parallel) {
       future.apply::future_lapply(seq_len(nrow(cell_list)), cell_fn, future.seed = TRUE)
     } else {
