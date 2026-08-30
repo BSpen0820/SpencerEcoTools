@@ -915,6 +915,61 @@ plot.metchamber_result <- function(x, ...) {
   data.frame(timestamp = timestamp, value = hp[[variable_col]])
 }
 
+.endo_discover_hourplot_files <- function(root_dir) {
+  paths <- list.files(root_dir, pattern = "^HOURPLOT_chunk.*\\.csv$",
+                      recursive = TRUE, full.names = TRUE)
+  paths <- gsub("\\\\", "/", paths)
+
+  pat <- "Tile_([0-9]+)/Cell_0*([0-9]+)/HOURPLOT_chunk[0-9]+_([0-9]{8})_([0-9]{8})\\.csv$"
+  m <- regmatches(paths, regexec(pat, paths))
+  keep <- vapply(m, function(x) length(x) == 5, logical(1))
+
+  if (!any(keep)) {
+    return(data.frame(tile_id = integer(0), cell_id = integer(0),
+                      chunk_start = as.Date(character(0)), chunk_end = as.Date(character(0)),
+                      path = character(0), stringsAsFactors = FALSE))
+  }
+
+  m <- m[keep]
+  data.frame(
+    tile_id     = as.integer(vapply(m, `[[`, character(1), 2)),
+    cell_id     = as.integer(vapply(m, `[[`, character(1), 3)),
+    chunk_start = as.Date(vapply(m, `[[`, character(1), 4), format = "%Y%m%d"),
+    chunk_end   = as.Date(vapply(m, `[[`, character(1), 5), format = "%Y%m%d"),
+    path        = paths[keep],
+    stringsAsFactors = FALSE
+  )
+}
+
+.endo_discover_manifests <- function(root_dir, period_label) {
+  paths <- list.files(root_dir, pattern = "manifest.*\\.csv$",
+                      recursive = TRUE, full.names = TRUE)
+  paths <- gsub("\\\\", "/", paths)
+  paths <- paths[grepl(period_label, paths, fixed = TRUE)]
+  paths <- paths[grepl("Tile_[0-9]+", basename(paths))]  # avoid NA + coercion warning below
+
+  if (length(paths) == 0) {
+    return(data.frame(tile_id = integer(0), path = character(0), stringsAsFactors = FALSE))
+  }
+
+  tile_id <- as.integer(sub(".*Tile_([0-9]+).*", "\\1", basename(paths)))
+  data.frame(tile_id = tile_id, path = paths, stringsAsFactors = FALSE)
+}
+
+.endo_check_duplicate_chunks <- function(hourplot_files) {
+  if (nrow(hourplot_files) == 0) return(invisible(TRUE))
+  key <- paste(hourplot_files$tile_id, hourplot_files$cell_id, hourplot_files$chunk_start, sep = "|")
+  dup_keys <- unique(key[duplicated(key)])
+  if (length(dup_keys) > 0) {
+    dup_paths <- hourplot_files$path[key %in% dup_keys]
+    stop(sprintf(
+      "Found duplicate (tile_id, cell_id, chunk_start) chunk files under root_dir - root_dir must point at a single scenario's output. Colliding paths:\n  %s",
+      paste(dup_paths, collapse = "\n  ")
+    ))
+  }
+  invisible(TRUE)
+}
+
 .endo_tile_ids_in_mask <- function(tile_map, valid_cells_mask) {
   tm <- terra::rast(tile_map)
   vm <- terra::rast(valid_cells_mask)
