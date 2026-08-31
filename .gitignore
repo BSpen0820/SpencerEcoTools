@@ -8,3 +8,4 @@ docs/
 data-raw/
 ._*
 .claude/settings.local.json
+HPC_workflow/

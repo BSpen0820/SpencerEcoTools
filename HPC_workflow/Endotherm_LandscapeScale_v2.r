@@ -6,7 +6,7 @@
 # SUBSET RUN: the full production run (both scenarios, all tiles, all years)
 # takes multiple days. This copy runs climatology only, restricted to
 # `subset_n_tiles` tiles (the first N tile IDs found in the masked domain),
-# for a fast smoke test. Set subset_n_tiles <- Inf below (or pass
+# for a fast smoke test. Set I es <- Inf below (or pass
 # --subset_n_tiles=Inf) to fall back to the full climatology domain; add the
 # year-specific block back in (see git history) once you're ready for a full
 # run - it was removed here to keep this variant single-purpose.
