@@ -227,6 +227,11 @@ cells_for_array_task <- function(valid_cell_indices, clust_array_arg = NULL, clu
 #'   FALSE}, this function \code{stop()}s if \code{Sys.getenv("DISPLAY")} is
 #'   empty, rather than attempting the call and failing obscurely later.
 #'   Ignored on Windows.
+#' @param timeout Numeric. Maximum time in seconds to let the exe run before
+#'   it is killed. Default \code{0} means no timeout. Passed straight through
+#'   to \code{\link[base]{system2}}/\code{\link[base]{system}}, which set a
+#'   non-zero exit status when the process is killed for exceeding it - a
+#'   guard against a hung exe never producing \code{ErrorMsgs.dat}.
 #'
 #' @return A list with elements \code{success} (logical) and \code{message}
 #'   (character, the contents of \code{ErrorMsgs.dat} plus the process exit
@@ -244,7 +249,8 @@ cells_for_array_task <- function(valid_cell_indices, clust_array_arg = NULL, clu
 #' @export
 run_endotherm_model <- function(workspace_dir, exe_path,
                                  sysname = Sys.info()[["sysname"]],
-                                 wineprefix = NULL, headless = FALSE) {
+                                 wineprefix = NULL, headless = FALSE,
+                                 timeout = 0) {
   if (!file.exists(exe_path)) {
     return(list(success = FALSE, message = sprintf("exe not found at %s", exe_path)))
   }
@@ -261,8 +267,10 @@ run_endotherm_model <- function(workspace_dir, exe_path,
   setwd(workspace_dir)
 
   if (identical(sysname, "Windows")) {
-    system2(exe_path, input = c("alomvars.dat", "endo.dat"), stdout = TRUE, stderr = TRUE)
-    status <- 0L
+    exe_output <- system2(exe_path, input = c("alomvars.dat", "endo.dat"), stdout = TRUE, stderr = TRUE,
+                           timeout = timeout)
+    status <- attr(exe_output, "status")
+    if (is.null(status)) status <- 0L
   } else {
     wine <- Sys.which("wine")
     xvfb <- Sys.which("xvfb-run")
@@ -301,7 +309,7 @@ run_endotherm_model <- function(workspace_dir, exe_path,
         "2>", shQuote(stderr_log)
       )
     }
-    status <- suppressWarnings(system(command))
+    status <- suppressWarnings(system(command, timeout = timeout))
   }
 
   error_msgs_path <- file.path(workspace_dir, "ErrorMsgs.dat")
@@ -1165,6 +1173,9 @@ plot.metchamber_result <- function(x, ...) {
 #'   \code{file_fmt = "nc"}.
 #' @param headless Logical, passed to \code{\link{init_wine_prefix}}/
 #'   \code{\link{run_endotherm_model}}. Default \code{FALSE}.
+#' @param timeout Numeric, passed to \code{\link{run_endotherm_model}} for
+#'   every chunk. Maximum time in seconds to let a single exe invocation run
+#'   before it is killed. Default \code{0} means no timeout.
 #' @param parallel Logical. If \code{TRUE}, cells within a tile are processed
 #'   via \code{future_lapply()} with \code{ncores} workers. Default
 #'   \code{FALSE}.
@@ -1195,6 +1206,7 @@ run_endo_big_nichemap <- function(tile_map, valid_cells_mask, dates, microclim_d
                                   clamp_bounds  = micro_to_csv_clamp_defaults(),
                                   file_fmt      = "nc",
                                   headless      = FALSE,
+                                  timeout       = 0,
                                   parallel      = FALSE,
                                   ncores        = 2,
                                   ...) {
@@ -1424,7 +1436,8 @@ run_endo_big_nichemap <- function(tile_map, valid_cells_mask, dates, microclim_d
           chunk_endo_inputs <- .endo_apply_timevar(chunk_endo_inputs, time_varying, idx)
           do.call(write_endotherm_inputs, c(list(output_dir = ws), chunk_endo_inputs))
 
-          exe_result <- run_endotherm_model(ws, exe_path = node_exe_path, wineprefix = wineprefix, headless = headless)
+          exe_result <- run_endotherm_model(ws, exe_path = node_exe_path, wineprefix = wineprefix,
+                                             headless = headless, timeout = timeout)
 
           if (!exe_result$success) {
             debug_dir <- file.path(output_dir, "Debug_CSVs",

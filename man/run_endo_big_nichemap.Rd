@@ -24,6 +24,7 @@ run_endo_big_nichemap(
   clamp_bounds = micro_to_csv_clamp_defaults(),
   file_fmt = "nc",
   headless = FALSE,
+  timeout = 0,
   parallel = FALSE,
   ncores = 2,
   ...
@@ -113,6 +114,10 @@ therefore have been written with \code{\link{run_micro_big_nichemap}}'s
 
 \item{headless}{Logical, passed to \code{\link{init_wine_prefix}}/
 \code{\link{run_endotherm_model}}. Default \code{FALSE}.}
+
+\item{timeout}{Numeric, passed to \code{\link{run_endotherm_model}} for
+every chunk. Maximum time in seconds to let a single exe invocation run
+before it is killed. Default \code{0} means no timeout.}
 
 \item{parallel}{Logical. If \code{TRUE}, cells within a tile are processed
 via \code{future_lapply()} with \code{ncores} workers. Default

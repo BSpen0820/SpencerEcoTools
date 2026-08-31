@@ -9,7 +9,8 @@ run_endotherm_model(
   exe_path,
   sysname = Sys.info()[["sysname"]],
   wineprefix = NULL,
-  headless = FALSE
+  headless = FALSE,
+  timeout = 0
 )
 }
 \arguments{
@@ -43,6 +44,12 @@ server. Default \code{FALSE}. On non-Windows with \code{headless =
 FALSE}, this function \code{stop()}s if \code{Sys.getenv("DISPLAY")} is
 empty, rather than attempting the call and failing obscurely later.
 Ignored on Windows.}
+
+\item{timeout}{Numeric. Maximum time in seconds to let the exe run before
+it is killed. Default \code{0} means no timeout. Passed straight through
+to \code{\link[base]{system2}}/\code{\link[base]{system}}, which set a
+non-zero exit status when the process is killed for exceeding it - a
+guard against a hung exe never producing \code{ErrorMsgs.dat}.}
 }
 \value{
 A list with elements \code{success} (logical) and \code{message}
