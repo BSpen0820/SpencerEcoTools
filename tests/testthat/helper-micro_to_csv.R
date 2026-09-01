@@ -5,7 +5,9 @@
                                    start = as.POSIXct("2020-07-01 00:00:00", tz = "UTC"),
                                    seed = 42) {
   set.seed(seed)
-  mk <- function() array(round(stats::runif(nrow_ * ncol_ * ntime_, 0, 30), 4),
+  # Rounded to 3 decimals to match write_tile()'s own rounding, so tests can
+  # still assert exact round-trip equality after a write/read cycle.
+  mk <- function() array(round(stats::runif(nrow_ * ncol_ * ntime_, 0, 30), 3),
                         dim = c(nrow_, ncol_, ntime_))
   tme <- seq(start, by = "hour", length.out = ntime_)
   list(
@@ -24,7 +26,7 @@
   set.seed(seed)
   nrow_ <- terra::nrow(fx$dtm); ncol_ <- terra::ncol(fx$dtm); ntime_ <- length(fx$tme)
   arrs <- lapply(depths_mm, function(d) {
-    array(round(stats::runif(nrow_ * ncol_ * ntime_, 0, 20), 4), dim = c(nrow_, ncol_, ntime_))
+    array(round(stats::runif(nrow_ * ncol_ * ntime_, 0, 20), 3), dim = c(nrow_, ncol_, ntime_))
   })
   names(arrs) <- sprintf("BlwGrd_%04d", depths_mm)
   arrs

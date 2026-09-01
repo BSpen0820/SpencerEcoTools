@@ -70,15 +70,30 @@ output_dir <- "/Endo_out_v2"  # separate from production's /Endo_out for compari
 tile_map_path      <- "/Microclim_out/TetonsClimatologyTileMap.tif"
 valid_mask_path    <- "/Data/Endo-Valid-Cells-Mask.tif"  # winter range x not-water, precombined
 
+#wr <- rast("/Data/Empty-Winter-Range-Raster.tif")
+#lc <- rast('/Data/ESA_WorldCover_2023.tif')
+#tm <- rast("/Microclim_out/TetonsClimatologyTileMap.tif")
+
+#tm <- mask(tm, crop(wr, tm))
+#tm <- mask(tm, crop(lc, tm), maskvalues = 80)
+
+#if(clust_array_arg == 1){
+#    writeRaster(tm, valid_mask_path, overwrite = T)
+#}
+
+#rm(wr, lc, tm); gc()
+
 # --- restrict to the first `subset_n_tiles` tiles for a fast smoke test -----
 if (is.finite(subset_n_tiles)) {
   tile_map_r   <- terra::rast(tile_map_path)
   valid_mask_r <- terra::rast(valid_mask_path)
 
   vm <- valid_mask_r
-  vm[vm != 1] <- NA
+  #vm[vm != 1] <- NA
   tile_ids_all <- sort(unique(terra::values(terra::mask(tile_map_r, vm), mat = FALSE, na.rm = TRUE)))
+  cat(tile_ids_all, '/n')
   keep_ids     <- head(tile_ids_all, subset_n_tiles)
+  cat(keep_ids, '\n')
 
   cat(sprintf("Subset run: restricting to tile ID(s) %s (of %d total in the masked domain)\n",
               paste(keep_ids, collapse = ", "), length(tile_ids_all)))
@@ -88,6 +103,7 @@ if (is.finite(subset_n_tiles)) {
 
   valid_cells_mask_path <- file.path(tempdir(), "subset_valid_cells_mask.tif")
   terra::writeRaster(subset_mask, valid_cells_mask_path, overwrite = TRUE)
+  cat(unique(terra::values(subset_mask)), '\n')
 } else {
   valid_cells_mask_path <- valid_mask_path
 }
@@ -103,7 +119,7 @@ run_endo_big_nichemap(
   exe_path = exe_path, output_dir = output_dir, wineprefix = wineprefix,
   study_area = "TetonsClimatology", snow = TRUE, headless = TRUE,
   parallel = TRUE, ncores = n_threads,
-  clust_array_arg = clust_array_arg, clust_array_size = clust_array_size
+  clust_array_arg = clust_array_arg, clust_array_size = clust_array_size, timeout = 300
 )
 
 cat("\nDone.\n")

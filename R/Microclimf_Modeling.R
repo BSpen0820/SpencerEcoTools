@@ -1026,7 +1026,7 @@ write_tile <- function(data, out_path, dtm = NULL, tme = NULL,
       stop("Below-ground mode requires data to contain 'Tz'")
 
     var_meta  <- .mout_blw_meta
-    data_list <- list(Tz = data[["Tz"]])
+    data_list <- list(Tz = round(data[["Tz"]], 3))
 
     if (is.null(tme) && !is.null(data$tme)) tme <- data$tme
 
@@ -1064,7 +1064,7 @@ write_tile <- function(data, out_path, dtm = NULL, tme = NULL,
     }
   }
 
-  data_list <- data[names(var_meta)]
+  data_list <- lapply(data[names(var_meta)], round, digits = 3)
 
   if (file_fmt == "h5") {
     .write_h5(data_list, var_meta, tme, out_path, dtm, data_type, compression)

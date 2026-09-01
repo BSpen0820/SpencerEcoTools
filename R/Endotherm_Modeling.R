@@ -50,6 +50,7 @@ write_juldays_dat <- function(output_dir, model_settings = list(), habitat_setti
   .chk_vec_len(ms$juldays, julnum, "model_settings$juldays")
 
   hs <- utils::modifyList(.default_habitat_settings(julnum), habitat_settings)
+  hs$absorp <- round(hs$absorp, 3)
   for (.v in list(list(hs$absorp, "habitat_settings$absorp"),
                   list(hs$shade_min, "habitat_settings$shade_min"),
                   list(hs$shade_max, "habitat_settings$shade_max"),

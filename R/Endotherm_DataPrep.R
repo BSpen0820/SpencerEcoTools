@@ -1641,7 +1641,15 @@ micro_to_csv <- function(abvgrd_input, blwgrd_input, cell, cell_input_type,
     soil   <- .mtc_apply_clamp(soil, bounds)
   }
 
+  metout <- .mtc_round3(metout)
+  soil   <- .mtc_round3(soil)
+
   list(metout = metout, shadmet = metout, soil = soil, shadsoil = soil)
+}
+
+.mtc_round3 <- function(df) {
+  df[] <- lapply(df, function(col) if (is.numeric(col)) round(col, 3) else col)
+  df
 }
 
 .trapz_proportion <- function(x, y) {
