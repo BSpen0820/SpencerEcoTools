@@ -1418,6 +1418,16 @@ write_endotherm_inputs <- function(output_dir,
 # --------------------------------------------------------------------------- #
 
 .mtc_clamp_defaults <- function() {
+  # SOLR upper bound (1200 W/m^2): defense-in-depth backstop, independent of the
+  # upstream microclimfPar radiation fix (di/cos(zenith) beam recovery amplifying
+  # near-zero-elevation residuals into 600-1300+ W/m^2 SOLR values -- see
+  # HPC_workflow/HANDOFF_endotherm-hang.md). ZEN isn't threaded into this generic,
+  # per-column scalar clamp table, so a zenith-aware bound isn't clean here without
+  # reworking .mtc_apply_clamp()/the public clamp_bounds schema; a fixed ceiling is
+  # used instead. 1200 W/m^2 is comfortably below the flat 1352 (solar constant)
+  # ceiling used upstream, and above legitimate clear-sky GHI even at this high-
+  # elevation Teton site (typically <=1000-1100 W/m^2 peak), so it only trims
+  # genuinely corrupted values, not real weather.
   data.frame(
     variable = c("TALOC", "TAREF", "TANNUL", "RHLOC", "RH", "VLOC", "VREF",
                 "ZEN", "SOLR", "TSKYC", "ELEV",
@@ -1427,7 +1437,7 @@ write_endotherm_inputs <- function(output_dir,
              0, 0, -100, -500,
              rep(-90, 11)),
     upper = c(60, 60, 60, 100, 100, NA_real_, NA_real_,
-             90, NA_real_, 60, 9000,
+             90, 1200, 60, 9000,
              rep(70, 11)),
     stringsAsFactors = FALSE
   )
@@ -1458,7 +1468,12 @@ write_endotherm_inputs <- function(output_dir,
 #' NicheMapR convention, see \code{\link{micro_to_csv}}) rather than a real
 #' measurement; patching its \code{lower} bound above \code{0} would corrupt
 #' that sentinel. \code{DOY}/\code{TIME} are index columns and are never
-#' clamped, so they have no row here.
+#' clamped, so they have no row here. \code{SOLR}'s upper bound (\code{1200}
+#' W/m^2) is a defense-in-depth backstop against a since-fixed \code{microclimfPar}
+#' radiation bug that could inflate \code{SOLR} into the hundreds to
+#' 1000s of W/m^2 near sunrise/sunset; it sits well below the solar constant
+#' and above legitimate clear-sky irradiance, so it should never trim real
+#' weather.
 #'
 #' @seealso \code{\link{micro_to_csv}}
 #' @export
