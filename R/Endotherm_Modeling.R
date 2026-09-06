@@ -1182,14 +1182,26 @@ plot.metchamber_result <- function(x, ...) {
 #'   \code{FALSE}.
 #' @param ncores Integer. Workers to use when \code{parallel = TRUE}; also
 #'   sets \code{terraOptions(threads = ncores)}. Default \code{2}.
+#' @param max_attempts Integer >= 1. Total attempts per chunk (its first run
+#'   plus up to \code{max_attempts - 1} retries) before it's given up on.
+#'   Every attempt - including retries - builds a brand-new temp workspace
+#'   from scratch, so a retry never inherits a previous attempt's partial or
+#'   empty directory. Retries for a tile run after every cell in that tile
+#'   has been attempted once (still before that tile's rasters/lookups are
+#'   freed), and always serially even when \code{parallel = TRUE}, since
+#'   contention between concurrent workers is itself a plausible cause of
+#'   intermittent failures. Only the \emph{final} failed attempt of a chunk
+#'   that never succeeds is copied to \code{Debug_CSVs}. Default \code{2}
+#'   (one retry).
 #' @param ... Hidden SLURM array arguments \code{clust_array_arg}/
 #'   \code{clust_array_size}, same convention as
 #'   \code{\link{run_micro_big_nichemap}}.
 #'
 #' @return Invisibly, the concatenated per-tile log \code{data.frame}
 #'   (\code{cell_id, chunk_index, chunk_start, chunk_end, status, message,
-#'   output_path}) across every \code{(tile, period)} task this call
-#'   processed.
+#'   output_path, n_attempts}) across every \code{(tile, period)} task this
+#'   call processed. \code{n_attempts} is how many tries that chunk's final
+#'   status reflects.
 #'
 #' @seealso \code{\link{run_micro_big_nichemap}}, \code{\link{micro_to_csv}},
 #'   \code{\link{get_endotherm_defaults}}, \code{\link{endo_timevar_template}},
@@ -1210,6 +1222,7 @@ run_endo_big_nichemap <- function(tile_map, valid_cells_mask, dates, microclim_d
                                   timeout       = 0,
                                   parallel      = FALSE,
                                   ncores        = 2,
+                                  max_attempts  = 2,
                                   ...) {
   file_fmt <- match.arg(file_fmt, "nc")
 
@@ -1227,6 +1240,11 @@ run_endo_big_nichemap <- function(tile_map, valid_cells_mask, dates, microclim_d
 
   if (!is.numeric(chunk_size) || length(chunk_size) != 1 || chunk_size < 1 || chunk_size > 52)
     stop("chunk_size must be a single numeric value between 1 and 52")
+
+  if (!is.numeric(max_attempts) || length(max_attempts) != 1 || max_attempts < 1 ||
+      max_attempts != as.integer(max_attempts))
+    stop("max_attempts must be a single positive integer")
+  max_attempts <- as.integer(max_attempts)
 
   date_ranges <- .normalize_dates_with_sim_window(dates)
 
@@ -1364,122 +1382,153 @@ run_endo_big_nichemap <- function(tile_map, valid_cells_mask, dates, microclim_d
 
     chunk_bounds <- .endo_chunk_bounds(n_days, chunk_size)
 
+    # Attempt a single chunk once, in a freshly created temp workspace -
+    # every attempt (including retries) gets its own workspace, never a
+    # reused one, so a retry can't inherit another attempt's partial/empty
+    # directory. Returns list(row, ws, ok): on success the workspace is
+    # cleaned up here and ws is NA; on failure ws holds the workspace path so
+    # the caller can decide whether to discard it (more attempts remain) or
+    # dump it to Debug_CSVs (this was the last allowed attempt).
+    attempt_chunk_fn <- function(cell, kk, attempt) {
+      idx <- chunk_bounds[[kk]]
+      chunk_dates <- sim_dates[idx]
+      tannul <- tannul_mat[cell$r_idx, cell$c_idx]
+      cell_dir <- file.path(tile_dir, sprintf("Cell_%06d", cell$cell_id))
+      ws <- tempfile("endo_cell_")
+      dir.create(ws)
+
+      tryCatch({
+        csvs <- micro_to_csv(
+          abvgrd_input = abv_path, blwgrd_input = blw_path,
+          cell = c(cell$c_idx, cell$r_idx), cell_input_type = "index",
+          dates = chunk_dates, elev = cell$elevation, tannul = tannul,
+          clamp = clamp, clamp_bounds = clamp_bounds
+        )
+        utils::write.csv(csvs$metout, file.path(ws, "metout.csv"), row.names = FALSE)
+        utils::write.csv(csvs$shadmet, file.path(ws, "shadmet.csv"), row.names = FALSE)
+        utils::write.csv(csvs$soil, file.path(ws, "soil.csv"), row.names = FALSE)
+        utils::write.csv(csvs$shadsoil, file.path(ws, "shadsoil.csv"), row.names = FALSE)
+
+        surfwet <- rep(surfwet_dry, length(chunk_dates))
+        if (snow) {
+          nc_snow <- ncdf4::nc_open(snow_path)
+          # tryCatch(finally = ) - not on.exit() - so the handle is closed on
+          # both the success and the error path of THIS chunk. on.exit() here
+          # would register on the enclosing attempt_chunk_fn frame and only
+          # fire once the whole call returns.
+          snow_read <- tryCatch({
+            snow_origin_str <- sub("\\s+UTC$", "", trimws(sub("hours since\\s+", "", nc_snow$dim$time$units)))
+            snow_origin <- as.POSIXct(snow_origin_str, tz = "UTC", format = "%Y-%m-%dT%H:%M:%S")
+            tme_snow <- snow_origin + nc_snow$dim$time$vals * 3600
+            s_idx <- which(as.Date(tme_snow) >= min(chunk_dates) & as.Date(tme_snow) <= max(chunk_dates))
+            if (length(s_idx) == 0) {
+              stop(sprintf("Snow tile %s has no timesteps covering %s..%s", snow_path,
+                           min(chunk_dates), max(chunk_dates)))
+            }
+            list(
+              swe = ncdf4::ncvar_get(nc_snow, "totalSWE",
+                                     start = c(cell$c_idx, cell$r_idx, s_idx[1]),
+                                     count = c(1, 1, length(s_idx))),
+              day_of_swe = as.Date(tme_snow[s_idx])
+            )
+          }, finally = ncdf4::nc_close(nc_snow))
+          swe <- snow_read$swe
+          day_of_swe <- snow_read$day_of_swe
+          surfwet <- vapply(chunk_dates, function(d) {
+            hrs <- swe[day_of_swe == d]
+            if (length(hrs) > 0 && any(hrs > 0, na.rm = TRUE)) 100 else surfwet_dry
+          }, numeric(1))
+        }
+
+        absorp <- vapply(chunk_dates, function(d) {
+          absorp_lookup$values[which(valid_cells == cell$cell_id), format(d, "%Y_%m")]
+        }, numeric(1))
+
+        julnum  <- length(chunk_dates)
+        juldays <- seq_len(julnum)
+        write_juldays_dat(
+          output_dir = ws, model_settings = list(julnum = julnum, juldays = juldays),
+          habitat_settings = list(startday = 1, endday = julnum, absorp = absorp, surfwet = surfwet)
+        )
+
+        chunk_endo_inputs <- endo_inputs
+        chunk_endo_inputs$model_settings$julnum <- julnum
+        chunk_endo_inputs$model_settings$juldays <- juldays
+        chunk_endo_inputs <- .endo_resize_static_fields(chunk_endo_inputs, julnum)
+        chunk_endo_inputs <- .endo_apply_timevar(chunk_endo_inputs, time_varying, idx)
+        do.call(write_endotherm_inputs, c(list(output_dir = ws), chunk_endo_inputs))
+
+        exe_result <- run_endotherm_model(ws, exe_path = node_exe_path, wineprefix = wineprefix,
+                                           headless = headless, timeout = timeout)
+
+        out_csv <- NA_character_
+        if (exe_result$success && file.exists(file.path(ws, "HOURPLOT.csv"))) {
+          dir.create(cell_dir, recursive = TRUE, showWarnings = FALSE)
+          hp <- utils::read.csv(file.path(ws, "HOURPLOT.csv"), skip = 1)
+          hp_trim <- hp[, 1:8]
+          out_csv <- file.path(cell_dir, sprintf("HOURPLOT_chunk%d_%s_%s.csv", kk,
+                                                 format(min(chunk_dates), "%Y%m%d"),
+                                                 format(max(chunk_dates), "%Y%m%d")))
+          utils::write.csv(hp_trim, out_csv, row.names = FALSE)
+        }
+
+        row <- data.frame(cell_id = cell$cell_id, chunk_index = kk,
+                          chunk_start = min(chunk_dates), chunk_end = max(chunk_dates),
+                          status = if (exe_result$success) "success" else "error",
+                          message = exe_result$message, output_path = out_csv,
+                          n_attempts = attempt, stringsAsFactors = FALSE)
+
+        if (exe_result$success) {
+          unlink(ws, recursive = TRUE)
+          list(row = row, ws = NA_character_, ok = TRUE)
+        } else {
+          list(row = row, ws = ws, ok = FALSE)
+        }
+      }, error = function(e) {
+        row <- data.frame(cell_id = cell$cell_id, chunk_index = kk,
+                          chunk_start = min(chunk_dates), chunk_end = max(chunk_dates),
+                          status = "error", message = conditionMessage(e),
+                          output_path = NA_character_, n_attempts = attempt, stringsAsFactors = FALSE)
+        list(row = row, ws = if (dir.exists(ws)) ws else NA_character_, ok = FALSE)
+      })
+    }
+
+    # Discard a failed attempt's workspace when more attempts remain for it.
+    safe_unlink <- function(ws_path) {
+      if (!is.na(ws_path) && dir.exists(ws_path)) unlink(ws_path, recursive = TRUE)
+    }
+
+    # Preserve a chunk's *final* failed attempt for inspection - never every
+    # attempt, so a chunk that eventually succeeds (or that fails several
+    # times before exhausting max_attempts) leaves only its last try behind.
+    dump_debug <- function(ws_path, cell, kk) {
+      if (is.na(ws_path) || !dir.exists(ws_path)) return(invisible(NULL))
+      debug_dir <- file.path(output_dir, "Debug_CSVs",
+                             sprintf("%s_Tile_%03d_Cell_%06d_chunk%d", period_label, tile_id, cell$cell_id, kk))
+      dir.create(debug_dir, recursive = TRUE, showWarnings = FALSE)
+      file.copy(list.files(ws_path, full.names = TRUE), debug_dir, overwrite = TRUE)
+      unlink(ws_path, recursive = TRUE)
+    }
+
     cell_fn <- function(ci) {
       cell <- manifest[ci, ]
-      cell_dir <- file.path(tile_dir, sprintf("Cell_%06d", cell$cell_id))
-      tannul <- tannul_mat[cell$r_idx, cell$c_idx]
-      rows <- list()
+      rows <- vector("list", length(chunk_bounds))
+      pending <- list()
 
       for (kk in seq_along(chunk_bounds)) {
-        idx <- chunk_bounds[[kk]]
-        chunk_dates <- sim_dates[idx]
-        ws <- tempfile("endo_cell_")
-        dir.create(ws)
-        row <- tryCatch({
-          csvs <- micro_to_csv(
-            abvgrd_input = abv_path, blwgrd_input = blw_path,
-            cell = c(cell$c_idx, cell$r_idx), cell_input_type = "index",
-            dates = chunk_dates, elev = cell$elevation, tannul = tannul,
-            clamp = clamp, clamp_bounds = clamp_bounds
-          )
-          utils::write.csv(csvs$metout, file.path(ws, "metout.csv"), row.names = FALSE)
-          utils::write.csv(csvs$shadmet, file.path(ws, "shadmet.csv"), row.names = FALSE)
-          utils::write.csv(csvs$soil, file.path(ws, "soil.csv"), row.names = FALSE)
-          utils::write.csv(csvs$shadsoil, file.path(ws, "shadsoil.csv"), row.names = FALSE)
-
-          surfwet <- rep(surfwet_dry, length(chunk_dates))
-          if (snow) {
-            nc_snow <- ncdf4::nc_open(snow_path)
-            # tryCatch(finally = ) - not on.exit() - so the handle is closed on
-            # both the success and the error path of THIS chunk. on.exit() here
-            # would register on the enclosing cell_fn frame and only fire once
-            # all chunks for the cell are done, leaking every earlier chunk's
-            # handle.
-            snow_read <- tryCatch({
-              snow_origin_str <- sub("\\s+UTC$", "", trimws(sub("hours since\\s+", "", nc_snow$dim$time$units)))
-              snow_origin <- as.POSIXct(snow_origin_str, tz = "UTC", format = "%Y-%m-%dT%H:%M:%S")
-              tme_snow <- snow_origin + nc_snow$dim$time$vals * 3600
-              s_idx <- which(as.Date(tme_snow) >= min(chunk_dates) & as.Date(tme_snow) <= max(chunk_dates))
-              if (length(s_idx) == 0) {
-                stop(sprintf("Snow tile %s has no timesteps covering %s..%s", snow_path,
-                             min(chunk_dates), max(chunk_dates)))
-              }
-              list(
-                swe = ncdf4::ncvar_get(nc_snow, "totalSWE",
-                                       start = c(cell$c_idx, cell$r_idx, s_idx[1]),
-                                       count = c(1, 1, length(s_idx))),
-                day_of_swe = as.Date(tme_snow[s_idx])
-              )
-            }, finally = ncdf4::nc_close(nc_snow))
-            swe <- snow_read$swe
-            day_of_swe <- snow_read$day_of_swe
-            surfwet <- vapply(chunk_dates, function(d) {
-              hrs <- swe[day_of_swe == d]
-              if (length(hrs) > 0 && any(hrs > 0, na.rm = TRUE)) 100 else surfwet_dry
-            }, numeric(1))
+        result <- attempt_chunk_fn(cell, kk, attempt = 1L)
+        rows[[kk]] <- result$row
+        if (!result$ok) {
+          if (max_attempts > 1L) {
+            safe_unlink(result$ws)
+            pending[[length(pending) + 1]] <- list(cell = cell, kk = kk)
+          } else {
+            dump_debug(result$ws, cell, kk)
           }
-
-          absorp <- vapply(chunk_dates, function(d) {
-            absorp_lookup$values[which(valid_cells == cell$cell_id), format(d, "%Y_%m")]
-          }, numeric(1))
-
-          julnum  <- length(chunk_dates)
-          juldays <- seq_len(julnum)
-          write_juldays_dat(
-            output_dir = ws, model_settings = list(julnum = julnum, juldays = juldays),
-            habitat_settings = list(startday = 1, endday = julnum, absorp = absorp, surfwet = surfwet)
-          )
-
-          chunk_endo_inputs <- endo_inputs
-          chunk_endo_inputs$model_settings$julnum <- julnum
-          chunk_endo_inputs$model_settings$juldays <- juldays
-          chunk_endo_inputs <- .endo_resize_static_fields(chunk_endo_inputs, julnum)
-          chunk_endo_inputs <- .endo_apply_timevar(chunk_endo_inputs, time_varying, idx)
-          do.call(write_endotherm_inputs, c(list(output_dir = ws), chunk_endo_inputs))
-
-          exe_result <- run_endotherm_model(ws, exe_path = node_exe_path, wineprefix = wineprefix,
-                                             headless = headless, timeout = timeout)
-
-          if (!exe_result$success) {
-            debug_dir <- file.path(output_dir, "Debug_CSVs",
-                                   sprintf("%s_Tile_%03d_Cell_%06d_chunk%d", period_label, tile_id, cell$cell_id, kk))
-            dir.create(debug_dir, recursive = TRUE, showWarnings = FALSE)
-            file.copy(list.files(ws, full.names = TRUE), debug_dir, overwrite = TRUE)
-          }
-
-          out_csv <- NA_character_
-          if (exe_result$success && file.exists(file.path(ws, "HOURPLOT.csv"))) {
-            dir.create(cell_dir, recursive = TRUE, showWarnings = FALSE)
-            hp <- utils::read.csv(file.path(ws, "HOURPLOT.csv"), skip = 1)
-            hp_trim <- hp[, 1:8]
-            out_csv <- file.path(cell_dir, sprintf("HOURPLOT_chunk%d_%s_%s.csv", kk,
-                                                   format(min(chunk_dates), "%Y%m%d"),
-                                                   format(max(chunk_dates), "%Y%m%d")))
-            utils::write.csv(hp_trim, out_csv, row.names = FALSE)
-          }
-
-          unlink(ws, recursive = TRUE)
-          data.frame(cell_id = cell$cell_id, chunk_index = kk,
-                    chunk_start = min(chunk_dates), chunk_end = max(chunk_dates),
-                    status = if (exe_result$success) "success" else "error",
-                    message = exe_result$message, output_path = out_csv, stringsAsFactors = FALSE)
-        }, error = function(e) {
-          debug_dir <- file.path(output_dir, "Debug_CSVs",
-                                 sprintf("%s_Tile_%03d_Cell_%06d_chunk%d", period_label, tile_id, cell$cell_id, kk))
-          dir.create(debug_dir, recursive = TRUE, showWarnings = FALSE)
-          if (dir.exists(ws)) {
-            file.copy(list.files(ws, full.names = TRUE), debug_dir, overwrite = TRUE)
-            unlink(ws, recursive = TRUE)
-          }
-          data.frame(cell_id = cell$cell_id, chunk_index = kk,
-                    chunk_start = min(chunk_dates), chunk_end = max(chunk_dates),
-                    status = "error", message = conditionMessage(e),
-                    output_path = NA_character_, stringsAsFactors = FALSE)
-        })
-        rows[[kk]] <- row
+        }
         if (ci %% 50 == 0) cat(sprintf("  Tile %d | %s: %d/%d cells done\n", tile_id, period_label, ci, nrow(manifest)))
       }
-      do.call(rbind, rows)
+      list(rows = do.call(rbind, rows), pending = pending)
     }
 
     cell_results <- if (parallel) {
@@ -1490,11 +1539,42 @@ run_endo_big_nichemap <- function(tile_map, valid_cells_mask, dates, microclim_d
       lapply(seq_len(nrow(manifest)), cell_fn)
     }
 
-    tile_log <- do.call(rbind, cell_results)
+    tile_rows <- do.call(rbind, lapply(cell_results, `[[`, "rows"))
+    pending <- do.call(c, lapply(cell_results, `[[`, "pending"))
+
+    # Retry pass(es): run at the end of THIS tile - before the tile-level
+    # rasters/lookups below are freed - rather than deferred to the very end
+    # of the whole job, so failed chunks can be retried without re-deriving
+    # tannul_mat/absorp_lookup from scratch. Always serial, even when
+    # parallel = TRUE: if contention between concurrent workers (e.g. for
+    # Wine/Xvfb) is itself part of what's causing intermittent failures,
+    # retrying single-threaded improves the odds rather than reproducing it.
+    attempt <- 2L
+    while (length(pending) > 0 && attempt <= max_attempts) {
+      still_pending <- list()
+      for (item in pending) {
+        result <- attempt_chunk_fn(item$cell, item$kk, attempt = attempt)
+        match_row <- tile_rows$cell_id == item$cell$cell_id & tile_rows$chunk_index == item$kk
+        tile_rows[match_row, ] <- result$row
+        if (!result$ok) {
+          if (attempt < max_attempts) {
+            safe_unlink(result$ws)
+            still_pending[[length(still_pending) + 1]] <- item
+          } else {
+            dump_debug(result$ws, item$cell, item$kk)
+          }
+        }
+      }
+      pending <- still_pending
+      attempt <- attempt + 1L
+    }
+
+    tile_log <- tile_rows
     utils::write.csv(tile_log, file.path(period_dir, sprintf("Tile_%03d_log.csv", tile_id)), row.names = FALSE)
     all_logs[[k]] <- tile_log
 
-    rm(manifest, tannul_mat, absorp_lookup, cell_results, tile_log); gc()
+    rm(manifest, tannul_mat, absorp_lookup, cell_results, tile_log, tile_rows, pending); gc()
+
   }
 
   invisible(do.call(rbind, all_logs))
