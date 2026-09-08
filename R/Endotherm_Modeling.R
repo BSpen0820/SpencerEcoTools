@@ -1018,7 +1018,7 @@ plot.metchamber_result <- function(x, ...) {
   list(timestamps = expected_hours, values = values, has_data = any(!is.na(values)))
 }
 
-.endo_create_raster_nc <- function(out_path, tile_map_r, time_axis, variable, variable_meta, compression) {
+.endo_create_raster_nc <- function(out_path, tile_map_r, time_axis, variable, variable_meta, compression, chunk_shape) {
   ncol_ <- terra::ncol(tile_map_r)
   nrow_ <- terra::nrow(tile_map_r)
 
@@ -1037,24 +1037,23 @@ plot.metchamber_result <- function(x, ...) {
     dim_y <- ncdf4::ncdim_def("y", "m", y_vals, longname = "y coordinate", create_dimvar = TRUE)
   }
   # unlim = FALSE: the time axis length is fully known at creation time, so
-  # no record dimension is needed. An unlimited dimension here (matching
-  # write_tile()'s pattern, which is safe because it writes its whole array
-  # in one call) combined with per-cell strided writes and default chunking
-  # is catastrophically slow - benchmarked ~2335x slower (415s vs 0.2s for a
-  # 120x120 grid / 3400 hours / 300 cells) because HDF5 must
-  # read-modify-write across many storage chunks per cell write.
+  # no record dimension is needed.
   dim_time <- ncdf4::ncdim_def("time", sprintf("hours since %s UTC", t_origin), t_vals,
                                unlim = FALSE, longname = "time", calendar = "standard")
 
   var_crs  <- ncdf4::ncvar_def("crs", "", list(), prec = "integer", longname = "CRS definition")
-  # chunksizes = c(1, 1, ntime): each cell's full time series lives in
-  # exactly one HDF5 storage chunk, so a per-cell ncvar_put() below never
-  # touches more than one chunk. Do not omit this - it is what makes the
-  # per-cell write pattern viable at all.
+  # chunk_shape is a balanced (x, y, t) shape from .endo_balanced_chunk_shape() -
+  # see that function's docs for why this replaced the old (1, 1, ntime)
+  # per-cell chunking (fast writes, catastrophically slow cross-pixel reads).
+  # The write loop below always writes in spatial batches that land on whole
+  # multiples of chunk_shape$x/$y and span the FULL time axis per batch (see
+  # .endo_batch_dims()/.endo_spatial_batches()), so every touched chunk is
+  # still written completely in one pass, never partially - the balanced
+  # shape does not reintroduce the old read-modify-write penalty.
   var_data <- ncdf4::ncvar_def(variable, variable_meta$units, list(dim_x, dim_y, dim_time),
                                missval = -9999, longname = variable_meta$long_name,
                                compression = compression, prec = "double",
-                               chunksizes = c(1, 1, length(time_axis)))
+                               chunksizes = c(chunk_shape$x, chunk_shape$y, chunk_shape$t))
 
   nc <- ncdf4::nc_create(out_path, list(var_crs, var_data))
   ncdf4::ncvar_put(nc, var_crs, 0L)
@@ -1083,9 +1082,80 @@ plot.metchamber_result <- function(x, ...) {
   nc
 }
 
-.endo_write_cell_to_nc <- function(nc, variable, row, col, values) {
-  values[is.na(values)] <- -9999
-  ncdf4::ncvar_put(nc, variable, values, start = c(col, row, 1), count = c(1, 1, length(values)))
+#' Compute a balanced (x, y, t) HDF5 chunk shape for the reconstructed raster.
+#'
+#' The old chunking, \code{c(1, 1, ntime)}, made every per-cell write hit
+#' exactly one chunk (fast writes) but made any cross-pixel read - a spatial
+#' slice at one timestep, or a sum/mean across the time dimension for the
+#' whole grid - touch every single chunk in the file once per timestep
+#' (catastrophically slow reads).
+#'
+#' This instead follows the balanced-chunking approach described by Unidata
+#' (blogs.unidata.ucar.edu, "Chunking Data: Choosing Shapes"): for a
+#' (t, y, x) cube, solving \code{chunk_x = nx/N}, \code{chunk_y = ny/N},
+#' \code{chunk_t = nt/N^2} for N against a target chunk byte size makes a
+#' full per-pixel time series and a full per-timestep spatial slice touch
+#' roughly the same number of chunks (N^2 either way) - both stay fast,
+#' neither is favored. \code{target_chunk_mb} is a tunable knob, not a fixed
+#' constant - the right value depends on actual production grid/period
+#' sizes and should be checked with a real timing comparison (see
+#' test-reconstruct-endo-raster-chunking.R) rather than trusted blindly.
+#'
+#' @keywords internal
+.endo_balanced_chunk_shape <- function(nx, ny, nt, target_chunk_mb = 4) {
+  target_bytes <- target_chunk_mb * 1024^2
+  total_bytes  <- as.double(nx) * as.double(ny) * as.double(nt) * 8  # prec = "double"
+
+  # total_bytes / N^4 == target_bytes
+  n_est <- max(1, (total_bytes / target_bytes)^(1 / 4))
+
+  list(
+    x = as.integer(max(1L, min(nx, round(nx / n_est)))),
+    y = as.integer(max(1L, min(ny, round(ny / n_est)))),
+    t = as.integer(max(1L, min(nt, round(nt / n_est^2))))
+  )
+}
+
+#' Compute spatial batch dimensions for the write loop.
+#'
+#' A batch always spans the FULL time axis in one \code{ncvar_put()} call, so
+#' its in-memory size is \code{batch_x * batch_y * nt * 8} bytes - independent
+#' of the period's total spatial extent, which is what keeps memory bounded
+#' for large study areas. Batch width/height are rounded to whole multiples
+#' of \code{chunk_shape$x}/\code{$y} so every write lands on complete chunks -
+#' never split across two batches - which is what avoids HDF5
+#' read-modify-write.
+#'
+#' @keywords internal
+.endo_batch_dims <- function(nx, ny, nt, chunk_shape, target_batch_mb = 1024) {
+  target_bytes <- target_batch_mb * 1024^2
+  max_cells <- max(1, floor(target_bytes / (as.double(nt) * 8)))
+
+  chunks_per_side <- max(1, floor(sqrt(max_cells / (chunk_shape$x * chunk_shape$y))))
+
+  list(
+    x = as.integer(min(nx, chunk_shape$x * chunks_per_side)),
+    y = as.integer(min(ny, chunk_shape$y * chunks_per_side))
+  )
+}
+
+#' Enumerate the spatial batches (in raster row/col terms) covering a grid.
+#' @keywords internal
+.endo_spatial_batches <- function(nx, ny, batch_dims) {
+  x0s <- seq(1L, nx, by = batch_dims$x)
+  y0s <- seq(1L, ny, by = batch_dims$y)
+
+  batches <- vector("list", length(x0s) * length(y0s))
+  k <- 1L
+  for (y0 in y0s) {
+    y1 <- min(ny, y0 + batch_dims$y - 1L)
+    for (x0 in x0s) {
+      x1 <- min(nx, x0 + batch_dims$x - 1L)
+      batches[[k]] <- list(x0 = x0, x1 = x1, y0 = y0, y1 = y1)
+      k <- k + 1L
+    }
+  }
+  batches
 }
 
 .endo_tile_ids_in_mask <- function(tile_map, valid_cells_mask) {
@@ -1637,6 +1707,16 @@ run_endo_big_nichemap <- function(tile_map, valid_cells_mask, dates, microclim_d
 #' @param ncores Integer. Workers to use when \code{parallel = TRUE}.
 #'   Default \code{2}.
 #' @param compression Integer 0-9. Gzip compression level. Default \code{4L}.
+#' @param target_chunk_mb Numeric. Target size in MB for each output NetCDF
+#'   storage chunk, used by \code{\link{.endo_balanced_chunk_shape}} to derive
+#'   a chunk shape that keeps both a single pixel's full time series and a
+#'   single timestep's full spatial slice (e.g. a sum across time) fast to
+#'   read - replacing the old \code{c(1, 1, ntime)} chunking, which favored
+#'   per-cell writes at the cost of any cross-pixel read. Default \code{4}.
+#' @param target_batch_mb Numeric. Target in-memory size in MB for each
+#'   spatial write batch (a batch spans the full time axis, so its size is
+#'   \code{batch_x * batch_y * ntime * 8} bytes); bounds memory for large
+#'   study areas regardless of the period's total extent. Default \code{1024}.
 #'
 #' @return Invisibly, a \code{data.frame} with one row per requested period:
 #'   \code{period_label, output_path, cells_attempted} (manifest cells that
@@ -1669,6 +1749,16 @@ run_endo_big_nichemap <- function(tile_map, valid_cells_mask, dates, microclim_d
 #' file from an unrelated period elsewhere under \code{root_dir} does not
 #' count as "something was found."
 #'
+#' The output NetCDF's storage chunking is a balanced (x, y, t) shape (see
+#' \code{\link{.endo_balanced_chunk_shape}}), not the pixel-per-chunk layout
+#' used previously - a single pixel's full time series and a full-grid
+#' spatial slice or time-collapsing reduction (e.g. summing across layers to
+#' get one total-cost raster) are both fast to read back. Cells are still
+#' assembled in parallel via \code{future_lapply()} when \code{parallel =
+#' TRUE}, just scoped to one spatial write batch at a time (see
+#' \code{\link{.endo_batch_dims}}) rather than the whole period at once -
+#' this also bounds memory for large study areas.
+#'
 #' @seealso \code{\link{run_endo_big_nichemap}}
 #' @export
 reconstruct_endo_raster <- function(root_dir, tile_map, dates,
@@ -1677,7 +1767,9 @@ reconstruct_endo_raster <- function(root_dir, tile_map, dates,
                                     study_area  = NULL,
                                     parallel    = FALSE,
                                     ncores      = 2,
-                                    compression = 4L) {
+                                    compression = 4L,
+                                    target_chunk_mb = 4,
+                                    target_batch_mb = 1024) {
   variable <- match.arg(variable)
   var_meta <- .endo_variable_column(variable)
   variable_col <- var_meta$column
@@ -1756,6 +1848,9 @@ reconstruct_endo_raster <- function(root_dir, tile_map, dates,
                       sum(out_of_extent), period_label))
       cell_list <- cell_list[!out_of_extent, , drop = FALSE]
     }
+    rc_all <- terra::rowColFromCell(tile_map_r, cell_list$cell_num)
+    cell_list$.row <- rc_all[, 1]
+    cell_list$.col <- rc_all[, 2]
 
     expected_hours <- seq(as.POSIXct(sim_start, tz = "UTC"),
                           as.POSIXct(sim_end, tz = "UTC") + 23 * 3600, by = "hour")
@@ -1766,32 +1861,30 @@ reconstruct_endo_raster <- function(root_dir, tile_map, dates,
       variable, period_label
     ))
 
-    cell_fn <- function(i) {
-      cell <- cell_list[i, ]
-      chunks_i <- hourplot_files[
-        hourplot_files$tile_id == cell$tile_id & hourplot_files$cell_id == cell$cell_id &
-        hourplot_files$chunk_start <= sim_end & hourplot_files$chunk_end >= sim_start,
-      ]
-      series <- .endo_assemble_cell_series(chunks_i, sim_start, sim_end, variable_col)
-      list(cell_num = cell$cell_num, values = series$values, has_data = series$has_data)
-    }
+    nx <- terra::ncol(tile_map_r)
+    ny <- terra::nrow(tile_map_r)
+    nt <- length(expected_hours)
 
-    cat(sprintf("  Assembling %d cell(s) (%s)...\n", nrow(cell_list),
+    # Balanced chunk shape + chunk-aligned spatial batching (see
+    # .endo_balanced_chunk_shape()/.endo_batch_dims() docs) replaces the old
+    # c(1, 1, ntime) chunking + per-cell write loop. The old layout made
+    # writes cheap but made any cross-pixel read (a spatial slice, or a
+    # sum/mean across time for the whole grid) touch every chunk in the file
+    # once per timestep. Writing in chunk-aligned spatial batches keeps
+    # writes just as cheap - every touched chunk is still written whole, in
+    # one pass, never partially - while making reads fast in both
+    # directions, and bounds memory to one batch's array instead of
+    # materializing the whole period at once (the scaling concern this
+    # replaced).
+    chunk_shape <- .endo_balanced_chunk_shape(nx, ny, nt, target_chunk_mb = target_chunk_mb)
+    batch_dims  <- .endo_batch_dims(nx, ny, nt, chunk_shape, target_batch_mb = target_batch_mb)
+    batches     <- .endo_spatial_batches(nx, ny, batch_dims)
+
+    cat(sprintf("  Assembling %d cell(s) across %d spatial batch(es) (%s)...\n",
+               nrow(cell_list), length(batches),
                if (parallel) sprintf("parallel, %d workers", ncores) else "sequential"))
-
-    # Known scaling limitation (found by final review, not yet fixed): this
-    # materializes every cell's full time series in memory before the first
-    # NetCDF write (~59-155 MB/tile at production scale depending on window
-    # length, times tile count; worse under parallel=TRUE). A future revision
-    # should hoist .endo_create_raster_nc() above this block and process
-    # cells in batches, writing and discarding each batch before the next.
-    cell_results <- if (parallel) {
-      future.apply::future_lapply(seq_len(nrow(cell_list)), cell_fn, future.seed = TRUE)
-    } else {
-      lapply(seq_len(nrow(cell_list)), cell_fn)
-    }
-
-    cat("  Assembly complete, writing NetCDF...\n")
+    cat(sprintf("  Chunk shape %dx%dx%d, batch shape %dx%d\n",
+               chunk_shape$x, chunk_shape$y, chunk_shape$t, batch_dims$x, batch_dims$y))
 
     n_placed <- 0L
     n_gapped <- 0L
@@ -1802,18 +1895,51 @@ reconstruct_endo_raster <- function(root_dir, tile_map, dates,
     # connection object still bound to `nc` and attempt to close it again.
     nc <- NULL
     tryCatch({
-      nc <- .endo_create_raster_nc(output_path, tile_map_r, expected_hours, variable, var_meta, compression)
-      for (res in cell_results) {
-        rc <- terra::rowColFromCell(tile_map_r, res$cell_num)
-        .endo_write_cell_to_nc(nc, variable, rc[1, 1], rc[1, 2], res$values)
-        # cells_placed counts cells with at least one REAL hour, not merely
-        # cells attempted - a 100%-NA cell must not count as "placed", or a
-        # complete reconstruction failure would look identical to a full
-        # success in this log.
-        if (res$has_data) {
-          n_placed <- n_placed + 1L
-          if (any(is.na(res$values))) n_gapped <- n_gapped + 1L
+      nc <- .endo_create_raster_nc(output_path, tile_map_r, expected_hours, variable, var_meta, compression, chunk_shape)
+
+      for (b in batches) {
+        batch_cells <- cell_list[
+          cell_list$.row >= b$y0 & cell_list$.row <= b$y1 &
+          cell_list$.col >= b$x0 & cell_list$.col <= b$x1,
+          , drop = FALSE
+        ]
+        if (nrow(batch_cells) == 0) next
+
+        cell_fn <- function(i) {
+          cell <- batch_cells[i, ]
+          chunks_i <- hourplot_files[
+            hourplot_files$tile_id == cell$tile_id & hourplot_files$cell_id == cell$cell_id &
+            hourplot_files$chunk_start <= sim_end & hourplot_files$chunk_end >= sim_start,
+          ]
+          series <- .endo_assemble_cell_series(chunks_i, sim_start, sim_end, variable_col)
+          list(row = cell$.row, col = cell$.col, values = series$values, has_data = series$has_data)
         }
+
+        cell_results <- if (parallel) {
+          future.apply::future_lapply(seq_len(nrow(batch_cells)), cell_fn, future.seed = TRUE)
+        } else {
+          lapply(seq_len(nrow(batch_cells)), cell_fn)
+        }
+
+        width  <- b$x1 - b$x0 + 1L
+        height <- b$y1 - b$y0 + 1L
+        arr <- array(-9999, dim = c(width, height, nt))
+
+        for (res in cell_results) {
+          vals <- res$values
+          vals[is.na(vals)] <- -9999
+          arr[res$col - b$x0 + 1L, res$row - b$y0 + 1L, ] <- vals
+          # cells_placed counts cells with at least one REAL hour, not merely
+          # cells attempted - a 100%-NA cell must not count as "placed", or a
+          # complete reconstruction failure would look identical to a full
+          # success in this log.
+          if (res$has_data) {
+            n_placed <- n_placed + 1L
+            if (any(is.na(res$values))) n_gapped <- n_gapped + 1L
+          }
+        }
+
+        ncdf4::ncvar_put(nc, variable, arr, start = c(b$x0, b$y0, 1), count = c(width, height, nt))
       }
     }, finally = {
       if (!is.null(nc)) tryCatch(ncdf4::nc_close(nc), error = function(e) NULL)

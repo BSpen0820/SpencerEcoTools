@@ -1,4 +1,4 @@
-test_that(".endo_create_raster_nc + .endo_write_cell_to_nc place cell values at the correct spatial location", {
+test_that(".endo_create_raster_nc places cell values at the correct spatial location", {
   skip_if_not_installed("ncdf4")
   out_path <- tempfile(fileext = ".nc")
   on.exit(unlink(out_path))
@@ -10,17 +10,20 @@ test_that(".endo_create_raster_nc + .endo_write_cell_to_nc place cell values at 
   time_axis <- seq(as.POSIXct("2022-12-09 00:00:00", tz = "UTC"), by = "hour", length.out = 4)
   variable_meta <- SpencerEcoTools:::.endo_variable_column("metabolic_rate")
 
+  chunk_shape <- SpencerEcoTools:::.endo_balanced_chunk_shape(3, 3, 4)
+
   nc <- SpencerEcoTools:::.endo_create_raster_nc(out_path, tile_map_r, time_axis,
-                                                 "metabolic_rate", variable_meta, compression = 4L)
+                                                 "metabolic_rate", variable_meta, compression = 4L,
+                                                 chunk_shape = chunk_shape)
 
   # Place a distinct, easily-identified series at row 1 (top row), col 3
-  # (rightmost column) - if row/col are ever swapped, this ends up at the
-  # bottom-left instead, and the assertions below will fail.
-  SpencerEcoTools:::.endo_write_cell_to_nc(nc, "metabolic_rate", row = 1, col = 3,
-                                           values = c(10, 20, 30, 40))
+  # (rightmost column) via a raw single-pixel ncvar_put() - the same
+  # start = c(col, row, 1) convention the batched write loop in
+  # reconstruct_endo_raster() uses - if row/col are ever swapped, this ends
+  # up at the bottom-left instead, and the assertions below will fail.
+  ncdf4::ncvar_put(nc, "metabolic_rate", c(10, 20, 30, 40), start = c(3, 1, 1), count = c(1, 1, 4))
   # And a second, different cell at row 3 (bottom row), col 1 (leftmost)
-  SpencerEcoTools:::.endo_write_cell_to_nc(nc, "metabolic_rate", row = 3, col = 1,
-                                           values = c(-10, -20, -30, -40))
+  ncdf4::ncvar_put(nc, "metabolic_rate", c(-10, -20, -30, -40), start = c(1, 3, 1), count = c(1, 1, 4))
   ncdf4::nc_close(nc)
 
   r <- terra::rast(out_path, subds = "metabolic_rate")

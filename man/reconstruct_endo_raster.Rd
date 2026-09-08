@@ -14,7 +14,9 @@ reconstruct_endo_raster(
   study_area = NULL,
   parallel = FALSE,
   ncores = 2,
-  compression = 4L
+  compression = 4L,
+  target_chunk_mb = 4,
+  target_batch_mb = 1024
 )
 }
 \arguments{
@@ -58,6 +60,18 @@ itself always happens sequentially afterward. Default \code{FALSE}.}
 Default \code{2}.}
 
 \item{compression}{Integer 0-9. Gzip compression level. Default \code{4L}.}
+
+\item{target_chunk_mb}{Numeric. Target size in MB for each output NetCDF
+storage chunk, used by \code{\link{.endo_balanced_chunk_shape}} to derive
+a chunk shape that keeps both a single pixel's full time series and a
+single timestep's full spatial slice (e.g. a sum across time) fast to
+read - replacing the old \code{c(1, 1, ntime)} chunking, which favored
+per-cell writes at the cost of any cross-pixel read. Default \code{4}.}
+
+\item{target_batch_mb}{Numeric. Target in-memory size in MB for each
+spatial write batch (a batch spans the full time axis, so its size is
+\code{batch_x * batch_y * ntime * 8} bytes); bounds memory for large
+study areas regardless of the period's total extent. Default \code{1024}.}
 }
 \value{
 Invisibly, a \code{data.frame} with one row per requested period:
@@ -98,6 +112,16 @@ a period with no manifests, or no HOURPLOT chunk files overlapping that
 period's actual simulation window, is a \code{stop()} - a stray HOURPLOT
 file from an unrelated period elsewhere under \code{root_dir} does not
 count as "something was found."
+
+The output NetCDF's storage chunking is a balanced (x, y, t) shape (see
+\code{\link{.endo_balanced_chunk_shape}}), not the pixel-per-chunk layout
+used previously - a single pixel's full time series and a full-grid
+spatial slice or time-collapsing reduction (e.g. summing across layers to
+get one total-cost raster) are both fast to read back. Cells are still
+assembled in parallel via \code{future_lapply()} when \code{parallel =
+TRUE}, just scoped to one spatial write batch at a time (see
+\code{\link{.endo_batch_dims}}) rather than the whole period at once -
+this also bounds memory for large study areas.
 }
 \seealso{
 \code{\link{run_endo_big_nichemap}}
