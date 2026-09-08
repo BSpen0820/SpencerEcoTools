@@ -27,6 +27,7 @@ run_endo_big_nichemap(
   timeout = 0,
   parallel = FALSE,
   ncores = 2,
+  max_attempts = 2,
   ...
 )
 }
@@ -126,6 +127,18 @@ via \code{future_lapply()} with \code{ncores} workers. Default
 \item{ncores}{Integer. Workers to use when \code{parallel = TRUE}; also
 sets \code{terraOptions(threads = ncores)}. Default \code{2}.}
 
+\item{max_attempts}{Integer >= 1. Total attempts per chunk (its first run
+plus up to \code{max_attempts - 1} retries) before it's given up on.
+Every attempt - including retries - builds a brand-new temp workspace
+from scratch, so a retry never inherits a previous attempt's partial or
+empty directory. Retries for a tile run after every cell in that tile
+has been attempted once (still before that tile's rasters/lookups are
+freed), and always serially even when \code{parallel = TRUE}, since
+contention between concurrent workers is itself a plausible cause of
+intermittent failures. Only the \emph{final} failed attempt of a chunk
+that never succeeds is copied to \code{Debug_CSVs}. Default \code{2}
+(one retry).}
+
 \item{...}{Hidden SLURM array arguments \code{clust_array_arg}/
 \code{clust_array_size}, same convention as
 \code{\link{run_micro_big_nichemap}}.}
@@ -133,8 +146,9 @@ sets \code{terraOptions(threads = ncores)}. Default \code{2}.}
 \value{
 Invisibly, the concatenated per-tile log \code{data.frame}
 (\code{cell_id, chunk_index, chunk_start, chunk_end, status, message,
-  output_path}) across every \code{(tile, period)} task this call
-processed.
+  output_path, n_attempts}) across every \code{(tile, period)} task this
+call processed. \code{n_attempts} is how many tries that chunk's final
+status reflects.
 }
 \description{
 Formalizes the landscape-scale Endotherm model workflow: for every valid

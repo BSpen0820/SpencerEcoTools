@@ -69,6 +69,58 @@ test_that(".endo_check_duplicate_chunks passes on unique (tile_id, cell_id, chun
   expect_true(SpencerEcoTools:::.endo_check_duplicate_chunks(hourplot_files))
 })
 
+test_that(".endo_scoped_search_dir narrows to a direct child period directory", {
+  root <- tempfile("scoped_direct_")
+  .touch(file.path(root, "20240701_to_20250601", "Tile_002", "marker.csv"))
+  on.exit(unlink(root, recursive = TRUE))
+
+  found <- SpencerEcoTools:::.endo_scoped_search_dir(root, "20240701_to_20250601")
+  expect_equal(normalizePath(found), normalizePath(file.path(root, "20240701_to_20250601")))
+})
+
+test_that(".endo_scoped_search_dir narrows to a nested period directory (one level under root_dir)", {
+  root <- tempfile("scoped_nested_")
+  .touch(file.path(root, "TetonsYearSpecific", "20220701_to_20230601", "Tile_002", "marker.csv"))
+  on.exit(unlink(root, recursive = TRUE))
+
+  found <- SpencerEcoTools:::.endo_scoped_search_dir(root, "20220701_to_20230601")
+  expect_equal(normalizePath(found),
+              normalizePath(file.path(root, "TetonsYearSpecific", "20220701_to_20230601")))
+})
+
+test_that(".endo_scoped_search_dir falls back to root_dir when no period directory exists (old flat layout)", {
+  root <- tempfile("scoped_flat_")
+  .touch(file.path(root, "year_specific", "Tile_002", "Cell_10015",
+                   "HOURPLOT_chunk1_20171209_20180119.csv"))
+  on.exit(unlink(root, recursive = TRUE))
+
+  found <- SpencerEcoTools:::.endo_scoped_search_dir(root, "20170701_to_20180601")
+  expect_equal(normalizePath(found), normalizePath(root))
+})
+
+test_that(".endo_scoped_search_dir falls back to root_dir when the period directory is ambiguous", {
+  root <- tempfile("scoped_ambiguous_")
+  # Direct child AND a nested match for the same period_label both exist -
+  # narrowing to either would silently hide the other scenario tree from
+  # .endo_check_duplicate_chunks(), so this must fall through to root_dir.
+  .touch(file.path(root, "20220701_to_20230601", "Tile_002", "marker.csv"))
+  .touch(file.path(root, "TetonsYearSpecific", "20220701_to_20230601", "Tile_003", "marker.csv"))
+  on.exit(unlink(root, recursive = TRUE))
+
+  found <- SpencerEcoTools:::.endo_scoped_search_dir(root, "20220701_to_20230601")
+  expect_equal(normalizePath(found), normalizePath(root))
+})
+
+test_that(".endo_scoped_search_dir falls back to root_dir when multiple nested matches exist", {
+  root <- tempfile("scoped_multi_nested_")
+  .touch(file.path(root, "ScenarioA", "20220701_to_20230601", "Tile_002", "marker.csv"))
+  .touch(file.path(root, "ScenarioB", "20220701_to_20230601", "Tile_003", "marker.csv"))
+  on.exit(unlink(root, recursive = TRUE))
+
+  found <- SpencerEcoTools:::.endo_scoped_search_dir(root, "20220701_to_20230601")
+  expect_equal(normalizePath(found), normalizePath(root))
+})
+
 test_that(".endo_check_duplicate_chunks stops when two scenario trees collide on the same tile/cell/chunk", {
   # Reproduces the real collision: two sibling scenario folders (e.g.
   # year_specific/ and climatology/) both reachable under one root_dir,

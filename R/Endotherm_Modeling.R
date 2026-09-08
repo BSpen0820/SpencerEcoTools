@@ -924,6 +924,21 @@ plot.metchamber_result <- function(x, ...) {
   data.frame(timestamp = timestamp, value = hp[[variable_col]])
 }
 
+.endo_scoped_search_dir <- function(root_dir, period_label) {
+  # Both patterns are checked together, not short-circuited independently -
+  # if root_dir happens to contain two scenario trees for the same period
+  # (one matching each pattern), that's exactly the collision
+  # .endo_check_duplicate_chunks() exists to catch. Narrowing to just the
+  # first match found would silently drop the second tree instead of
+  # falling through to the full-root_dir scan that surfaces it.
+  direct <- file.path(root_dir, period_label)
+  nested <- Sys.glob(file.path(root_dir, "*", period_label))
+  candidates <- unique(c(direct[dir.exists(direct)], nested[dir.exists(nested)]))
+
+  if (length(candidates) == 1) return(candidates)
+  root_dir
+}
+
 .endo_discover_hourplot_files <- function(root_dir) {
   paths <- list.files(root_dir, pattern = "^HOURPLOT_chunk.*\\.csv$",
                       recursive = TRUE, full.names = TRUE)
@@ -1683,22 +1698,36 @@ reconstruct_endo_raster <- function(root_dir, tile_map, dates,
 
   log_rows <- list()
 
+  cat(sprintf("Reconstructing %d period(s)\n", nrow(date_ranges)))
+
   for (d_idx in seq_len(nrow(date_ranges))) {
     period_label <- .endo_period_label(date_ranges$Start_Dates[d_idx], date_ranges$End_Dates[d_idx])
     sim_start <- date_ranges$Sim_Start[d_idx]
     sim_end   <- date_ranges$Sim_End[d_idx]
 
-    manifests <- .endo_discover_manifests(root_dir, period_label)
+    cat(sprintf("\n=== Period %d/%d: %s ===\n", d_idx, nrow(date_ranges), period_label))
+
+    # Narrow the recursive scan to this period's own subdirectory when one is
+    # unambiguously identifiable (the run_endo_big_nichemap()/hand-run
+    # layouts seen in production) - falls back to scanning all of root_dir
+    # for layouts with no period-labeled directory (e.g. the old flat
+    # hand-run layout, where multiple periods' chunk files share one
+    # Tile_NNN/Cell_CCCCCC/ folder). Never changes which files are found,
+    # only how much of the tree list.files() has to walk to find them.
+    search_dir <- .endo_scoped_search_dir(root_dir, period_label)
+
+    manifests <- .endo_discover_manifests(search_dir, period_label)
     if (nrow(manifests) == 0) {
       stop(sprintf("No manifests found under %s for period %s - check root_dir and dates.",
                    root_dir, period_label))
     }
+    cat(sprintf("  Found %d manifest(s)\n", nrow(manifests)))
 
     # Period-scoped: only chunks overlapping THIS period's simulation window
     # count - "are there any HOURPLOT files anywhere under root_dir" is not
     # sufficient, since files from an unrelated period would otherwise mask
     # a real "nothing found for this period" condition.
-    hourplot_files <- .endo_discover_hourplot_files(root_dir)
+    hourplot_files <- .endo_discover_hourplot_files(search_dir)
     hourplot_files <- hourplot_files[
       hourplot_files$chunk_start <= sim_end & hourplot_files$chunk_end >= sim_start,
     ]
@@ -1709,6 +1738,7 @@ reconstruct_endo_raster <- function(root_dir, tile_map, dates,
       ))
     }
     .endo_check_duplicate_chunks(hourplot_files)
+    cat(sprintf("  Found %d chunk file(s) overlapping simulation window\n", nrow(hourplot_files)))
 
     cell_list <- do.call(rbind, lapply(seq_len(nrow(manifests)), function(i) {
       m <- utils::read.csv(manifests$path[i])
@@ -1746,6 +1776,9 @@ reconstruct_endo_raster <- function(root_dir, tile_map, dates,
       list(cell_num = cell$cell_num, values = series$values, has_data = series$has_data)
     }
 
+    cat(sprintf("  Assembling %d cell(s) (%s)...\n", nrow(cell_list),
+               if (parallel) sprintf("parallel, %d workers", ncores) else "sequential"))
+
     # Known scaling limitation (found by final review, not yet fixed): this
     # materializes every cell's full time series in memory before the first
     # NetCDF write (~59-155 MB/tile at production scale depending on window
@@ -1757,6 +1790,8 @@ reconstruct_endo_raster <- function(root_dir, tile_map, dates,
     } else {
       lapply(seq_len(nrow(cell_list)), cell_fn)
     }
+
+    cat("  Assembly complete, writing NetCDF...\n")
 
     n_placed <- 0L
     n_gapped <- 0L
@@ -1790,6 +1825,9 @@ reconstruct_endo_raster <- function(root_dir, tile_map, dates,
       cells_with_gaps = n_gapped,
       stringsAsFactors = FALSE
     )
+
+    cat(sprintf("  Done: %s (%d/%d cells placed, %d with gaps)\n",
+               output_path, n_placed, nrow(cell_list), n_gapped))
   }
 
   invisible(do.call(rbind, log_rows))

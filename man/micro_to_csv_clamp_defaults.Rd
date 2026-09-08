@@ -31,7 +31,12 @@ a structural sentinel (elevation on row 1, \code{0} elsewhere per
 NicheMapR convention, see \code{\link{micro_to_csv}}) rather than a real
 measurement; patching its \code{lower} bound above \code{0} would corrupt
 that sentinel. \code{DOY}/\code{TIME} are index columns and are never
-clamped, so they have no row here.
+clamped, so they have no row here. \code{SOLR}'s upper bound (\code{1200}
+W/m^2) is a defense-in-depth backstop against a since-fixed \code{microclimfPar}
+radiation bug that could inflate \code{SOLR} into the hundreds to
+1000s of W/m^2 near sunrise/sunset; it sits well below the solar constant
+and above legitimate clear-sky irradiance, so it should never trim real
+weather.
 }
 \seealso{
 \code{\link{micro_to_csv}}
