@@ -53,7 +53,7 @@ when this package's vignettes are built.
 
 ```{r}
 library(terra)
-library(SpencerEcoTools)
+library(ThermalScapeR)
 
 dem_fine   <- rast("./Data/DEM/DEM_GLO30.tif")
 dem_coarse <- rast("./Data/DEM/DEM_Coarse_UI_Arboretum.tif")
@@ -131,7 +131,7 @@ script, never by `run_endo_big_nichemap()` submitting jobs itself.
 ```r
 #!/usr/bin/env Rscript
 library(terra)
-library(SpencerEcoTools)
+library(ThermalScapeR)
 
 args <- commandArgs(trailingOnly = TRUE)
 get_arg <- function(name, default = NA) {

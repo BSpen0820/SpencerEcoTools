@@ -1,4 +1,4 @@
-# SpencerEcoTools
+# ThermalScapeR
 
 An R package for downloading, preprocessing, and packaging spatial and
 remote-sensing data for microclimate and endotherm modeling, built around the
@@ -46,7 +46,7 @@ policy, so install them explicitly first:
 remotes::install_github("ilyamaclean/microclimdata")
 remotes::install_github("BSpen0820/microclimfPara")
 
-remotes::install_github("BSpen0820/SpencerEcoTools")
+remotes::install_github("BSpen0820/ThermalScapeR")
 ```
 
 Google Earth Engine access (via `reticulate`) must be initialized before

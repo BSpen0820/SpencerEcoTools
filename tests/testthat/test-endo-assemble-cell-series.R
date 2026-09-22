@@ -30,7 +30,7 @@ test_that(".endo_assemble_cell_series concatenates two chunks in date order into
     stringsAsFactors = FALSE
   )
 
-  result <- SpencerEcoTools:::.endo_assemble_cell_series(
+  result <- ThermalScapeR:::.endo_assemble_cell_series(
     chunk_files_df, sim_start = as.Date("2022-12-09"), sim_end = as.Date("2022-12-11"),
     variable_col = "MET.W."
   )
@@ -48,7 +48,7 @@ test_that(".endo_assemble_cell_series NA-fills hours with no covering chunk, wit
   chunk_files_df <- data.frame(chunk_start = as.Date(character(0)), chunk_end = as.Date(character(0)),
                                path = character(0), stringsAsFactors = FALSE)
 
-  result <- SpencerEcoTools:::.endo_assemble_cell_series(
+  result <- ThermalScapeR:::.endo_assemble_cell_series(
     chunk_files_df, sim_start = as.Date("2022-12-09"), sim_end = as.Date("2022-12-09"),
     variable_col = "MET.W."
   )
@@ -74,7 +74,7 @@ test_that(".endo_assemble_cell_series NA-fills only the missing window when one 
     stringsAsFactors = FALSE
   )
 
-  result <- SpencerEcoTools:::.endo_assemble_cell_series(
+  result <- ThermalScapeR:::.endo_assemble_cell_series(
     chunk_files_df, sim_start = as.Date("2022-12-09"), sim_end = as.Date("2022-12-10"),
     variable_col = "MET.W."
   )

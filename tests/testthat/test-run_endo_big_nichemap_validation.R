@@ -35,7 +35,7 @@ test_that("run_endo_big_nichemap rejects clust_array_arg out of range", {
 
 test_that(".normalize_dates_with_sim_window defaults Sim_Start/Sim_End to the period when absent", {
   d <- as.Date(c("2022-07-01", "2023-06-30"))
-  result <- SpencerEcoTools:::.normalize_dates_with_sim_window(d)
+  result <- ThermalScapeR:::.normalize_dates_with_sim_window(d)
   expect_equal(result$Start_Dates, as.Date("2022-07-01"))
   expect_equal(result$End_Dates, as.Date("2023-06-30"))
   expect_equal(result$Sim_Start, as.Date("2022-07-01"))
@@ -47,13 +47,13 @@ test_that(".normalize_dates_with_sim_window keeps caller-supplied Sim_Start/Sim_
     Start_Dates = as.Date("2022-07-01"), End_Dates = as.Date("2023-06-30"),
     Sim_Start = as.Date("2022-12-09"), Sim_End = as.Date("2023-04-15")
   )
-  result <- SpencerEcoTools:::.normalize_dates_with_sim_window(d)
+  result <- ThermalScapeR:::.normalize_dates_with_sim_window(d)
   expect_equal(result$Sim_Start, as.Date("2022-12-09"))
   expect_equal(result$Sim_End, as.Date("2023-04-15"))
 })
 
 test_that(".endo_chunk_bounds splits an uneven day count into <= chunk_size chunks covering every day once", {
-  bounds <- SpencerEcoTools:::.endo_chunk_bounds(n_days = 128, chunk_size = 52)
+  bounds <- ThermalScapeR:::.endo_chunk_bounds(n_days = 128, chunk_size = 52)
   expect_length(bounds, 3)
   expect_equal(unlist(bounds), 1:128)
   expect_true(all(vapply(bounds, length, integer(1)) <= 52))
@@ -70,8 +70,8 @@ test_that(".endo_resize_static_fields resizes statics without disturbing time-va
   tv <- endo_timevar_template()
   tv$act <- seq(1.00, 1.29, by = 0.01)             # 30-day full window
   julnum <- 15; idx <- 16:30
-  prepped <- SpencerEcoTools:::.endo_resize_static_fields(endo_inputs, julnum)
-  prepped <- SpencerEcoTools:::.endo_apply_timevar(prepped, tv, idx)
+  prepped <- ThermalScapeR:::.endo_resize_static_fields(endo_inputs, julnum)
+  prepped <- ThermalScapeR:::.endo_apply_timevar(prepped, tv, idx)
   expect_equal(prepped$diet$act, tv$act[idx])      # time-varying override applied correctly
   expect_length(prepped$diet$digef, julnum)        # static field resized
   expect_length(prepped$animal$mass2, julnum)

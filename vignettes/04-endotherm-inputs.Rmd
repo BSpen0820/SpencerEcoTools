@@ -29,7 +29,7 @@ picks up in `vignette("05-metabolic-chamber")`.
 parameterization extracted from a real NicheMapR Endotherm run.
 
 ```{r}
-library(SpencerEcoTools)
+library(ThermalScapeR)
 
 defaults <- get_endotherm_defaults()
 str(defaults, max.level = 1)

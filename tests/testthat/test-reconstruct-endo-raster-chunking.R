@@ -19,7 +19,7 @@
 
 test_that(".endo_balanced_chunk_shape() never produces the old pixel-per-chunk shape and always stays in-bounds", {
   # Production-scale, leap-year worst case (8784 = 366 * 24)
-  s1 <- SpencerEcoTools:::.endo_balanced_chunk_shape(2166, 1308, 8784)
+  s1 <- ThermalScapeR:::.endo_balanced_chunk_shape(2166, 1308, 8784)
   expect_true(s1$x >= 1 && s1$x <= 2166)
   expect_true(s1$y >= 1 && s1$y <= 1308)
   expect_true(s1$t >= 1 && s1$t <= 8784)
@@ -29,12 +29,12 @@ test_that(".endo_balanced_chunk_shape() never produces the old pixel-per-chunk s
   expect_true(s1$t < 8784)
 
   # Non-leap year, same grid - should run cleanly and stay in-bounds too
-  s2 <- SpencerEcoTools:::.endo_balanced_chunk_shape(2166, 1308, 8760)
+  s2 <- ThermalScapeR:::.endo_balanced_chunk_shape(2166, 1308, 8760)
   expect_true(s2$t >= 1 && s2$t <= 8760)
 
   # Tiny grid: the formula can suggest chunk dims bigger than the axis
   # itself - must clamp, never error, never exceed the axis length.
-  s3 <- SpencerEcoTools:::.endo_balanced_chunk_shape(3, 3, 4)
+  s3 <- ThermalScapeR:::.endo_balanced_chunk_shape(3, 3, 4)
   expect_true(s3$x >= 1 && s3$x <= 3)
   expect_true(s3$y >= 1 && s3$y <= 3)
   expect_true(s3$t >= 1 && s3$t <= 4)
@@ -42,10 +42,10 @@ test_that(".endo_balanced_chunk_shape() never produces the old pixel-per-chunk s
 
 test_that(".endo_batch_dims()/.endo_spatial_batches() cover every cell exactly once and stay chunk-aligned", {
   nx <- 50; ny <- 40; nt <- 1000
-  chunk_shape <- SpencerEcoTools:::.endo_balanced_chunk_shape(nx, ny, nt)
+  chunk_shape <- ThermalScapeR:::.endo_balanced_chunk_shape(nx, ny, nt)
   # Tiny budget forces multiple batches even for this small grid
-  batch_dims <- SpencerEcoTools:::.endo_batch_dims(nx, ny, nt, chunk_shape, target_batch_mb = 1)
-  batches <- SpencerEcoTools:::.endo_spatial_batches(nx, ny, batch_dims)
+  batch_dims <- ThermalScapeR:::.endo_batch_dims(nx, ny, nt, chunk_shape, target_batch_mb = 1)
+  batches <- ThermalScapeR:::.endo_spatial_batches(nx, ny, batch_dims)
 
   expect_true(length(batches) > 1)  # otherwise this test isn't exercising batching at all
   expect_equal(batch_dims$x %% chunk_shape$x, 0)

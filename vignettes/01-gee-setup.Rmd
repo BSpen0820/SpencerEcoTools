@@ -17,7 +17,7 @@ knitr::opts_chunk$set(
 
 ## What this package uses Google Earth Engine for
 
-SpencerEcoTools pulls several of its raw inputs directly from Google Earth
+ThermalScapeR pulls several of its raw inputs directly from Google Earth
 Engine (GEE):
 
 - `download_dem()` — Copernicus GLO-30 elevation
@@ -50,7 +50,7 @@ through their own API.
 
 ## 2. Set up a Python environment with the Earth Engine API
 
-SpencerEcoTools calls Earth Engine through `reticulate`, which drives a
+ThermalScapeR calls Earth Engine through `reticulate`, which drives a
 Python environment containing the `earthengine-api` package. A conda/
 miniforge environment keeps this isolated from your system Python:
 
@@ -71,7 +71,7 @@ conda install -c conda-forge xarray s3fs zarr netCDF4
 
 ## 3. Point R at that environment and initialize Earth Engine
 
-Every session that calls a GEE-backed SpencerEcoTools function needs this
+Every session that calls a GEE-backed ThermalScapeR function needs this
 done once, before any package function is called:
 
 ```r
@@ -92,7 +92,7 @@ ee$Number(1)$getInfo()
 credentials); after that, `ee$Initialize()` alone is enough at the start of
 each session.
 
-**Why this works without a package-level init function**: SpencerEcoTools
+**Why this works without a package-level init function**: ThermalScapeR
 itself never calls `ee$Initialize()`. Internally, `R/zzz.R` lazily imports
 Earth Engine once when the package loads:
 
@@ -106,12 +106,12 @@ ee <- NULL
 Because `reticulate` runs a single Python process per R session, this
 lazy-loaded internal `ee` binding shares the exact same Python `ee` module
 your own `ee$Initialize()` call configured above. Initializing Earth Engine
-yourself, as shown above, is what makes every SpencerEcoTools GEE function
-work — there is no separate SpencerEcoTools-specific setup call.
+yourself, as shown above, is what makes every ThermalScapeR GEE function
+work — there is no separate ThermalScapeR-specific setup call.
 
 ## 4. Google Drive authentication (for polling GEE exports)
 
-GEE image exports land in a Google Drive folder before SpencerEcoTools
+GEE image exports land in a Google Drive folder before ThermalScapeR
 downloads them locally (`poll_drive()`, called internally by every
 `download_*()` GEE function). This needs its own, separate authentication:
 

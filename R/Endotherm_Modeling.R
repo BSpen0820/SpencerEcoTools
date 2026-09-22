@@ -1075,7 +1075,7 @@ plot.metchamber_result <- function(x, ...) {
   ncdf4::ncatt_put(nc, variable, "coordinates", if (is_lonlat) "lon lat" else "x y")
   ncdf4::ncatt_put(nc, 0, "Conventions", "CF-1.8")
   ncdf4::ncatt_put(nc, 0, "history", sprintf(
-    "Created %s by R %s / SpencerEcoTools::reconstruct_endo_raster()",
+    "Created %s by R %s / ThermalScapeR::reconstruct_endo_raster()",
     format(Sys.time(), "%Y-%m-%dT%H:%M:%S"), paste(R.version$major, R.version$minor, sep = ".")
   ))
 

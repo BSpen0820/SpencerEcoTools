@@ -8,11 +8,11 @@ test_that(".endo_create_raster_nc places cell values at the correct spatial loca
   tile_map_r <- terra::rast(nrows = 3, ncols = 3, xmin = 0, xmax = 3, ymin = 0, ymax = 3,
                             crs = "EPSG:32612")
   time_axis <- seq(as.POSIXct("2022-12-09 00:00:00", tz = "UTC"), by = "hour", length.out = 4)
-  variable_meta <- SpencerEcoTools:::.endo_variable_column("metabolic_rate")
+  variable_meta <- ThermalScapeR:::.endo_variable_column("metabolic_rate")
 
-  chunk_shape <- SpencerEcoTools:::.endo_balanced_chunk_shape(3, 3, 4)
+  chunk_shape <- ThermalScapeR:::.endo_balanced_chunk_shape(3, 3, 4)
 
-  nc <- SpencerEcoTools:::.endo_create_raster_nc(out_path, tile_map_r, time_axis,
+  nc <- ThermalScapeR:::.endo_create_raster_nc(out_path, tile_map_r, time_axis,
                                                  "metabolic_rate", variable_meta, compression = 4L,
                                                  chunk_shape = chunk_shape)
 

@@ -10,7 +10,7 @@ test_that(".endo_discover_hourplot_files finds chunk files under the OLD (pre-ex
   .touch(file.path(root, "year_specific", "Tile_002", "Cell_10016", "HOURPLOT_chunk2_20180120_20180303.csv"))
   on.exit(unlink(root, recursive = TRUE))
 
-  found <- SpencerEcoTools:::.endo_discover_hourplot_files(root)
+  found <- ThermalScapeR:::.endo_discover_hourplot_files(root)
 
   expect_equal(nrow(found), 3)
   expect_setequal(found$tile_id, 2)
@@ -26,7 +26,7 @@ test_that(".endo_discover_hourplot_files finds chunk files under the NEW (run_en
                    "Cell_010015", "HOURPLOT_chunk1_20221209_20230119.csv"))
   on.exit(unlink(root, recursive = TRUE))
 
-  found <- SpencerEcoTools:::.endo_discover_hourplot_files(root)
+  found <- ThermalScapeR:::.endo_discover_hourplot_files(root)
 
   expect_equal(nrow(found), 1)
   expect_equal(found$tile_id, 2)
@@ -46,16 +46,16 @@ test_that(".endo_discover_manifests matches OLD layout by filename-embedded peri
   .touch(file.path(root, "TetonsClimatology", "20240701_to_20250601", "Tile_003_manifest.csv"))
   on.exit(unlink(root, recursive = TRUE))
 
-  found_old <- SpencerEcoTools:::.endo_discover_manifests(root, "20170701_to_20180601")
+  found_old <- ThermalScapeR:::.endo_discover_manifests(root, "20170701_to_20180601")
   expect_equal(nrow(found_old), 1)
   expect_equal(found_old$tile_id, 2)
 
-  found_new <- SpencerEcoTools:::.endo_discover_manifests(root, "20240701_to_20250601")
+  found_new <- ThermalScapeR:::.endo_discover_manifests(root, "20240701_to_20250601")
   expect_equal(nrow(found_new), 1)
   expect_equal(found_new$tile_id, 3)
 
   # A period with nothing matching returns a 0-row data.frame, not an error
-  found_none <- SpencerEcoTools:::.endo_discover_manifests(root, "19990101_to_19990201")
+  found_none <- ThermalScapeR:::.endo_discover_manifests(root, "19990101_to_19990201")
   expect_equal(nrow(found_none), 0)
 })
 
@@ -66,7 +66,7 @@ test_that(".endo_check_duplicate_chunks passes on unique (tile_id, cell_id, chun
     chunk_end = as.Date(c("2023-01-19", "2023-01-19", "2023-01-19")),
     path = c("a", "b", "c"), stringsAsFactors = FALSE
   )
-  expect_true(SpencerEcoTools:::.endo_check_duplicate_chunks(hourplot_files))
+  expect_true(ThermalScapeR:::.endo_check_duplicate_chunks(hourplot_files))
 })
 
 test_that(".endo_scoped_search_dir narrows to a direct child period directory", {
@@ -74,7 +74,7 @@ test_that(".endo_scoped_search_dir narrows to a direct child period directory", 
   .touch(file.path(root, "20240701_to_20250601", "Tile_002", "marker.csv"))
   on.exit(unlink(root, recursive = TRUE))
 
-  found <- SpencerEcoTools:::.endo_scoped_search_dir(root, "20240701_to_20250601")
+  found <- ThermalScapeR:::.endo_scoped_search_dir(root, "20240701_to_20250601")
   expect_equal(normalizePath(found), normalizePath(file.path(root, "20240701_to_20250601")))
 })
 
@@ -83,7 +83,7 @@ test_that(".endo_scoped_search_dir narrows to a nested period directory (one lev
   .touch(file.path(root, "TetonsYearSpecific", "20220701_to_20230601", "Tile_002", "marker.csv"))
   on.exit(unlink(root, recursive = TRUE))
 
-  found <- SpencerEcoTools:::.endo_scoped_search_dir(root, "20220701_to_20230601")
+  found <- ThermalScapeR:::.endo_scoped_search_dir(root, "20220701_to_20230601")
   expect_equal(normalizePath(found),
               normalizePath(file.path(root, "TetonsYearSpecific", "20220701_to_20230601")))
 })
@@ -94,7 +94,7 @@ test_that(".endo_scoped_search_dir falls back to root_dir when no period directo
                    "HOURPLOT_chunk1_20171209_20180119.csv"))
   on.exit(unlink(root, recursive = TRUE))
 
-  found <- SpencerEcoTools:::.endo_scoped_search_dir(root, "20170701_to_20180601")
+  found <- ThermalScapeR:::.endo_scoped_search_dir(root, "20170701_to_20180601")
   expect_equal(normalizePath(found), normalizePath(root))
 })
 
@@ -107,7 +107,7 @@ test_that(".endo_scoped_search_dir falls back to root_dir when the period direct
   .touch(file.path(root, "TetonsYearSpecific", "20220701_to_20230601", "Tile_003", "marker.csv"))
   on.exit(unlink(root, recursive = TRUE))
 
-  found <- SpencerEcoTools:::.endo_scoped_search_dir(root, "20220701_to_20230601")
+  found <- ThermalScapeR:::.endo_scoped_search_dir(root, "20220701_to_20230601")
   expect_equal(normalizePath(found), normalizePath(root))
 })
 
@@ -117,7 +117,7 @@ test_that(".endo_scoped_search_dir falls back to root_dir when multiple nested m
   .touch(file.path(root, "ScenarioB", "20220701_to_20230601", "Tile_003", "marker.csv"))
   on.exit(unlink(root, recursive = TRUE))
 
-  found <- SpencerEcoTools:::.endo_scoped_search_dir(root, "20220701_to_20230601")
+  found <- ThermalScapeR:::.endo_scoped_search_dir(root, "20220701_to_20230601")
   expect_equal(normalizePath(found), normalizePath(root))
 })
 
@@ -133,5 +133,5 @@ test_that(".endo_check_duplicate_chunks stops when two scenario trees collide on
             "climatology/Tile_002/Cell_7506/HOURPLOT_chunk1_20221209_20230119.csv"),
     stringsAsFactors = FALSE
   )
-  expect_error(SpencerEcoTools:::.endo_check_duplicate_chunks(hourplot_files), "duplicate|scenario")
+  expect_error(ThermalScapeR:::.endo_check_duplicate_chunks(hourplot_files), "duplicate|scenario")
 })

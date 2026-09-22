@@ -28,7 +28,7 @@ resampling the fine DEM onto the climate raster's actual grid:
 
 ```{r}
 library(terra)
-library(SpencerEcoTools)
+library(ThermalScapeR)
 
 dem_fine <- terra::rast("./Data/DEM/DEM_GLO30.tif")
 
@@ -120,7 +120,7 @@ model call in its own script:
 ```r
 #!/usr/bin/env Rscript
 library(terra)
-library(SpencerEcoTools)
+library(ThermalScapeR)
 
 n_threads <- as.integer(Sys.getenv("SLURM_CPUS_PER_TASK", unset = "1"))
 terraOptions(threads = n_threads, memfrac = 0.7, tempdir = "~/terra_temp")

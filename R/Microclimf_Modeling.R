@@ -775,7 +775,7 @@ trim_tile_buffer <- function(data, dem_proc, dem_core) {
     0,
     "history",
     sprintf(
-      "Created %s by R %s / SpencerEcoTools",
+      "Created %s by R %s / ThermalScapeR",
       format(Sys.time(), "%Y-%m-%dT%H:%M:%S"),
       paste(R.version$major, R.version$minor, sep = ".")
     )
@@ -888,7 +888,7 @@ trim_tile_buffer <- function(data, dem_proc, dem_core) {
   ncdf4::ncatt_put(nc, 0, "Conventions", "CF-1.8")
   ncdf4::ncatt_put(nc, 0, "data_type",   "mout_blw")
   ncdf4::ncatt_put(nc, 0, "history",
-                   sprintf("Created %s by R %s / SpencerEcoTools",
+                   sprintf("Created %s by R %s / ThermalScapeR",
                            format(Sys.time(), "%Y-%m-%dT%H:%M:%S"),
                            paste(R.version$major, R.version$minor, sep = ".")))
 

@@ -39,7 +39,7 @@ test_that(".endo_read_hourplot_chunk drops HR==24 rows and timestamps by positio
 
   chunk_start <- as.Date("2022-12-09")
   chunk_end   <- chunk_start + 2
-  result <- SpencerEcoTools:::.endo_read_hourplot_chunk(path, chunk_start, chunk_end, "MET.W.")
+  result <- ThermalScapeR:::.endo_read_hourplot_chunk(path, chunk_start, chunk_end, "MET.W.")
 
   expect_equal(nrow(result), 72)  # 3 days * 24 real hours, not 75
   expect_equal(as.Date(result$timestamp[1]), chunk_start)
@@ -62,7 +62,7 @@ test_that(".endo_read_hourplot_chunk drops HR==24 rows and timestamps by positio
 
   chunk_start <- as.Date("2022-12-09")
   chunk_end   <- chunk_start + 2
-  result <- SpencerEcoTools:::.endo_read_hourplot_chunk(path, chunk_start, chunk_end, "MET.W.")
+  result <- ThermalScapeR:::.endo_read_hourplot_chunk(path, chunk_start, chunk_end, "MET.W.")
 
   # This is the exact case a hardcoded skip=1 gets wrong: applying skip=1 to
   # this format would treat the real header row as data and misparse
@@ -89,7 +89,7 @@ test_that(".endo_read_hourplot_chunk treats a row-count mismatch as a read failu
   chunk_start <- as.Date("2022-12-09")
   chunk_end   <- chunk_start + 1  # claims 2 days, file actually has 3
   expect_warning(
-    result <- SpencerEcoTools:::.endo_read_hourplot_chunk(path, chunk_start, chunk_end, "MET.W."),
+    result <- ThermalScapeR:::.endo_read_hourplot_chunk(path, chunk_start, chunk_end, "MET.W."),
     "row count"
   )
   expect_equal(nrow(result), 0)

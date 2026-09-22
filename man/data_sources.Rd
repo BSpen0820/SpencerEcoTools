@@ -49,7 +49,7 @@ Height is obtained via \code{microclimdata::vegheight_download()} (Earth Engine
 asset \code{users/nlang/ETH_GlobalCanopyHeight_2020_10m_v1}).
 All references were verified in 2026-07 against their authoritative
 source pages (GEE Data Catalog, NASA LP DAAC/Earthdata, USGS, ESA/Copernicus,
-NOAA, Zenodo, and LANDFIRE); see \code{SpencerEcoTools_DataSources.bib} for the
+NOAA, Zenodo, and LANDFIRE); see \code{ThermalScapeR_DataSources.bib} for the
 corresponding Zotero-importable BibTeX records.
 }
 

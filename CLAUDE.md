@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Package overview
 
-SpencerEcoTools is an R package that automates download, preprocessing, and packaging of spatial/remote sensing data for microclimate modeling using the microclimf/microclimdata/NicheMapR ecosystem. It also wraps HPC (SLURM) cluster workflows into reusable functions. The package is authored by Bryan Spencer (PhD, University of Idaho, ungulate ecology).
+ThermalScapeR (formerly SpencerEcoTools) is an R package that automates download, preprocessing, and packaging of spatial/remote sensing data for two linked, landscape-scale modeling pipelines built on the NicheMapR ecosystem: fine-scale microclimate modeling (via a fork of `microclimf`, `microclimfPara`) and endotherm thermal-energetics modeling (via a proprietary, advanced NicheMapR Endotherm model executable). It also wraps HPC (SLURM) cluster workflows for both pipelines into reusable functions. The package is authored by Bryan Spencer (PhD, University of Idaho, ungulate ecology).
 
 ## Development commands
 
@@ -20,7 +20,7 @@ devtools::check()
 devtools::load_all()
 
 # Run a single function's examples
-example("run_micro_big_nichemap", package = "SpencerEcoTools")
+example("run_micro_big_nichemap", package = "ThermalScapeR")
 ```
 
 GEE must be initialized before calling any GEE functions:

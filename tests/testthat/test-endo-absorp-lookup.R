@@ -13,7 +13,7 @@ test_that(".endo_absorp_lookup extracts 1 - Gref once per distinct year-month, i
   sim_dates <- as.Date(c("2022-07-15", "2022-07-20", "2022-08-01"))
   cell_xy <- terra::xyFromCell(r, c(1, 4))  # two cells: top-left, bottom-right
 
-  lookup <- SpencerEcoTools:::.endo_absorp_lookup(refl_dir, "TestArea", sim_dates, cell_xy)
+  lookup <- ThermalScapeR:::.endo_absorp_lookup(refl_dir, "TestArea", sim_dates, cell_xy)
 
   expect_setequal(lookup$year_month, c("2022_07", "2022_08"))
   expect_equal(lookup$values[1, "2022_07"], 1 - 0.1, tolerance = 1e-6, ignore_attr = TRUE)

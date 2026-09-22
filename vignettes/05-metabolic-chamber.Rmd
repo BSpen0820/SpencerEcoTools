@@ -31,7 +31,7 @@ but skipped everywhere else (including CI and CRAN-style checks).
 ## 1. Reuse the animal parameterization
 
 ```{r}
-library(SpencerEcoTools)
+library(ThermalScapeR)
 
 endo_inputs <- get_endotherm_defaults()
 endo_inputs$animal$species <- "Male Bighorn"

@@ -1,13 +1,17 @@
-Package: SpencerEcoTools
-Title: Data Download and Preprocessing Tools for Microclimate Modeling
+Package: ThermalScapeR
+Title: Landscape-Scale Microclimate and Endotherm Energetics Modeling
+    Tools
 Version: 2.0.0
 Authors@R: person("Bryan", "Spencer", role = c("aut", "cre"),
                    email = "bspencer@uidaho.edu")
-Description: A collection of tools for automating the download and preprocessing 
-    of spatial and remote sensing data from Google Earth Engine, in preparation 
-    for microclimate modeling with the microclimf package. Also includes 
-    additional utility functions for ecological spatial analysis workflows. Finally,
-    this packages includes preprocessing functions for nichemapper endotherm modeling.
+Description: A collection of tools for downloading, preprocessing, and
+    packaging spatial and remote-sensing data from Google Earth Engine
+    and NOAA AORC for two linked, landscape-scale modeling pipelines
+    built on the NicheMapR ecosystem: fine-scale microclimate modeling
+    (via a fork of 'microclimf') and endotherm thermal-energetics
+    modeling (via a proprietary, advanced NicheMapR Endotherm model
+    executable). Both pipelines support tiled, HPC/SLURM-ready
+    workflows for large study areas.
 License: MIT + file LICENSE
 Encoding: UTF-8
 Roxygen: list(markdown = TRUE)

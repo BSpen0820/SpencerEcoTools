@@ -28,7 +28,7 @@ real, while exercising every step of the pipeline.
 ```{r}
 library(sf)
 library(terra)
-library(SpencerEcoTools)
+library(ThermalScapeR)
 
 study_area <- "UI_Arboretum"
 
