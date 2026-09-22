@@ -1,6 +1,7 @@
 test_that("run_endo_big_nichemap runs one tile/one cell end-to-end, producing chunked, trimmed HOURPLOT output", {
   skip_on_os(c("linux", "mac"))
   fixtures_dir <- testthat::test_path("fixtures")
+  skip_if_not(file.exists(file.path(fixtures_dir, "Endo2022a.exe")), "Endo2022a.exe fixture not present")
   fx <- .rebn_build_fixture(n_days = 60)  # forces 2 chunks at chunk_size = 52
   on.exit(unlink(fx$root, recursive = TRUE))
 

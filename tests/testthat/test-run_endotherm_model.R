@@ -15,6 +15,7 @@ test_that("select native invocation on Windows via sysname works as expected", {
 test_that("write_endotherm_inputs + write_juldays_dat + run_endotherm_model work end-to-end against the real exe", {
   skip_on_os(c("linux", "mac")) # this integration test only runs natively where the exe is a native binary
   fixtures_dir <- testthat::test_path("fixtures")
+  skip_if_not(file.exists(file.path(fixtures_dir, "Endo2022a.exe")), "Endo2022a.exe fixture not present")
   workspace <- tempfile("endo_ws_")
   dir.create(workspace)
   on.exit(unlink(workspace, recursive = TRUE))

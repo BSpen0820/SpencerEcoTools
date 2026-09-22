@@ -9,3 +9,4 @@ data-raw/
 ._*
 .claude/settings.local.json
 HPC_workflow/
+tests/testthat/fixtures/Endo2022a.exe
