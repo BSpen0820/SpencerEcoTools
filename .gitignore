@@ -7,6 +7,6 @@ docs/
 .worktrees/
 data-raw/
 ._*
-.claude/settings.local.json
+.claude/
 HPC_workflow/
 tests/testthat/fixtures/Endo2022a.exe
