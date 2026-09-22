@@ -1,0 +1,250 @@
+---
+title: "Running the Endotherm Model at Landscape Scale"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Running the Endotherm Model at Landscape Scale}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  eval = FALSE
+)
+```
+
+This picks up two threads at once: the calibrated animal parameterization
+from `vignette("05-metabolic-chamber")`, and the tiled microclimate pipeline
+output from `vignette("03-running-microclimf")`, for the same dummy
+UI Arboretum site. `run_endo_big_nichemap()` runs `Endo2022a.exe` across
+every valid cell of every tile, locally or as a SLURM array job;
+`reconstruct_endo_raster()` then stitches the chunked output into
+full-domain rasters. Everything here is illustrative (`eval = FALSE`) — it
+needs a complete tiled `microclim_dir`, a DEM, reflectance data, and either
+a local `Endo2022a.exe` or a cluster with Wine, none of which are available
+when this package's vignettes are built.
+
+## 1. Inputs this step needs
+
+- `tile_map` — the fine-resolution tile-ID raster from `vignette("03-running-microclimf")`'s
+  `create_tiles(..., return_tiles_rast = TRUE)` call (`tiles$tiles_rast`).
+- `valid_cells_mask` — a 1/0/NA raster you build yourself (this package
+  doesn't produce one): typically a study area or winter-range polygon
+  intersected with a water/urban mask, so only ecologically relevant cells
+  are simulated.
+- `dem` — the same fine-resolution DEM used for tiling (`dem_fine`), used
+  to look up each cell's elevation.
+- `microclim_dir` — **the raw per-tile output directory `run_micro_big_nichemap()`
+  wrote in vignette 03, step 3 (`"./Microclim_out"`), not the stitched
+  `Stitched/` output from step 5.** `run_endo_big_nichemap()` reads each
+  tile's `Microclim_Models/{period_label}/{hgt_lbl}/Tile_{NNN}_..._MicroclimModel_{period_label}.nc`
+  file directly, and only supports `file_fmt = "nc"` — vignette 03 already
+  ran `run_micro_big_nichemap()` with `file_fmt = "nc"`, so no changes are
+  needed there.
+- `refl_dir` — the parent directory of `compute_reflectance()`'s
+  `out_dir_gref` (e.g. if `out_dir_gref = "./Data/Reflectance/Gref"`, pass
+  `refl_dir = "./Data/Reflectance"`); ground absorptivity is looked up from
+  the `Gref/` subfolder underneath it.
+- `exe_path` — the same local `Endo2022a.exe` path used in vignette 05.
+  Reminder: this executable is never committed to the package repository.
+- `endo_inputs` — the calibrated bundle from vignette 05.
+
+```{r}
+library(terra)
+library(SpencerEcoTools)
+
+dem_fine   <- rast("./Data/DEM/DEM_GLO30.tif")
+dem_coarse <- rast("./Data/DEM/DEM_Coarse_UI_Arboretum.tif")
+
+tiles <- create_tiles(
+  coarse_dem        = dem_coarse,
+  fine_dem          = dem_fine,
+  dates             = as.Date(c("2023-07-01", "2023-08-01")),
+  tile_dims         = c(3, 3),
+  return_tiles_rast = TRUE
+)
+
+winter_range <- vect("./Data/WinterRange/UI_Arboretum_range.shp")
+water_mask   <- rast("./Data/Masks/UI_Arboretum_water_mask.tif")
+
+valid_cells_mask <- rasterize(winter_range, dem_fine, field = 1)
+valid_cells_mask[water_mask == 1] <- NA
+
+endo_inputs <- get_endotherm_defaults()
+endo_inputs$animal$species <- "Male Bighorn"
+endo_inputs$animal$mass    <- 60
+endo_inputs$animal$mass2   <- rep(60, endo_inputs$model_settings$julnum)
+
+exe_path <- "D:/Code/Niche Mapper/NicheMap_UpdatedExe/Endotherm Model and Input Files/Endo2022a.exe"
+
+dates_df <- data.frame(
+  Start_Dates = as.Date("2023-07-01"),
+  End_Dates   = as.Date("2023-08-01")
+)
+```
+
+## 2. Run locally
+
+```{r}
+log_local <- run_endo_big_nichemap(
+  tile_map         = tiles$tiles_rast,
+  valid_cells_mask = valid_cells_mask,
+  dates            = dates_df,
+  microclim_dir    = "./Microclim_out",
+  dem              = dem_fine,
+  refl_dir         = "./Data/Reflectance",
+  exe_path         = exe_path,
+  output_dir       = "./Endo_out",
+  wineprefix       = NULL,
+  endo_inputs      = endo_inputs,
+  study_area       = "UI_Arboretum",
+  parallel         = TRUE,
+  ncores           = 4
+)
+```
+
+A "task" here is one `(tile, period)` combination — one animal per valid
+cell, simulated in `chunk_size`-day blocks (default 52) across the whole
+period. `wineprefix` is ignored on Windows; on Linux/macOS it needs a
+prefix already initialized via `init_wine_prefix()`, or `NULL` to let each
+scenario get its own private prefix. With no `clust_array_arg`/
+`clust_array_size` supplied, every `(tile, period)` combination for the
+dummy site's single tile runs in this one session, the same round-robin
+distribution `run_micro_big_nichemap()` uses in vignette 03.
+
+Output lands under `output_dir/[study_area/]{period_label}/`: a
+`Tile_{NNN}_manifest.csv` and `Tile_{NNN}_log.csv` per tile, and each
+simulated cell's chunked hourly output at
+`Tile_{NNN}/Cell_{CCCCCC}/HOURPLOT_chunk{k}_{start}_{end}.csv` —
+`reconstruct_endo_raster()` (step 4 below) discovers and assembles these
+automatically.
+
+## 3. Run on a SLURM cluster
+
+Same hidden-`...`-argument pattern as `run_micro_big_nichemap()`:
+`clust_array_arg`/`clust_array_size` are passed in by an SBATCH array
+script, never by `run_endo_big_nichemap()` submitting jobs itself.
+
+`run_endo_landscape_cluster.R`:
+```r
+#!/usr/bin/env Rscript
+library(terra)
+library(SpencerEcoTools)
+
+args <- commandArgs(trailingOnly = TRUE)
+get_arg <- function(name, default = NA) {
+  x <- grep(paste0("^--", name, "="), args, value = TRUE)
+  if (length(x) == 0) return(default)
+  sub(paste0("^--", name, "="), "", x)
+}
+clust_array_arg  <- get_arg("clust_array_arg")
+clust_array_size <- get_arg("clust_array_size")
+if (is.na(clust_array_arg) || is.na(clust_array_size)) {
+  stop("Both --clust_array_arg and --clust_array_size are required (missing or ",
+       "misspelled flag?). Got clust_array_arg=", clust_array_arg,
+       ", clust_array_size=", clust_array_size)
+}
+
+dem_fine   <- rast("./Data/DEM/DEM_GLO30.tif")
+dem_coarse <- rast("./Data/DEM/DEM_Coarse_UI_Arboretum.tif")
+
+tiles <- create_tiles(
+  coarse_dem = dem_coarse, fine_dem = dem_fine,
+  dates      = as.Date(c("2023-07-01", "2023-08-01")),
+  tile_dims  = c(3, 3), return_tiles_rast = TRUE
+)
+
+winter_range <- vect("./Data/WinterRange/UI_Arboretum_range.shp")
+water_mask   <- rast("./Data/Masks/UI_Arboretum_water_mask.tif")
+valid_cells_mask <- rasterize(winter_range, dem_fine, field = 1)
+valid_cells_mask[water_mask == 1] <- NA
+
+endo_inputs <- get_endotherm_defaults()
+endo_inputs$animal$species <- "Male Bighorn"
+endo_inputs$animal$mass    <- 60
+endo_inputs$animal$mass2   <- rep(60, endo_inputs$model_settings$julnum)
+
+dates_df <- data.frame(
+  Start_Dates = as.Date("2023-07-01"),
+  End_Dates   = as.Date("2023-08-01")
+)
+
+# Never committed to the repo -- point this at wherever the cluster node
+# stores its own copy of the executable.
+exe_path <- Sys.getenv("ENDO_EXE_PATH")
+
+log <- run_endo_big_nichemap(
+  tile_map = tiles$tiles_rast, valid_cells_mask = valid_cells_mask,
+  dates = dates_df, microclim_dir = "./Microclim_out", dem = dem_fine,
+  refl_dir = "./Data/Reflectance", exe_path = exe_path,
+  output_dir = "./Endo_out", wineprefix = "~/wine_endo",
+  endo_inputs = endo_inputs, study_area = "UI_Arboretum",
+  headless = TRUE,
+  clust_array_arg  = as.integer(clust_array_arg),
+  clust_array_size = as.integer(clust_array_size)
+)
+
+cat(sprintf("Task %s/%s complete.\n", clust_array_arg, clust_array_size))
+```
+
+`run_endo_landscape.sbatch`:
+```bash
+#!/bin/bash
+#SBATCH --job-name=endo_UI_Arboretum
+#SBATCH --array=1-4
+#SBATCH --cpus-per-task=1
+#SBATCH --mem=8G
+#SBATCH --time=04:00:00
+#SBATCH --output=logs/endo_%A_%a.out
+
+module load R
+
+Rscript run_endo_landscape_cluster.R \
+  --clust_array_arg=${SLURM_ARRAY_TASK_ID} \
+  --clust_array_size=4
+```
+
+`run_endo_big_nichemap()` enumerates all `(tile, period)` combinations and
+distributes them round-robin across the array, exactly like
+`run_micro_big_nichemap()` in vignette 03 — size `--array` and
+`--clust_array_size` to `N_tiles x N_periods`, or fewer if running multiple
+combinations per node. `headless = TRUE` wraps each Wine invocation in
+`xvfb-run`, needed on compute nodes with no display server; on Windows
+nodes this and `wineprefix` are ignored entirely.
+
+## 4. Reconstruct landscape-scale rasters
+
+```{r}
+recon_log <- reconstruct_endo_raster(
+  root_dir   = "./Endo_out/UI_Arboretum",
+  tile_map   = tiles$tiles_rast,
+  dates      = dates_df,
+  variable   = "metabolic_rate",
+  output_dir = "./Endo_out/Stitched",
+  study_area = "UI_Arboretum",
+  parallel   = TRUE,
+  ncores     = 4
+)
+recon_log
+```
+
+`variable` selects one column from each cell's trimmed hourly output —
+`"metabolic_rate"` for `MET(W)`, `"water_loss"` for `EVP(G/S)`; call again
+with `variable = "water_loss"` for the second raster. Each call writes one
+NetCDF file, named `{study_area}_{variable}_{period_label}.nc` (e.g.
+`UI_Arboretum_metabolic_rate_20230701_to_20230801.nc`), with every valid
+cell's full hourly time series placed at its tile-map location — a cell
+with no covering data for the period is left entirely `NA`, not treated as
+an error.
+
+## Next steps
+
+That completes the endotherm arc across all three vignettes:
+`04-endotherm-inputs` built `endo.dat`/`alomvars.dat`/`JULDAYS.dat` for a
+single animal parameterization, `05-metabolic-chamber` calibrated it
+against a known resting metabolic rate, and this vignette ran it across
+every valid cell of a tiled study area and reconstructed full-domain
+metabolic-rate and water-loss rasters ready for downstream habitat or
+energetics analysis.

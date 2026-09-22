@@ -1,0 +1,103 @@
+---
+title: "Writing Endotherm Model Inputs: endo.dat, alomvars.dat, JULDAYS.dat"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Writing Endotherm Model Inputs: endo.dat, alomvars.dat, JULDAYS.dat}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+This is the first step in the endotherm modeling workflow: building the
+fixed-format input files (`endo.dat`, `alomvars.dat`, `JULDAYS.DAT`) that the
+NicheMapR Endotherm model executable (`Endo2022a.exe`) reads. Everything on
+this page runs in plain R and does not require the executable itself — it
+picks up in `vignette("05-metabolic-chamber")`.
+
+## 1. Start from the package's reference defaults
+
+`get_endotherm_defaults()` returns the same nine argument groups that
+`write_endotherm_inputs()` takes (`model_settings`, `animal`, `fur`,
+`physiology`, `diet`, `thermoreg`, `flying_digging`, `nest_shelter`,
+`allometry`), pre-filled with a reference Female Bighorn Sheep
+parameterization extracted from a real NicheMapR Endotherm run.
+
+```{r}
+library(SpencerEcoTools)
+
+defaults <- get_endotherm_defaults()
+str(defaults, max.level = 1)
+```
+
+## 2. Customize for a study animal
+
+Edit whichever fields differ for your animal. Any field that varies by
+Julian day (suffixed `2`, e.g. `mass2`) must stay the same length as
+`model_settings$julnum` (12 by default, one value per month).
+
+```{r}
+defaults$animal$species <- "Male Bighorn"
+defaults$animal$mass    <- 60
+defaults$animal$mass2   <- rep(60, defaults$model_settings$julnum)
+```
+
+## 3. Write endo.dat and alomvars.dat
+
+`write_endotherm_inputs()` takes the nine argument groups directly, so the
+edited `defaults` list can be spread into it with `do.call()`.
+
+```{r}
+output_dir <- tempfile("endotherm_inputs_")
+dir.create(output_dir)
+
+write_log <- do.call(write_endotherm_inputs, c(list(output_dir = output_dir), defaults))
+write_log
+```
+
+```{r}
+list.files(output_dir)
+```
+
+Both files are fixed-format text, parsed by column position — they are not
+meant to be hand-edited, but the first few lines of `endo.dat` show the
+general shape:
+
+```{r}
+head(readLines(file.path(output_dir, "endo.dat")), 5)
+```
+
+## 4. Write JULDAYS.dat
+
+`write_juldays_dat()` shares `model_settings` with `write_endotherm_inputs()`
+(specifically `julnum`/`juldays`) so the day list always matches what was
+just written into `endo.dat` — a mismatch between the two causes the exe's
+fixed-format reader to misparse the file. It takes its own
+`habitat_settings` group (substrate absorptivity, percent shade, percent
+surface wet); the defaults below describe open, mostly unshaded terrain.
+
+```{r}
+juldays_log <- write_juldays_dat(
+  output_dir,
+  model_settings = defaults$model_settings
+)
+juldays_log
+
+readLines(file.path(output_dir, "JULDAYS.DAT"))
+```
+
+## Next steps
+
+`endo.dat`, `alomvars.dat`, and `JULDAYS.DAT` are everything
+`Endo2022a.exe` needs for a standard run. `vignette("05-metabolic-chamber")`
+picks up from here, running a metabolic chamber calibration against this
+same animal parameterization.
+
+```{r, include = FALSE}
+unlink(output_dir, recursive = TRUE)
+```

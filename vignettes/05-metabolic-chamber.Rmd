@@ -1,0 +1,87 @@
+---
+title: "Running the Metabolic Chamber Simulation and Plotting Results"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Running the Metabolic Chamber Simulation and Plotting Results}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+This picks up where `vignette("04-endotherm-inputs")` left off. Before using
+an animal parameterization in a landscape-scale run, it's worth calibrating
+it against a known resting metabolic rate (RMR) in a controlled "metabolic
+chamber" — four fixed scenarios (standing/curled posture x
+variable/constant core temperature) run against a bundled synthetic
+temperature ramp, independent of any real climate data.
+
+`run_metabolic_chamber()` needs the real `Endo2022a.exe` executable. For
+licensing reasons that executable is never distributed with this package or
+committed to its repository — point `exe_path` at your own local copy. The
+code chunks below are gated on `file.exists(exe_path)`: they run and embed
+real output when knit on a machine that has the executable, and are shown
+but skipped everywhere else (including CI and CRAN-style checks).
+
+## 1. Reuse the animal parameterization
+
+```{r}
+library(SpencerEcoTools)
+
+endo_inputs <- get_endotherm_defaults()
+endo_inputs$animal$species <- "Male Bighorn"
+endo_inputs$animal$mass    <- 60
+endo_inputs$animal$mass2   <- rep(60, endo_inputs$model_settings$julnum)
+
+exe_path <- "D:/Code/Niche Mapper/NicheMap_UpdatedExe/Endotherm Model and Input Files/Endo2022a.exe"
+```
+
+`run_metabolic_chamber()` always runs at `julnum = 12` (tied to the bundled
+temperature-ramp data), so it doesn't matter if `endo_inputs` above was
+built at a different `julnum` — it will override the value and message you
+about it.
+
+## 2. Run all four chamber scenarios
+
+```{r, eval = file.exists(exe_path)}
+result <- run_metabolic_chamber(endo_inputs, exe_path = exe_path)
+result$log
+```
+
+`result` is a `"metchamber_result"`: an hourly output table per scenario
+that succeeded (`result$hourplot`), body-part dimensions parsed from the
+run (`result$dimensions`), and the animal's target RMR +/- its error margin
+(`result$target_rmr`), used below as reference lines.
+
+```{r, eval = file.exists(exe_path)}
+result$dimensions
+```
+
+## 3. Plot standing vs. curled metabolic rate
+
+```{r, eval = file.exists(exe_path), fig.width = 7, fig.height = 5}
+plots <- plot(result)
+```
+
+Each chart compares predicted metabolic rate against air temperature for
+standing vs. curled posture, with dashed reference lines at the target RMR
++/- its error margin (`endo_inputs$model_settings$err`). A well-calibrated
+parameterization crosses those lines near its thermoneutral zone; if it
+doesn't, revisit `animal`, `fur`, or `physiology` in
+`vignette("04-endotherm-inputs")` before moving on to a landscape-scale
+run.
+
+```{r, eval = file.exists(exe_path)}
+names(plots)
+```
+
+## Next steps
+
+Once a parameterization is calibrated here, `vignette("06-endotherm-landscape-scale")`
+covers running it across a full tiled study area with
+`run_endo_big_nichemap()`.
