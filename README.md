@@ -43,6 +43,7 @@ policy, so install them explicitly first:
 
 ```r
 # install.packages("remotes")
+remotes::install_github("rspatial/luna")
 remotes::install_github("ilyamaclean/microclimdata")
 remotes::install_github("BSpen0820/microclimfPara")
 
